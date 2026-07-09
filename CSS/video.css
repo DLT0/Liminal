@@ -1,0 +1,11 @@
+/* css/video.css */
+VideoScreen {
+    background: #0d0d0d;
+    align: center middle;
+}
+
+#video-msg {
+    color: #7eb8f7;
+    text-align: center;
+    text-style: bold;
+}

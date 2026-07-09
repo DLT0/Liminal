@@ -1,0 +1,81 @@
+/* main.css */
+
+Screen {
+    background: #0d0d0d;
+    align: center middle;
+}
+
+#wrapper {
+    width: 36;
+    height: auto;
+    align: center middle;
+    border: none;
+}
+
+#title {
+    text-align: center;
+    color: #e8e8e8;
+    text-style: bold;
+    width: 100%;
+    padding-bottom: 1;
+}
+
+#tagline {
+    text-align: center;
+    color: #333333;
+    width: 100%;
+    padding-bottom: 3;
+}
+
+#footer {
+    text-align: center;
+    color: #2a2a2a;
+    width: 100%;
+    padding-top: 3;
+}
+
+Button {
+    width: 100%;
+    margin-bottom: 1;
+    background: #111111;
+    border: round #2e2e2e;
+}
+
+Button:focus {
+    background: #111111;
+    border: round #2e2e2e;
+}
+
+#video {
+    color: #7eb8f7;
+    border: round #1e3a5f;
+}
+
+#video:focus {
+    background: #111111;
+    border: round #1e3a5f;
+    color: #7eb8f7;
+}
+
+#video:hover {
+    background: #121e2e;
+    border: round #2e5a9f;
+    color: #a8d4ff;
+}
+
+#music {
+    color: #a78bfa;
+    border: round #2d1f5e;
+}
+
+#music:focus {
+    background: #111111;
+    border: round #2d1f5e;
+    color: #a78bfa;
+}
+
+#music:hover {
+    background: #161224;
+    border: round #5b3fa8;
+    color: #c4b0ff;
+}
