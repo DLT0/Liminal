@@ -1,12 +1,14 @@
-# src/screens/main_screen.py
-import os
+"""Main menu screen with navigation buttons."""
+
 from textual.screen import Screen
 from textual.widgets import Button, Static
 from textual.containers import Vertical
 
+from src.config import CSS_DIR
+
+
 class MainScreen(Screen):
-    # Trỏ ra ngoài tìm thư mục css/main.css dựa vào vị trí app.py chạy
-    CSS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../CSS/main.css"))
+    CSS_PATH = str(CSS_DIR / "main.css")
 
     def compose(self):
         with Vertical(id="wrapper"):
@@ -14,4 +16,4 @@ class MainScreen(Screen):
             yield Static("LOCAL MEDIA PLAYER", id="tagline")
             yield Button("📺  Video", id="video")
             yield Button("🎵  Music", id="music")
-            yield Static("q quit  ·  ? help", id="footer")
+            yield Static("q quit  ·  esc back", id="footer")

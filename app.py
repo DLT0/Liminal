@@ -1,33 +1,37 @@
-# app.py
-import sys
-import os
-
-# Thêm thư mục hiện tại vào PATH hệ thống để nhận diện package src/ chính xác
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+"""Liminal — Local Media Player (Textual TUI)."""
 
 from textual.app import App
 from textual.widgets import Button
+
+from src.player import LiminalPlayer
 from src.screens.main_screen import MainScreen
 from src.screens.music_screen import MusicScreen
 from src.screens.video_screen import VideoScreen
 
+
 class LiminalApp(App):
     TITLE = "Liminal"
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.player = LiminalPlayer()
+
     def on_mount(self) -> None:
-        # Đặt màn hình MainScreen làm màn hình mặc định khi khởi động ứng dụng
         self.push_screen(MainScreen())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "video":
-            self.push_screen(VideoScreen())
+            self.push_screen(VideoScreen(self.player))
         elif event.button.id == "music":
-            self.push_screen(MusicScreen())
+            self.push_screen(MusicScreen(self.player))
 
     def on_key(self, event) -> None:
-        # Nếu nhấn q ở màn hình chính (khi không còn màn hình con nào đè lên), app sẽ đóng
-        if event.key == "q" and len(self.screen_stack) <= 2:
+        if event.key == "q":
             self.exit()
+
+    def _on_exit(self) -> None:
+        self.player.cleanup_sync()
+
 
 if __name__ == "__main__":
     LiminalApp().run()

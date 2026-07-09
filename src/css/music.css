@@ -1,0 +1,195 @@
+MusicScreen {
+    background: #0d0d0d;
+}
+
+/* ── Top bar ── */
+#topbar {
+    height: 3;
+    background: #0f0f0f;
+    border-bottom: solid #1e1e1e;
+    padding: 0 1;
+    align: left middle;
+}
+
+#search-input {
+    background: #1a1a1a;
+    border: solid #333333;
+    color: #e0e0e0;
+    height: 1;
+    width: 100%;
+}
+
+#search-input:focus {
+    border: solid #a78bfa;
+    color: #f0f0f0;
+}
+
+/* ── Main body ── */
+#main-body {
+    height: 1fr;
+}
+
+#sidebar {
+    width: 16;
+    border-right: solid #1e1e1e;
+    padding: 1 0;
+    background: #0d0d0d;
+}
+
+.nav-item {
+    color: #444444;
+    padding: 0 2;
+    margin-bottom: 1;
+    height: 2;
+}
+
+.nav-item:hover {
+    color: #c8c8c8;
+    background: #131313;
+}
+
+.nav-item.active {
+    color: #a78bfa;
+    background: #13102a;
+}
+
+#content {
+    width: 1fr;
+}
+
+#content-header {
+    height: 2;
+    padding: 0 2;
+    color: #555;
+    background: #0d0d0d;
+    border-bottom: solid #141414;
+    align: left middle;
+}
+
+#content-list {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+.track {
+    height: 3;
+    border-bottom: solid #141414;
+    padding: 0 2;
+    align: left middle;
+}
+
+.track:hover {
+    background: #131313;
+}
+
+.track.selected {
+    background: #1a1a3a;
+    border-left: solid #a78bfa;
+}
+
+.track-num {
+    width: 4;
+    color: #555;
+}
+
+.track-info {
+    width: 1fr;
+}
+
+.track-title {
+    color: #e0e0e0;
+}
+
+.track-artist {
+    color: #555;
+}
+
+.track-dur {
+    width: 8;
+    align: right middle;
+    color: #555;
+}
+
+/* ── Now‑playing bar (Spotify-style) ── */
+#nowplaying {
+    height: 6;
+    background: #0f0f0f;
+    border-top: solid #1e1e1e;
+    padding: 0 2;
+    align: left middle;
+}
+
+/* Top row: info + controls + volume */
+#np-top {
+    height: 3;
+    width: 100%;
+}
+
+#np-left {
+    width: 30%;
+    height: 100%;
+    align: left middle;
+}
+
+#np-title {
+    color: #e0e0e0;
+    text-style: bold;
+}
+
+#np-artist {
+    color: #666;
+}
+
+#np-controls {
+    width: 40%;
+    height: 100%;
+    align: center middle;
+}
+
+.ctrl-btn {
+    color: #888;
+    margin: 0 2;
+    min-width: 3;
+    text-align: center;
+}
+
+.ctrl-btn:hover {
+    color: #e0e0e0;
+}
+
+.ctrl-btn.active {
+    color: #a78bfa;
+}
+
+#np-right {
+    width: 30%;
+    height: 100%;
+    align: right middle;
+}
+
+/* Bottom row: progress bar + times + volume */
+#np-bottom {
+    height: 3;
+    width: 100%;
+    align: left middle;
+}
+
+.prog-time {
+    color: #888;
+    width: 8;
+    text-align: center;
+}
+
+#prog-bar {
+    color: #a78bfa;
+    width: 1fr;
+}
+
+#vol-icon {
+    color: #888;
+    margin: 0 0 0 2;
+}
+
+#vol-bar {
+    color: #a78bfa;
+}
