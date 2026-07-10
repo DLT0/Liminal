@@ -79,22 +79,16 @@ VideoScreen {
     color: #555;
 }
 
-/* ── Now‑playing ── */
+/* ── Now‑playing bar ── */
 #nowplaying {
     height: 6;
     background: #0f0f0f;
     border-top: solid #1e1e1e;
-    padding: 0 2;
-    align: left middle;
+    padding: 0 1;
 }
 
-#np-top {
-    height: 3;
-    width: 100%;
-}
-
-#np-left {
-    width: 30%;
+#np-info {
+    width: 28%;
     height: 100%;
     align: left middle;
 }
@@ -108,15 +102,20 @@ VideoScreen {
     color: #666;
 }
 
-#np-controls {
-    width: 40%;
+#np-center {
+    width: 1fr;
     height: 100%;
+}
+
+#np-controls {
+    height: 3;
+    width: 100%;
     align: center middle;
 }
 
 .ctrl-btn {
     color: #888;
-    margin: 0 2;
+    padding: 0 1;
     min-width: 3;
     text-align: center;
 }
@@ -125,13 +124,7 @@ VideoScreen {
     color: #e0e0e0;
 }
 
-#np-right {
-    width: 30%;
-    height: 100%;
-    align: right middle;
-}
-
-#np-bottom {
+#np-progress {
     height: 3;
     width: 100%;
     align: left middle;
@@ -148,9 +141,15 @@ VideoScreen {
     width: 1fr;
 }
 
+#np-volume {
+    width: 14%;
+    height: 100%;
+    align: right middle;
+}
+
 #vol-icon {
     color: #888;
-    margin: 0 0 0 2;
+    margin: 0 0 0 1;
 }
 
 #vol-bar {

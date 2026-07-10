@@ -56,8 +56,17 @@ class VideoScreen(Screen):
         if widgets:
             await container.mount(*widgets)
         self._highlight_selection()
-        self.call_after_refresh(lambda: self.set_focus(None))
+
+        # Keep input focused for typing
+        self.call_after_refresh(lambda: self._focus_input())
+
         self._refresh_task = asyncio.create_task(self._refresh_loop())
+
+    def _focus_input(self) -> None:
+        try:
+            self.set_focus(self.query_one("#search-input", Input))
+        except Exception:
+            pass
 
     def on_unmount(self) -> None:
         if self._refresh_task:
@@ -74,22 +83,20 @@ class VideoScreen(Screen):
                     with Vertical(id="content-list"):
                         pass
 
-            with Vertical(id="nowplaying"):
-                with Horizontal(id="np-top"):
-                    with Vertical(id="np-left"):
-                        yield Static(self._player.state.title, id="np-title")
-                        yield Static(self._player.state.artist, id="np-artist")
+            with Horizontal(id="nowplaying"):
+                with Vertical(id="np-info"):
+                    yield Static(self._player.state.title, id="np-title")
+                    yield Static(self._player.state.artist, id="np-artist")
+                with Vertical(id="np-center"):
                     with Horizontal(id="np-controls"):
                         yield Static("⏮", id="btn-prev", classes="ctrl-btn")
                         yield Static("⏸", id="btn-play", classes="ctrl-btn")
                         yield Static("⏭", id="btn-next", classes="ctrl-btn")
-                    with Horizontal(id="np-right"):
-                        yield Static("", id="spacer-right")
-
-                with Horizontal(id="np-bottom"):
-                    yield Static("0:00", classes="prog-time", id="prog-cur")
-                    yield Static("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", id="prog-bar")
-                    yield Static("0:00", classes="prog-time", id="prog-end")
+                    with Horizontal(id="np-progress"):
+                        yield Static("0:00", classes="prog-time", id="prog-cur")
+                        yield Static("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", id="prog-bar")
+                        yield Static("0:00", classes="prog-time", id="prog-end")
+                with Horizontal(id="np-volume"):
                     yield Static("🔊", id="vol-icon")
                     yield Static("██████░", id="vol-bar")
 

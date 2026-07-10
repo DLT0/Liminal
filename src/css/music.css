@@ -1,3 +1,5 @@
+/* ── Spotify-inspired music screen ── */
+
 MusicScreen {
     background: #0d0d0d;
 }
@@ -5,23 +7,29 @@ MusicScreen {
 /* ── Top bar ── */
 #topbar {
     height: 3;
-    background: #0f0f0f;
-    border-bottom: solid #1e1e1e;
+    background: #0a0a0a;
+    border-bottom: solid #181818;
     padding: 0 1;
     align: left middle;
 }
 
+#logo-icon {
+    width: 4;
+    color: #a78bfa;
+    text-align: center;
+}
+
 #search-input {
     background: #1a1a1a;
-    border: solid #333333;
-    color: #e0e0e0;
+    border: solid #282828;
+    color: #ccc;
     height: 1;
-    width: 100%;
+    width: 1fr;
 }
 
 #search-input:focus {
     border: solid #a78bfa;
-    color: #f0f0f0;
+    color: #fff;
 }
 
 /* ── Main body ── */
@@ -29,62 +37,75 @@ MusicScreen {
     height: 1fr;
 }
 
+/* ── Sidebar ── */
 #sidebar {
-    width: 16;
-    border-right: solid #1e1e1e;
+    width: 20;
+    border-right: solid #181818;
     padding: 1 0;
-    background: #0d0d0d;
+    background: #0a0a0a;
 }
 
 .nav-item {
-    color: #444444;
+    color: #666;
     padding: 0 2;
     margin-bottom: 1;
     height: 2;
 }
 
 .nav-item:hover {
-    color: #c8c8c8;
-    background: #131313;
+    color: #ddd;
+    background: #111;
 }
 
 .nav-item.active {
-    color: #a78bfa;
-    background: #13102a;
+    color: #fff;
+    background: #0a0a0a;
 }
 
+.spacer {
+    height: 1fr;
+}
+
+#track-count {
+    color: #444;
+    padding: 0 2;
+    height: 2;
+}
+
+/* ── Content ── */
 #content {
     width: 1fr;
+    background: #0d0d0d;
 }
 
 #content-header {
     height: 2;
     padding: 0 2;
-    color: #555;
+    color: #888;
     background: #0d0d0d;
     border-bottom: solid #141414;
     align: left middle;
+    text-style: bold;
 }
 
-#content-list {
+#track-list {
     height: 1fr;
     overflow-y: auto;
 }
 
 .track {
     height: 3;
-    border-bottom: solid #141414;
     padding: 0 2;
     align: left middle;
+    border-bottom: solid #111;
 }
 
 .track:hover {
-    background: #131313;
+    background: #141414;
 }
 
 .track.selected {
-    background: #1a1a3a;
-    border-left: solid #a78bfa;
+    background: #1a1a2e;
 }
 
 .track-num {
@@ -97,31 +118,34 @@ MusicScreen {
 }
 
 .track-title {
-    color: #e0e0e0;
+    color: #ddd;
+}
+
+.track-title.selected {
+    color: #a78bfa;
 }
 
 .track-artist {
-    color: #555;
+    color: #666;
 }
 
 .track-dur {
-    width: 8;
+    width: 7;
     align: right middle;
     color: #555;
 }
 
-/* ── Now‑playing bar (Spotify-style) ── */
+/* ── Now‑playing bar ── */
 #nowplaying {
-    height: 6;
+    height: 7;
     background: #0f0f0f;
-    border-top: solid #1e1e1e;
-    padding: 0 2;
-    align: left middle;
+    border-top: solid #1a1a1a;
+    padding: 0 1;
 }
 
-/* Top row: info + controls + volume */
+/* Top row */
 #np-top {
-    height: 3;
+    height: 4;
     width: 100%;
 }
 
@@ -131,13 +155,26 @@ MusicScreen {
     align: left middle;
 }
 
+.np-icon {
+    width: 4;
+    color: #a78bfa;
+    text-align: center;
+    margin-right: 1;
+}
+
+#np-info {
+    width: 1fr;
+    height: 100%;
+    align: left middle;
+}
+
 #np-title {
-    color: #e0e0e0;
+    color: #fff;
     text-style: bold;
 }
 
 #np-artist {
-    color: #666;
+    color: #888;
 }
 
 #np-controls {
@@ -149,29 +186,44 @@ MusicScreen {
 .ctrl-btn {
     color: #888;
     margin: 0 2;
-    min-width: 3;
+    min-width: 2;
     text-align: center;
 }
 
 .ctrl-btn:hover {
-    color: #e0e0e0;
+    color: #fff;
 }
 
 .ctrl-btn.active {
     color: #a78bfa;
 }
 
-#np-right {
+.play-btn {
+    color: #fff;
+    margin: 0 4;
+}
+
+#np-volume {
     width: 30%;
     height: 100%;
     align: right middle;
 }
 
-/* Bottom row: progress bar + times + volume */
+#vol-icon {
+    color: #888;
+    margin: 0 0 0 1;
+}
+
+#vol-bar {
+    color: #fff;
+    width: auto;
+}
+
+/* Bottom row - progress */
 #np-bottom {
     height: 3;
     width: 100%;
-    align: left middle;
+    align: center middle;
 }
 
 .prog-time {
@@ -183,13 +235,9 @@ MusicScreen {
 #prog-bar {
     color: #a78bfa;
     width: 1fr;
+    text-align: center;
 }
 
-#vol-icon {
-    color: #888;
-    margin: 0 0 0 2;
-}
-
-#vol-bar {
-    color: #a78bfa;
+#prog-bar:hover {
+    color: #b99cff;
 }

@@ -1,9 +1,9 @@
-"""Music browser — browse, filter, and play local audio files."""
+"""Music browser — browse, filter, and play local audio files (Spotify-inspired)."""
 
 from __future__ import annotations
 
 import asyncio
-import math
+import random
 from typing import Optional
 
 from textual.screen import Screen
@@ -38,16 +38,14 @@ class MusicScreen(Screen):
         self._selected_index: int = 0
         self._shuffle_on: bool = False
         self._loop_on: bool = False
-        self._played_history: list[int] = []  # for shuffle
         self._refresh_task: Optional[asyncio.Task] = None
 
     # ── Lifecycle ──────────────────────────────────────────────
 
     async def on_mount(self) -> None:
-        # Build all track widgets ONCE
-        container = self.query_one("#content-list", Vertical)
+        container = self.query_one("#track-list", Vertical)
         header = self.query_one("#content-header", Static)
-        header.update(f"ALL TRACKS — {len(self._all_tracks)} songs")
+        header.update(f"{len(self._all_tracks)} songs")
 
         widgets = []
         for i, t in enumerate(self._all_tracks):
@@ -69,13 +67,15 @@ class MusicScreen(Screen):
             await container.mount(*widgets)
         self._highlight_selection()
 
-        # Register end-file callback for auto-next
         self._player._on_end_file = self._on_track_end
-
-        # Defocus Input so keys go to screen first
-        self.call_after_refresh(lambda: self.set_focus(None))
-
+        self.call_after_refresh(lambda: self._focus_input())
         self._refresh_task = asyncio.create_task(self._refresh_loop())
+
+    def _focus_input(self) -> None:
+        try:
+            self.set_focus(self.query_one("#search-input", Input))
+        except Exception:
+            pass
 
     def on_unmount(self) -> None:
         if self._refresh_task:
@@ -84,43 +84,50 @@ class MusicScreen(Screen):
 
     def compose(self):
         with Vertical():
+            # Top bar
             with Horizontal(id="topbar"):
-                yield Input(placeholder="filter tracks...", id="search-input")
+                yield Static("🎵", id="logo-icon")
+                yield Input(placeholder="Search tracks, artists...", id="search-input")
 
             with Horizontal(id="main-body"):
+                # Sidebar
                 with Vertical(id="sidebar"):
-                    yield Static("▶ Library", classes="nav-item active", id="nav-library")
-                    yield Static("  Playlists", classes="nav-item", id="nav-playlists")
-                    yield Static("  Settings", classes="nav-item", id="nav-settings")
+                    yield Static("▶  Library", classes="nav-item active", id="nav-library")
+                    yield Static("📋  Playlists", classes="nav-item", id="nav-playlists")
+                    yield Static("⚙  Settings", classes="nav-item", id="nav-settings")
+                    yield Static("", classes="spacer")
+                    yield Static(f"Tracks: {len(self._all_tracks)}", id="track-count")
 
+                # Content
                 with Vertical(id="content"):
                     yield Static(id="content-header")
-                    with Vertical(id="content-list"):
+                    with Vertical(id="track-list"):
                         pass
 
-            # Now-playing bar — Spotify-style
+            # Now-playing bar (Spotify-style 2-row)
             with Vertical(id="nowplaying"):
                 with Horizontal(id="np-top"):
-                    with Vertical(id="np-left"):
-                        yield Static(self._player.state.title, id="np-title")
-                        yield Static(self._player.state.artist, id="np-artist")
+                    with Horizontal(id="np-left"):
+                        yield Static("▶", id="np-icon", classes="np-icon")
+                        with Vertical(id="np-info"):
+                            yield Static(self._player.state.title, id="np-title")
+                            yield Static(self._player.state.artist, id="np-artist")
                     with Horizontal(id="np-controls"):
                         yield Static("🔀", id="btn-shuffle", classes="ctrl-btn")
                         yield Static("⏮", id="btn-prev", classes="ctrl-btn")
-                        yield Static("⏸", id="btn-play", classes="ctrl-btn")
+                        yield Static("⏸", id="btn-play", classes="ctrl-btn play-btn")
                         yield Static("⏭", id="btn-next", classes="ctrl-btn")
                         yield Static("🔁", id="btn-loop", classes="ctrl-btn")
-                    with Horizontal(id="np-right"):
-                        yield Static("", id="spacer-right")
+                    with Horizontal(id="np-volume"):
+                        yield Static("🔊", id="vol-icon")
+                        yield Static("██████░", id="vol-bar")
 
                 with Horizontal(id="np-bottom"):
                     yield Static("0:00", classes="prog-time", id="prog-cur")
-                    yield Static("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", id="prog-bar")
+                    yield Static("░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░", id="prog-bar")
                     yield Static("0:00", classes="prog-time", id="prog-end")
-                    yield Static("🔊", id="vol-icon")
-                    yield Static("██████░", id="vol-bar")
 
-    # ── Filter ─────────────────────────────────────────────────
+    # ── Filter ──
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         query = event.value.strip().lower()
@@ -132,12 +139,10 @@ class MusicScreen(Screen):
                 self._filtered_indices.append(i)
         self._selected_index = 0
         n = len(self._filtered_indices)
-        self.query_one("#content-header", Static).update(
-            f"ALL TRACKS — {n} song{'s' if n != 1 else ''}"
-        )
+        self.query_one("#content-header", Static).update(f"{n} song{'s' if n != 1 else ''}")
         self._highlight_selection()
 
-    # ── Selection ──────────────────────────────────────────────
+    # ── Selection ──
 
     def _real_index(self) -> int:
         if not self._filtered_indices:
@@ -153,14 +158,12 @@ class MusicScreen(Screen):
         real = self._real_index()
         if real < 0:
             return
-        w = self._track_widgets[real]
-        w.add_class("selected")
-        w.scroll_visible()
+        self._track_widgets[real].add_class("selected")
+        self._track_widgets[real].scroll_visible()
 
-    # ── Auto‑next / shuffle ────────────────────────────────────
+    # ── Auto‑next / shuffle ──
 
     def _on_track_end(self) -> None:
-        """Called when mpv finishes playing a track."""
         asyncio.create_task(self._play_next())
 
     async def _play_next(self) -> None:
@@ -168,16 +171,13 @@ class MusicScreen(Screen):
             return
         n = len(self._filtered_indices)
         if self._shuffle_on:
-            # Pick random, avoid immediate repeat
-            import random
             candidates = [i for i in range(n) if i != self._selected_index]
             if candidates:
                 self._selected_index = random.choice(candidates)
         else:
             self._selected_index = (self._selected_index + 1) % n
             if not self._loop_on and self._selected_index == 0:
-                return  # stop at end
-
+                return
         self._highlight_selection()
         real = self._real_index()
         if real >= 0:
@@ -193,24 +193,24 @@ class MusicScreen(Screen):
         if real >= 0:
             await self._player.play(self._all_tracks[real].path, audio_only=True)
 
-    # ── Now‑playing ────────────────────────────────────────────
+    # ── Now‑playing refresh ──
 
     def _update_now_playing(self) -> None:
         s = self._player.state
         q = self.query_one
 
         q("#np-title", Static).update(s.title)
-        q("#np-artist", Static).update(s.artist)
+        q("#np-artist", Static).update(f"•  {s.artist}" if s.artist != "—" else "")
+        q("#np-icon", Static).update("▶" if s.status != PlaybackStatus.PLAYING else "♫")
 
         play_btn = q("#btn-play", Static)
-        play_btn.update("⏸" if s.status == PlaybackStatus.PLAYING else "▶")
+        play_btn.update("▶" if s.status != PlaybackStatus.PLAYING else "⏸")
 
-        # Shuffle / Loop highlight
         q("#btn-shuffle", Static).set_class(self._shuffle_on, "active")
         q("#btn-loop", Static).set_class(self._loop_on, "active")
 
-        # Progress bar — dynamic width based on terminal
-        avail = self.size.width - 32  # reserve for times + volume + margins
+        # Dynamic progress bar width
+        avail = self.size.width - 28
         bar_w = max(10, avail)
 
         q("#prog-cur", Static).update(_fmt_time(s.time_pos))
@@ -219,14 +219,13 @@ class MusicScreen(Screen):
         bar = q("#prog-bar", Static)
         if s.duration > 0:
             pct = min(s.time_pos / s.duration, 1.0)
-            filled = int(pct * bar_w)
-            bar.update("█" * filled + "░" * (bar_w - filled))
+            pos = min(int(pct * bar_w), bar_w - 1)
+            bar.update("━" * pos + "●" + "━" * (bar_w - pos - 1))
         else:
-            bar.update("░" * bar_w)
+            bar.update("─" * bar_w)
 
-        # Volume
-        blocks = max(1, min(6, int(s.volume / 17))) if s.volume > 0 else 0
-        q("#vol-bar", Static).update("█" * blocks + "░" * (6 - blocks))
+        blocks = max(0, min(6, int(s.volume / 17)))
+        q("#vol-bar", Static).update("━" * blocks + "─" * (6 - blocks))
 
     async def _refresh_loop(self) -> None:
         try:
@@ -236,7 +235,7 @@ class MusicScreen(Screen):
         except asyncio.CancelledError:
             pass
 
-    # ── Key / click handling ───────────────────────────────────
+    # ── Key / click handling ──
 
     def on_static_pressed(self, event: Static.Pressed) -> None:
         sid = event.static.id
@@ -254,6 +253,8 @@ class MusicScreen(Screen):
             self.app.push_screen(PlaylistScreen())
         elif sid == "nav-settings":
             self.app.push_screen(SettingsScreen())
+        elif sid in ("nav-library",):
+            self._focus_input()
 
     def on_key(self, event) -> None:
         inp = self.query_one("#search-input", Input)
