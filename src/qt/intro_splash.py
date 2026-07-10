@@ -25,6 +25,7 @@ class IntroSplash(QWidget):
         super().__init__(parent)
         self.video_path = os.path.normpath(video_path)
         self._fading = False
+        self._started = False
 
         # 1. Setup Window Flags for a premium frameless splash overlay
         self.setWindowFlags(
@@ -119,10 +120,12 @@ class IntroSplash(QWidget):
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         """Signal listener to start playback once media has successfully loaded."""
         if status == QMediaPlayer.MediaStatus.LoadedMedia:
-            self.safety_timer.stop()
-            self.media_player.play()
-            # Start the 2.835s countdown
-            self.duration_timer.start(2835)
+            if not self._started and not self._fading:
+                self._started = True
+                self.safety_timer.stop()
+                self.media_player.play()
+                # Start the 2.835s countdown
+                self.duration_timer.start(2835)
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
             print("[IntroSplash] Error loading video: invalid format or codec.")
             self._trigger_fallback()
@@ -148,6 +151,7 @@ class IntroSplash(QWidget):
         self.safety_timer.stop()
         self.duration_timer.stop()
         self.media_player.stop()
+        self.media_player.setSource(QUrl())
         self.close()
         self.finished.emit()
 
@@ -160,5 +164,6 @@ class IntroSplash(QWidget):
     def _on_fade_finished(self) -> None:
         """Clean up media player resources and notify parent once fade-out completes."""
         self.media_player.stop()
+        self.media_player.setSource(QUrl())
         self.close()
         self.finished.emit()

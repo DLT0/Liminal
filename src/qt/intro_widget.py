@@ -153,6 +153,7 @@ class IntroWidget(QWidget):
     def _finish(self) -> None:
         self.hide()
         self._player.stop()
+        self._player.setSource(QUrl())
         self._cutoff_timer.stop()
         self._fade_timer.stop()
         self.finished.emit()

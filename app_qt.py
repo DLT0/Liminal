@@ -26,7 +26,12 @@ def main() -> None:
 
     player = PlayerBridge()
     window = MainWindow(player)
-    window.show()
+
+    # Launch IntroSplash first. When it finishes, display MainWindow.
+    from src.qt.intro_splash import IntroSplash
+    intro = IntroSplash("src/qt/app_intro.mp4")
+    intro.finished.connect(window.show)
+    intro.start()
 
     with loop:
         loop.run_forever()
