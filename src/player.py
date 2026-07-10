@@ -3,6 +3,8 @@
 Spawns mpv as a subprocess with a Unix socket for bidirectional control.
 Exposes async methods for play/pause/seek/volume and emits playback state
 updates via polling so the TUI can render them.
+
+PlayerBridge is a QObject wrapper that emits Qt signals for use in PyQt6 GUI.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
+
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from src.models import PlaybackState, PlaybackStatus
 
@@ -278,3 +282,91 @@ class LiminalPlayer:
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             pass
+
+
+class PlayerBridge(QObject):
+    """Qt signal bridge wrapping LiminalPlayer for PyQt6 GUI use.
+
+    Emits signals on state changes so the UI can react without polling.
+    Public methods schedule async calls on the event loop.
+    """
+
+    state_changed = pyqtSignal(PlaybackState)
+    position_changed = pyqtSignal(float, float)  # time_pos, duration
+    track_ended = pyqtSignal()
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._player = LiminalPlayer()
+        self._prev_state: Optional[PlaybackState] = None
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(250)
+        self._timer.timeout.connect(self._poll)
+        self._timer.start()
+
+        self._player._on_end_file = self._on_track_end
+
+    @property
+    def state(self) -> PlaybackState:
+        return self._player.state
+
+    @property
+    def available(self) -> bool:
+        return self._player.available
+
+    def play(self, path: str, audio_only: bool = False) -> None:
+        asyncio.ensure_future(self._player.play(path, audio_only))
+
+    def toggle_pause(self) -> None:
+        asyncio.ensure_future(self._player.toggle_pause())
+
+    def seek(self, delta: float) -> None:
+        asyncio.ensure_future(self._player.seek(delta))
+
+    def set_volume(self, vol: int) -> None:
+        asyncio.ensure_future(self._player.set_volume(vol))
+
+    def stop(self) -> None:
+        asyncio.ensure_future(self._player.stop())
+
+    def cleanup_sync(self) -> None:
+        self._timer.stop()
+        self._player.cleanup_sync()
+
+    def _poll(self) -> None:
+        """Emit signals if state has changed since last poll."""
+        s = self._player.state
+        prev = self._prev_state
+
+        if prev is not None:
+            if s.time_pos != prev.time_pos or s.duration != prev.duration:
+                self.position_changed.emit(s.time_pos, s.duration)
+
+        if prev is None or self._state_different(s, prev):
+            self.state_changed.emit(s)
+
+        self._prev_state = PlaybackState(
+            status=s.status,
+            path=s.path,
+            title=s.title,
+            artist=s.artist,
+            time_pos=s.time_pos,
+            duration=s.duration,
+            volume=s.volume,
+            paused=s.paused,
+        )
+
+    def _on_track_end(self) -> None:
+        self.track_ended.emit()
+
+    @staticmethod
+    def _state_different(a: PlaybackState, b: PlaybackState) -> bool:
+        return (
+            a.status != b.status
+            or a.title != b.title
+            or a.artist != b.artist
+            or a.volume != b.volume
+            or a.paused != b.paused
+            or a.path != b.path
+        )
