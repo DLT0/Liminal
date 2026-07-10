@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Liminal
+GenericName=Media Player
+Comment=Local media player for Linux
+Icon=/mnt/Work/Liminal/src/qt/liminal.png
+Exec=python3 /mnt/Work/Liminal/app_qt.py
+Path=/mnt/Work/Liminal
+Terminal=false
+Categories=AudioVideo;Player;
+StartupNotify=true
+StartupWMClass=liminal
