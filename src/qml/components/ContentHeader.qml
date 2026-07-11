@@ -13,13 +13,6 @@ Item {
 
     signal searchChanged(string text)
     signal searchSubmitted(string text)
-    signal contentFocusRequested()
-    signal sidebarFocusRequested()
-
-    function focusSearch() {
-        headerSearch.forceActiveFocus()
-        headerSearch.selectAll()
-    }
 
     RowLayout {
         anchors.fill: parent
@@ -95,16 +88,6 @@ Item {
                 onTextChanged: root.searchChanged(text)
 
                 Keys.onReturnPressed: root.searchSubmitted(text)
-
-                Keys.onTabPressed: {
-                    root.contentFocusRequested()
-                    event.accepted = true
-                }
-
-                Keys.onBacktabPressed: {
-                    root.sidebarFocusRequested()
-                    event.accepted = true
-                }
             }
 
             AppIcon {

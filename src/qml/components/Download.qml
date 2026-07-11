@@ -6,12 +6,6 @@ import Liminal 1.0
 Item {
     id: root
 
-    signal sidebarFocusRequested()
-
-    function activateFocus() {
-        queryField.forceActiveFocus()
-    }
-
     Component.onCompleted: {
         if (backend.downloadDependencyError.length > 0)
             errorStatus = backend.downloadDependencyError
@@ -548,13 +542,6 @@ Item {
                                     root.runSearch(text)
                                 else
                                     root.beginDownload(text)
-                            }
-
-                            Keys.onPressed: function(event) {
-                                if (event.key === Qt.Key_Backtab) {
-                                    root.sidebarFocusRequested()
-                                    event.accepted = true
-                                }
                             }
                         }
 

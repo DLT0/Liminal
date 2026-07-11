@@ -57,6 +57,9 @@ class LiminalPlayer:
         audio_only: bool = False,
         title: str = "",
         artist: str = "",
+        *,
+        volume: int | None = None,
+        muted: bool = False,
     ) -> None:
         """Start playing a media file or stream URL.
 
@@ -65,13 +68,20 @@ class LiminalPlayer:
             audio_only: If True, no video window opens (for music).
             title: Optional display title (used for remote streams).
             artist: Optional display artist (used for remote streams).
+            volume: Optional output volume (0-100) for this session.
+            muted: Whether mpv should start muted while keeping volume level.
         """
         if not self._mpv_available:
             self.state.title = "mpv not installed — install with: sudo pacman -S mpv"
             self.state.status = PlaybackStatus.STOPPED
             return
 
+        if volume is not None:
+            self.state.volume = max(0, min(100, volume))
+
+        saved_volume = self.state.volume
         await self.stop()
+        self.state.volume = saved_volume
 
         # Clean up stale socket from a previous crash
         stale = Path(IPC_SOCKET)
@@ -91,7 +101,7 @@ class LiminalPlayer:
             "--msg-level=all=no",
             "--cache=yes",
             "--demuxer-readahead-secs=20",
-            f"--volume={self.state.volume}",
+            f"--volume={saved_volume}",
             f"--force-media-title={media_title}",
             path,
         ]
@@ -113,6 +123,8 @@ class LiminalPlayer:
         await self._send_command(["observe_property", 2, "time-pos"])
         await self._send_command(["observe_property", 3, "duration"])
         await self._send_command(["observe_property", 4, "volume"])
+        if muted:
+            await self._send_command(["set_property", "mute", True])
         if artist or title:
             await self._send_command(
                 [
@@ -151,6 +163,10 @@ class LiminalPlayer:
         self.state.volume = vol
         if self._writer:
             await self._send_command(["set_property", "volume", vol])
+
+    async def set_mute(self, muted: bool) -> None:
+        if self._writer:
+            await self._send_command(["set_property", "mute", muted])
 
     async def stop(self) -> None:
         """Kill mpv and reset state."""
@@ -334,9 +350,19 @@ class PlayerBridge(QObject):
         audio_only: bool = False,
         title: str = "",
         artist: str = "",
+        *,
+        volume: int | None = None,
+        muted: bool = False,
     ) -> None:
         asyncio.ensure_future(
-            self._player.play(path, audio_only, title=title, artist=artist)
+            self._player.play(
+                path,
+                audio_only,
+                title=title,
+                artist=artist,
+                volume=volume,
+                muted=muted,
+            )
         )
 
     def toggle_pause(self) -> None:
@@ -350,6 +376,9 @@ class PlayerBridge(QObject):
 
     def set_volume(self, vol: int) -> None:
         asyncio.ensure_future(self._player.set_volume(vol))
+
+    def set_mute(self, muted: bool) -> None:
+        asyncio.ensure_future(self._player.set_mute(muted))
 
     def stop(self) -> None:
         asyncio.ensure_future(self._player.stop())

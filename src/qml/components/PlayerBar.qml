@@ -48,7 +48,9 @@ GlassPanel {
     }
 
     readonly property string volumeIcon: {
-        if (muted || volumeLevel === 0)
+        if (muted)
+            return "volume_off"
+        if (volumeLevel === 0)
             return "volume_off"
         if (volumeLevel < 40)
             return "volume_down"
@@ -210,10 +212,7 @@ GlassPanel {
 
                     onPressedChanged: root.volumeAdjusting = pressed
 
-                    onValueChanged: {
-                        if (pressed)
-                            root.volumeAdjusted(value)
-                    }
+                    onMoved: root.volumeAdjusted(value)
 
                     background: Rectangle {
                         x: volSlider.leftPadding

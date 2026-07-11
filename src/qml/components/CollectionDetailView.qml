@@ -23,92 +23,6 @@ Item {
     signal openCollectionRequested(int index)
     signal playAllRequested()
     signal shufflePlayRequested()
-    signal sidebarFocusRequested()
-    signal searchFocusRequested()
-
-    property int selectedIndex: -1
-    readonly property bool hasKeyboardFocus: keyboardScope.activeFocus
-
-    function activateFocus(selectLast) {
-        if (listView.count === 0) {
-            keyboardScope.forceActiveFocus()
-            selectedIndex = -1
-            return
-        }
-        keyboardScope.forceActiveFocus()
-        selectedIndex = selectLast ? listView.count - 1 : 0
-        listView.currentIndex = selectedIndex
-        listView.positionViewAtIndex(selectedIndex, ListView.Visible)
-    }
-
-    function clearSelection() {
-        selectedIndex = -1
-        listView.currentIndex = -1
-    }
-
-    function activateSelectedItem() {
-        if (selectedIndex < 0 || selectedIndex >= listView.count)
-            return
-        listView.positionViewAtIndex(selectedIndex, ListView.Visible)
-        var row = listView.itemAtIndex(selectedIndex)
-        if (!row)
-            return
-        if (row.isCollection)
-            root.openCollectionRequested(selectedIndex)
-        else
-            root.playRequested(selectedIndex)
-    }
-
-    FocusScope {
-        id: keyboardScope
-        anchors.fill: parent
-        focus: false
-
-        Keys.onPressed: function(event) {
-            switch (event.key) {
-            case Qt.Key_Up:
-                if (selectedIndex > 0) {
-                    selectedIndex--
-                    listView.currentIndex = selectedIndex
-                    listView.positionViewAtIndex(selectedIndex, ListView.Visible)
-                } else if (selectedIndex === 0) {
-                    root.sidebarFocusRequested()
-                } else if (listView.count > 0) {
-                    selectedIndex = 0
-                    listView.currentIndex = 0
-                    listView.positionViewAtIndex(0, ListView.Visible)
-                }
-                event.accepted = true
-                break
-            case Qt.Key_Down:
-                if (selectedIndex < listView.count - 1) {
-                    selectedIndex++
-                    listView.currentIndex = selectedIndex
-                    listView.positionViewAtIndex(selectedIndex, ListView.Visible)
-                } else if (selectedIndex < 0 && listView.count > 0) {
-                    selectedIndex = 0
-                    listView.currentIndex = 0
-                    listView.positionViewAtIndex(0, ListView.Visible)
-                }
-                event.accepted = true
-                break
-            case Qt.Key_Return:
-            case Qt.Key_Enter:
-            case Qt.Key_Space:
-                activateSelectedItem()
-                event.accepted = true
-                break
-            case Qt.Key_Backtab:
-                root.sidebarFocusRequested()
-                event.accepted = true
-                break
-            case Qt.Key_Tab:
-                root.searchFocusRequested()
-                event.accepted = true
-                break
-            }
-        }
-    }
 
     EditMediaDialog {
         id: editDialog
@@ -310,7 +224,7 @@ Item {
             }
         }
 
-        // Action bar (Spotify-style)
+        // Action bar
         Row {
             id: actionBar
             width: parent.width
@@ -376,11 +290,10 @@ Item {
             Text {
                 id: hintText
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Mũi tên lên/xuống để sắp xếp · Phát ngẫu nhiên không đổi thứ tự · Chuột phải để thao tác"
+                text: "Chuột phải để thao tác"
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted
-                elide: Text.ElideLeft
             }
         }
 
@@ -403,7 +316,6 @@ Item {
                 property string rowPath: model.path
                 property string rowImage: model.imageSource
                 property bool isCollection: model.isCollection
-                property bool keyboardSelected: root.hasKeyboardFocus && root.selectedIndex === index
                 property string resolvedRowImage: {
                     if (!rowImage)
                         return ""
@@ -412,16 +324,7 @@ Item {
                     return "file://" + rowImage
                 }
 
-                color: keyboardSelected
-                    ? Qt.rgba(Theme.accentStart.r, Theme.accentStart.g, Theme.accentStart.b, 0.14)
-                    : (rowHoverHandler.hovered ? Theme.hoverOverlay : "transparent")
-
-                KeyboardFocusRing {
-                    anchors.fill: parent
-                    show: keyboardSelected
-                    ringRadius: Theme.focusListRadius
-                    ringWidth: Theme.focusRingWidth
-                }
+                color: rowHoverHandler.hovered ? Theme.hoverOverlay : "transparent"
 
                 Behavior on color {
                     ColorAnimation { duration: 120 }

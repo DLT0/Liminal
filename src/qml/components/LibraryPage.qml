@@ -32,127 +32,6 @@ Item {
     signal createFolderRequested()
     signal playAllRequested()
     signal shufflePlayRequested()
-    signal focusNextSectionRequested()
-    signal focusPreviousSectionRequested()
-    signal sidebarFocusRequested()
-    signal searchFocusRequested()
-
-    property int selectedIndex: -1
-    readonly property bool hasKeyboardFocus: keyboardScope.activeFocus
-
-    onInCollectionViewChanged: {
-        if (inCollectionView && keyboardScope.activeFocus)
-            Qt.callLater(function() { detailView.activateFocus() })
-        else if (!inCollectionView)
-            selectedIndex = -1
-    }
-
-    function activateFocus(selectLast) {
-        if (root.inCollectionView) {
-            detailView.activateFocus(selectLast)
-            return
-        }
-        if (grid.count === 0) {
-            keyboardScope.forceActiveFocus()
-            selectedIndex = -1
-            return
-        }
-        keyboardScope.forceActiveFocus()
-        selectedIndex = selectLast ? grid.count - 1 : 0
-        grid.positionViewAtIndex(selectedIndex, GridView.Visible)
-    }
-
-    function clearSelection() {
-        selectedIndex = -1
-    }
-
-    function moveSelection(deltaRow, deltaCol) {
-        if (grid.count === 0)
-            return false
-
-        var cols = grid.columns
-        if (selectedIndex < 0)
-            selectedIndex = 0
-
-        var row = Math.floor(selectedIndex / cols)
-        var col = selectedIndex % cols
-        var newRow = row + deltaRow
-        var newCol = col + deltaCol
-
-        if (newCol < 0 || newCol >= cols)
-            return false
-
-        var newIndex = newRow * cols + newCol
-        if (newIndex < 0) {
-            focusPreviousSectionRequested()
-            return true
-        }
-        if (newIndex >= grid.count) {
-            focusNextSectionRequested()
-            return true
-        }
-
-        selectedIndex = newIndex
-        grid.positionViewAtIndex(newIndex, GridView.Visible)
-        return true
-    }
-
-    function activateSelectedItem() {
-        if (selectedIndex < 0 || selectedIndex >= grid.count)
-            return
-        grid.positionViewAtIndex(selectedIndex, GridView.Visible)
-        var cell = grid.itemAtIndex(selectedIndex)
-        if (!cell)
-            return
-        if (cell.isFolder)
-            root.openCollectionRequested(selectedIndex)
-        else
-            root.playRequested(selectedIndex)
-    }
-
-    FocusScope {
-        id: keyboardScope
-        anchors.fill: parent
-        focus: false
-
-        Keys.onPressed: function(event) {
-            if (root.inCollectionView)
-                return
-
-            switch (event.key) {
-            case Qt.Key_Left:
-                moveSelection(0, -1)
-                event.accepted = true
-                break
-            case Qt.Key_Right:
-                moveSelection(0, 1)
-                event.accepted = true
-                break
-            case Qt.Key_Up:
-                moveSelection(-1, 0)
-                event.accepted = true
-                break
-            case Qt.Key_Down:
-                moveSelection(1, 0)
-                event.accepted = true
-                break
-            case Qt.Key_Return:
-            case Qt.Key_Enter:
-            case Qt.Key_Space:
-                activateSelectedItem()
-                event.accepted = true
-                break
-            case Qt.Key_Backtab:
-                root.sidebarFocusRequested()
-                event.accepted = true
-                break
-            case Qt.Key_Tab:
-                root.searchFocusRequested()
-                event.accepted = true
-                break
-            }
-        }
-    }
 
     CreateFolderDialog {
         id: createFolderDialog
@@ -277,8 +156,6 @@ Item {
         onOpenCollectionRequested: function(index) { root.openCollectionRequested(index) }
         onPlayAllRequested: function() { root.playAllRequested() }
         onShufflePlayRequested: function() { root.shufflePlayRequested() }
-        onSidebarFocusRequested: root.sidebarFocusRequested()
-        onSearchFocusRequested: root.searchFocusRequested()
     }
 
     // Lobby grid
@@ -370,14 +247,6 @@ Item {
                 property bool showVinyl: !isFolder && root.useVinylStyle && model.audioOnly
                 property bool showArtistFolder: isFolder && root.useVinylStyle
                 property string itemPath: model.path
-                property bool keyboardSelected: root.hasKeyboardFocus && root.selectedIndex === index
-
-                KeyboardFocusRing {
-                    anchors.fill: parent
-                    show: keyboardSelected
-                    ringRadius: Theme.cardRadius
-                    ringWidth: Theme.focusRingWidth
-                }
 
                 TapHandler {
                     onTapped: {
@@ -483,14 +352,6 @@ Item {
             height: emptyColumn.height + 32
             visible: grid.count === 0
 
-            KeyboardFocusRing {
-                anchors.fill: parent
-                show: root.hasKeyboardFocus
-                ringRadius: Theme.cardRadius
-                ringWidth: Theme.focusRingWidth
-                glowOpacity: 0.16
-            }
-
             Column {
                 id: emptyColumn
                 anchors.centerIn: parent
@@ -518,7 +379,7 @@ Item {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Chuột phải để tạo thư mục · Super+Shift+N · Mũi tên để chọn · Enter để mở/phát"
+                text: "Chuột phải để tạo thư mục"
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted

@@ -18,7 +18,6 @@ ApplicationWindow {
     color: Theme.bgTop
 
     property string searchQuery: ""
-    property var navPages: [2, 3, 4, 5]
 
     Shortcut {
         sequence: "Meta+Q"
@@ -98,7 +97,6 @@ ApplicationWindow {
                     contentHeader.setSearchText(text)
                     backend.setSearchFilter(text)
                 }
-                onContentFocusRequested: root.focusCurrentPageContent()
             }
 
             ColumnLayout {
@@ -120,8 +118,6 @@ ApplicationWindow {
                     onSearchSubmitted: function(text) {
                         // Discover search removed
                     }
-                    onContentFocusRequested: root.focusCurrentPageContent()
-                    onSidebarFocusRequested: sidebar.focusSidebar()
                 }
 
                 Item {
@@ -149,8 +145,6 @@ ApplicationWindow {
                         onOpenCollectionRequested: function(index) { backend.openCollection(index) }
                         onPlayAllRequested: backend.togglePlayCollection()
                         onShufflePlayRequested: backend.playCollectionShuffled()
-                        onSidebarFocusRequested: sidebar.focusSidebar()
-                        onSearchFocusRequested: contentHeader.focusSearch()
                     }
 
                     Flickable {
@@ -228,12 +222,6 @@ ApplicationWindow {
                                 onOpenCollectionRequested: function(index) { backend.openMusicAlbum(index) }
                                 onPlayAllRequested: backend.togglePlayCollection()
                                 onShufflePlayRequested: backend.playCollectionShuffled()
-                                onSidebarFocusRequested: sidebar.focusSidebar()
-                                onSearchFocusRequested: contentHeader.focusSearch()
-                                onFocusNextSectionRequested: {
-                                    musicSinglesPage.activateFocus()
-                                    musicPage.contentY = Math.max(0, musicSinglesPage.y - Theme.contentPadding)
-                                }
                             }
 
                             Text {
@@ -269,12 +257,6 @@ ApplicationWindow {
                                 emptyTitle: "Chưa có đĩa đơn"
                                 emptyMessage: "Thêm file nhạc trực tiếp vào thư mục Music."
                                 onPlayRequested: function(index) { backend.playMusicSingle(index) }
-                                onSidebarFocusRequested: sidebar.focusSidebar()
-                                onSearchFocusRequested: contentHeader.focusSearch()
-                                onFocusPreviousSectionRequested: {
-                                    musicAlbumsPage.activateFocus(true)
-                                    musicPage.contentY = Math.max(0, musicAlbumsPage.y - Theme.contentPadding)
-                                }
                             }
                         }
                     }
@@ -301,15 +283,12 @@ ApplicationWindow {
                         onOpenCollectionRequested: function(index) { backend.openCollection(index) }
                         onPlayAllRequested: backend.togglePlayCollection()
                         onShufflePlayRequested: backend.playCollectionShuffled()
-                        onSidebarFocusRequested: sidebar.focusSidebar()
-                        onSearchFocusRequested: contentHeader.focusSearch()
                     }
 
                     Download {
                         id: downloadPage
                         anchors.fill: parent
                         visible: backend.currentPage === 4
-                        onSidebarFocusRequested: sidebar.focusSidebar()
                     }
 
 
@@ -327,7 +306,6 @@ ApplicationWindow {
                         onPickMediaRoot: backend.pickMediaRoot()
                         onThemeSelected: function(index) { backend.setThemeIndex(index) }
                         onUpdateYtDlpRequested: backend.updateYtDlp()
-                        onSidebarFocusRequested: sidebar.focusSidebar()
                     }
                 }
             }

@@ -46,8 +46,6 @@ ACCENT_COLORS = [
     "#6366f1",
 ]
 
-NAV_TAB_PAGES = [2, 3, 4, 5]
-
 
 def _is_remote(path: str) -> bool:
     return path.startswith(("http://", "https://"))
@@ -289,7 +287,6 @@ class AppBackend(QObject):
         self._shuffle_on = False
         self._loop_on = False
         self._muted = False
-        self._volume_before_mute = 100
         self._position = 0.0
         self._duration = 0.0
         self._has_media = False
@@ -763,26 +760,6 @@ class AppBackend(QObject):
         self._reload_library_view(self._current_page)
 
     @pyqtSlot()
-    def nextNavPage(self) -> None:
-        pages = NAV_TAB_PAGES
-        try:
-            idx = pages.index(self._current_page)
-            next_idx = (idx + 1) % len(pages)
-        except ValueError:
-            next_idx = 0
-        self.setCurrentPage(pages[next_idx])
-
-    @pyqtSlot()
-    def previousNavPage(self) -> None:
-        pages = NAV_TAB_PAGES
-        try:
-            idx = pages.index(self._current_page)
-            prev_idx = (idx - 1) % len(pages)
-        except ValueError:
-            prev_idx = 0
-        self.setCurrentPage(pages[prev_idx])
-
-    @pyqtSlot()
     def quitApp(self) -> None:
         app = QApplication.instance()
         if app is not None:
@@ -1072,6 +1049,7 @@ class AppBackend(QObject):
         if vol > 0 and self._muted:
             self._muted = False
             self.mutedChanged.emit()
+            self._player.set_mute(False)
         if self._volume != vol:
             self._volume = vol
             self.volumeChanged.emit()
@@ -1080,14 +1058,9 @@ class AppBackend(QObject):
     @pyqtSlot()
     def toggleMute(self) -> None:
         self._touch_player_bar()
-        if self._muted:
-            self._muted = False
-            self._player.set_volume(self._volume_before_mute or 100)
-        else:
-            self._volume_before_mute = self._volume
-            self._muted = True
-            self._player.set_volume(0)
+        self._muted = not self._muted
         self.mutedChanged.emit()
+        self._player.set_mute(self._muted)
 
     @pyqtSlot()
     def toggleShuffle(self) -> None:
@@ -1259,6 +1232,23 @@ class AppBackend(QObject):
             and (path := (item.get("path") or item.get("url") or ""))
         ]
 
+    def _start_playback(
+        self,
+        path: str,
+        *,
+        audio_only: bool,
+        title: str = "",
+        artist: str = "",
+    ) -> None:
+        self._player.play(
+            path,
+            audio_only=audio_only,
+            title=title,
+            artist=artist,
+            volume=self._volume,
+            muted=self._muted,
+        )
+
     def _play_item(self, item: dict) -> None:
         path = item.get("path") or item.get("url") or ""
         if not path:
@@ -1273,12 +1263,14 @@ class AppBackend(QObject):
                 return
             self._current_path = path
             self._current_audio_only = audio_only
-            self._player.play(path, audio_only=audio_only, title=title, artist=artist)
+            self._start_playback(
+                path, audio_only=audio_only, title=title, artist=artist
+            )
             return
 
         self._current_path = path
         self._current_audio_only = audio_only
-        self._player.play(path, audio_only=audio_only, title=title, artist=artist)
+        self._start_playback(path, audio_only=audio_only, title=title, artist=artist)
 
     def _music_index(self) -> int:
         if not self._current_path:
@@ -1291,7 +1283,7 @@ class AppBackend(QObject):
     def _play_path(self, path: str) -> None:
         self._current_path = path
         self._current_audio_only = True
-        self._player.play(path, audio_only=True)
+        self._start_playback(path, audio_only=True)
 
     def _play_adjacent(self, delta: int) -> None:
         if not self._music_paths:
@@ -1395,16 +1387,6 @@ class AppBackend(QObject):
             if self._duration != 0.0:
                 self._duration = 0.0
                 self.durationChanged.emit()
-
-        if self._volume != state.volume:
-            self._volume = state.volume
-            self.volumeChanged.emit()
-            if state.volume == 0 and not self._muted:
-                self._muted = True
-                self.mutedChanged.emit()
-            elif state.volume > 0 and self._muted:
-                self._muted = False
-                self.mutedChanged.emit()
 
         self.trackTitleChanged.emit()
         self.trackArtistChanged.emit()
