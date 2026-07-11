@@ -83,6 +83,114 @@ Item {
         }
     }
 
+    Popup {
+        id: videoQualityPopup
+        parent: Overlay.overlay
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+        width: 320
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        property string targetUrl: ""
+
+        background: Rectangle {
+            color: Theme.cardBg
+            border.color: Theme.cardBorder
+            border.width: 1
+            radius: Theme.cardRadius
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 16
+
+            Text {
+                text: "Chọn chất lượng Video"
+                font.family: Theme.fontFamily
+                font.pixelSize: 18
+                font.weight: Font.Bold
+                color: Theme.textPrimary
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Flow {
+                Layout.fillWidth: true
+                spacing: 10
+
+                Repeater {
+                    model: ["480", "720", "1080", "1440", "2160", "best"]
+                    delegate: Rectangle {
+                        width: 130
+                        height: 40
+                        radius: 8
+                        color: backend.downloadQuality === modelData ? Theme.accentStart : Theme.glassFill
+                        border.color: backend.downloadQuality === modelData ? Theme.accentEnd : Theme.glassBorder
+                        border.width: backend.downloadQuality === modelData ? 2 : 1
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: {
+                                if (modelData === "1080") return "FHD";
+                                if (modelData === "1440") return "2K";
+                                if (modelData === "2160") return "4K";
+                                if (modelData === "best") return "Max";
+                                return modelData + "p";
+                            }
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.bodySize
+                            font.weight: backend.downloadQuality === modelData ? Font.Bold : Font.Normal
+                            color: backend.downloadQuality === modelData ? Theme.textOnAccent : Theme.textSecondary
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                backend.setDownloadQuality(modelData)
+                            }
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 10
+                spacing: 10
+
+                Button {
+                    Layout.fillWidth: true
+                    text: "Huỷ"
+                    onClicked: videoQualityPopup.close()
+                }
+
+                Button {
+                    Layout.fillWidth: true
+                    text: "Tải ngay"
+                    onClicked: {
+                        backend.downloadMedia(videoQualityPopup.targetUrl, "video")
+                        videoQualityPopup.close()
+                    }
+                    background: Rectangle {
+                        color: Theme.accentEnd
+                        radius: 6
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        font.family: Theme.fontFamily
+                        color: Theme.textOnAccent
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        font.weight: Font.Bold
+                    }
+                }
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: Theme.contentPadding
@@ -157,7 +265,10 @@ Item {
             Button {
                 text: "🎬 Tải video"
                 enabled: directUrlField.text.trim().match(/^https?:\/\/.+/) !== null
-                onClicked: backend.downloadMedia(directUrlField.text.trim(), "video")
+                onClicked: {
+                    videoQualityPopup.targetUrl = directUrlField.text.trim()
+                    videoQualityPopup.open()
+                }
             }
         }
 
@@ -277,9 +388,12 @@ Item {
                     }
 
                     Button {
-                        text: "🎬 Video"
+                        text: "🎬 Tải video"
                         enabled: model.url !== ""
-                        onClicked: backend.downloadMedia(model.url, "video")
+                        onClicked: {
+                            videoQualityPopup.targetUrl = model.url
+                            videoQualityPopup.open()
+                        }
                     }
                 }
             }

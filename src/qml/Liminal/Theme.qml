@@ -129,7 +129,7 @@ QtObject {
     // ── Layout sizes ──
     readonly property int titleBarHeight:  40
     readonly property int sidebarWidth:    220
-    readonly property int playerBarHeight: 96
+    readonly property int playerBarHeight: 108
     readonly property int contentPadding:  24
     readonly property int gridColumns:     5
     readonly property int cardRadius:      12
