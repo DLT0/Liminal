@@ -37,7 +37,6 @@ class LiminalPlayer:
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._listener_task: Optional[asyncio.Task] = None
-        self._poll_task: Optional[asyncio.Task] = None
         self._pending: dict[str, asyncio.Future] = {}
         self._req_id: int = 0
         self.state: PlaybackState = PlaybackState()
@@ -79,6 +78,9 @@ class LiminalPlayer:
         stale.unlink(missing_ok=True)
 
         window_flag = "--no-video" if audio_only else "--force-window=yes"
+        media_title = title or (
+            "Streaming" if path.startswith(("http://", "https://")) else Path(path).stem
+        )
 
         cmd = [
             "mpv",
@@ -87,9 +89,14 @@ class LiminalPlayer:
             window_flag,
             "--no-terminal",
             "--msg-level=all=no",
+            "--cache=yes",
+            "--demuxer-readahead-secs=20",
             f"--volume={self.state.volume}",
+            f"--force-media-title={media_title}",
             path,
         ]
+        if not audio_only:
+            cmd.insert(-1, "--hwdec=auto-safe")
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
@@ -106,6 +113,14 @@ class LiminalPlayer:
         await self._send_command(["observe_property", 2, "time-pos"])
         await self._send_command(["observe_property", 3, "duration"])
         await self._send_command(["observe_property", 4, "volume"])
+        if artist or title:
+            await self._send_command(
+                [
+                    "set_property",
+                    "metadata",
+                    {"Artist": artist or "—", "Title": media_title},
+                ]
+            )
 
         p = Path(path)
         self.state.path = path
@@ -118,9 +133,6 @@ class LiminalPlayer:
         self.state.artist = artist if artist else "—"
         self.state.status = PlaybackStatus.PLAYING
         self.state.paused = False
-
-        # Start a background poller for time-pos (events may throttle)
-        self._poll_task = asyncio.create_task(self._poll_time_pos())
 
     async def toggle_pause(self) -> None:
         if self._writer and self.state.status != PlaybackStatus.STOPPED:
@@ -142,10 +154,6 @@ class LiminalPlayer:
 
     async def stop(self) -> None:
         """Kill mpv and reset state."""
-        # Cancel background tasks
-        if self._poll_task:
-            self._poll_task.cancel()
-            self._poll_task = None
         if self._listener_task:
             self._listener_task.cancel()
             self._listener_task = None
@@ -289,22 +297,6 @@ class LiminalPlayer:
             self._pending.pop(str(self._req_id), None)
             return {"error": "timeout"}
 
-    async def _poll_time_pos(self) -> None:
-        """Poll time-pos and duration every ~500ms since mpv event throttling can be loose."""
-        try:
-            while self._writer and not self._writer.is_closing():
-                if self.state.status == PlaybackStatus.PLAYING:
-                    resp = await self._send_command(["get_property", "time-pos"])
-                    if resp.get("data") is not None and resp.get("error") == "success":
-                        self.state.time_pos = resp["data"]
-                    dur = await self._send_command(["get_property", "duration"])
-                    if dur.get("data") is not None and dur.get("error") == "success":
-                        self.state.duration = dur["data"]
-                await asyncio.sleep(0.5)
-        except asyncio.CancelledError:
-            pass
-
-
 class PlayerBridge(QObject):
     """Qt signal bridge wrapping LiminalPlayer for PyQt6 GUI use.
 
@@ -322,7 +314,7 @@ class PlayerBridge(QObject):
         self._prev_state: Optional[PlaybackState] = None
 
         self._timer = QTimer(self)
-        self._timer.setInterval(250)
+        self._timer.setInterval(500)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
 

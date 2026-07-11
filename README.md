@@ -47,6 +47,26 @@ pip install -r requirements.txt
 
 *(Yêu cầu `PyQt6` cho GUI, `yt-dlp` cho tính năng tải, và `textual` cho TUI. Nếu hệ thống của bạn yêu cầu, hãy tạo môi trường ảo `python3 -m venv .venv` và kích hoạt nó trước).*
 
+#### Tìm kiếm và tải từ YouTube
+
+Trang **Tải xuống** dùng trực tiếp Python API của `yt-dlp` trong worker thread,
+do đó không cần cài binary `yt-dlp` riêng. Cài phiên bản được khai báo trong
+`requirements.txt` bằng lệnh trên. Có thể kiểm tra nhanh bằng:
+
+```bash
+python3 -c "import yt_dlp; print(yt_dlp.version.__version__)"
+ffmpeg -version
+```
+
+Nếu thiếu `yt-dlp`, ứng dụng vẫn khởi động và sẽ hiển thị hướng dẫn cài đặt khi
+tìm kiếm/tải. `ffmpeg` chỉ bắt buộc khi tải nhạc vì yt-dlp cần nó để chuyển đổi
+nguồn âm thanh sang MP3. File nhạc và video được lưu vào các thư mục tương ứng
+đã cấu hình trong Settings. Nhạc tải từ YouTube dùng tiêu đề làm tên file, được
+ghi metadata và nhúng thumbnail. Scanner dùng `mutagen` để đọc title/artist và
+trích cover nhúng vào cache `~/.cache/liminal/thumbnails` cho QML hiển thị.
+Video tải mới giữ thumbnail JPG cạnh file video. Với video cũ không có ảnh đi
+kèm, scanner dùng `ffmpeg` trích một frame đại diện và lưu vào cùng cache trên.
+
 ### 2. Chạy ứng dụng
 
 #### 🖥️ GUI (PyQt6 + QML) — Khuyến nghị
@@ -66,5 +86,32 @@ python3 app.py
 Giao diện văn bản trong terminal dành cho người dùng thích làm việc qua CLI.
 
 ### 🎮 Điều khiển
-- **GUI**: Sử dụng chuột để điều hướng qua các tab Nhạc, Video, Playlist và Settings.
-- **TUI**: Sử dụng phím mũi tên để chọn, và nhấn `q` để thoát ứng dụng.
+
+#### GUI (PyQt6 + QML)
+
+Ngoài chuột, ứng dụng hỗ trợ các phím tắt sau:
+
+| Phím | Hành động |
+|------|-----------|
+| `Tab` | Chuyển sang tab tiếp theo (Playlist → Music → Videos → Settings) |
+| `Shift+Tab` | Chuyển sang tab trước |
+| `←` / `→` | Chuyển tab sidebar |
+| `Space` | Pause / phát tiếp |
+| `Z` | Lùi 10 giây |
+| `C` | Tiến 10 giây |
+| `Esc` | Thoát ô tìm kiếm; hoặc lùi thư mục playlist; hoặc về tab Playlist |
+| `Meta+Q` / `Super+Q` | Thoát ứng dụng |
+
+`Space`, `Z` và `C` không kích hoạt khi đang gõ trong ô tìm kiếm.
+
+#### TUI (Textual)
+
+| Phím | Hành động |
+|------|-----------|
+| `↑` / `↓` | Chọn bài / video |
+| `Enter` | Phát mục đang chọn |
+| `Space` | Pause / phát tiếp |
+| `←` / `→` | Seek ±5s (nhạc) / ±10s (video) |
+| `+` / `=` / `−` | Tăng / giảm âm lượng ±5 |
+| `Esc` | Thoát ô tìm kiếm; hoặc quay lại màn hình trước |
+| `q` | Thoát ứng dụng |

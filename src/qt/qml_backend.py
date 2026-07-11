@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import random
 import asyncio
-import re
+import shutil
 import threading
 from pathlib import Path
 
@@ -25,7 +25,8 @@ from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from src.config import AUDIO_EXTS
 from src.downloader import Downloader, DownloadFailed
-from src.models import MediaInfo, PlaybackStatus
+from src.metadata_store import delete_metadata, set_cover_image, set_metadata
+from src.models import MediaInfo, MediaKind, PlaybackStatus
 from src.player import PlayerBridge
 from src.scanner import scan_music, scan_playlist, scan_video
 from src.settings_store import load_raw_settings, load_settings, save_raw_settings, save_settings
@@ -42,12 +43,17 @@ ACCENT_COLORS = [
     "#6366f1",
 ]
 
+NAV_TAB_PAGES = [1, 2, 3, 5]
+
 
 def _is_remote(path: str) -> bool:
     return path.startswith(("http://", "https://"))
 
 
 def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict:
+    is_collection = info.kind in (MediaKind.ALBUM, MediaKind.VIDEO_PLAYLIST)
+    if is_collection:
+        audio_only = info.kind == MediaKind.ALBUM
     return {
         "title": info.title,
         "subtitle": info.artist or ("Music" if audio_only else "Video"),
@@ -55,10 +61,13 @@ def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict
         "url": info.url or info.path,
         "track_id": info.track_id or info.url or info.path,
         "duration": info.duration,
-        "image": "",
+        "image": info.image or "",
         "accent": ACCENT_COLORS[index % len(ACCENT_COLORS)],
         "audio_only": audio_only,
         "is_remote": _is_remote(info.path or info.url),
+        "is_collection": is_collection,
+        "kind": info.kind.name.lower(),
+        "child_count": info.child_count,
         "download_percent": 0.0,
         "download_status": "",
         "is_downloading": False,
@@ -81,6 +90,9 @@ class MediaListModel(QAbstractListModel):
     DownloadPercentRole = Qt.ItemDataRole.UserRole + 11
     DownloadStatusRole = Qt.ItemDataRole.UserRole + 12
     IsDownloadingRole = Qt.ItemDataRole.UserRole + 13
+    IsCollectionRole = Qt.ItemDataRole.UserRole + 14
+    KindRole = Qt.ItemDataRole.UserRole + 15
+    ChildCountRole = Qt.ItemDataRole.UserRole + 16
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -109,6 +121,9 @@ class MediaListModel(QAbstractListModel):
             self.DownloadPercentRole: "download_percent",
             self.DownloadStatusRole: "download_status",
             self.IsDownloadingRole: "is_downloading",
+            self.IsCollectionRole: "is_collection",
+            self.KindRole: "kind",
+            self.ChildCountRole: "child_count",
         }
         key = role_map.get(role)
         if key is None:
@@ -116,8 +131,10 @@ class MediaListModel(QAbstractListModel):
         value = item.get(key, "")
         if role == self.AccentColorRole and not value:
             return ACCENT_COLORS[0]
-        if role in (self.AudioOnlyRole, self.IsRemoteRole, self.IsDownloadingRole):
+        if role in (self.AudioOnlyRole, self.IsRemoteRole, self.IsDownloadingRole, self.IsCollectionRole):
             return bool(value)
+        if role == self.ChildCountRole:
+            return int(value or 0)
         if role == self.DownloadPercentRole:
             return float(value or 0.0)
         return value
@@ -137,6 +154,9 @@ class MediaListModel(QAbstractListModel):
             self.DownloadPercentRole: b"downloadPercent",
             self.DownloadStatusRole: b"downloadStatus",
             self.IsDownloadingRole: b"isDownloading",
+            self.IsCollectionRole: b"isCollection",
+            self.KindRole: b"kind",
+            self.ChildCountRole: b"childCount",
         }
 
     def set_items(self, items: list[dict]) -> None:
@@ -203,11 +223,12 @@ class AppBackend(QObject):
     pageTitleChanged = pyqtSignal()
     downloadQualityChanged = pyqtSignal()
     ytDlpUpdateStatusChanged = pyqtSignal()
+    playlistNavigationChanged = pyqtSignal()
     searchResults = pyqtSignal(list)
     searchError = pyqtSignal(str)
     downloadProgress = pyqtSignal(str, float)
-    downloadFinished = pyqtSignal(str)
-    downloadError = pyqtSignal(str)
+    downloadFinished = pyqtSignal(str, str)
+    downloadError = pyqtSignal(str, str)
 
     def __init__(self, player: PlayerBridge, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -254,6 +275,7 @@ class AppBackend(QObject):
         self._all_music_items: list[dict] = []
         self._all_video_items: list[dict] = []
         self._all_playlist_items: list[dict] = []
+        self._playlist_folder_stack: list[Path] = []
 
         self._music_model = MediaListModel(self)
         self._video_model = MediaListModel(self)
@@ -272,6 +294,11 @@ class AppBackend(QObject):
     @pyqtProperty(str, constant=True)
     def appIconUrl(self) -> str:
         return self._app_icon_url
+
+    @pyqtProperty(str, constant=True)
+    def downloadDependencyError(self) -> str:
+        """Allow QML to report optional download dependencies without crashing."""
+        return self.downloader.availability_error(require_ffmpeg=True) or ""
 
     @pyqtProperty(QObject, constant=True)
     def musicModel(self) -> MediaListModel:
@@ -373,10 +400,23 @@ class AppBackend(QObject):
     def ytDlpUpdateStatus(self) -> str:
         return self._yt_dlp_update_status
 
+    @pyqtProperty(bool, notify=playlistNavigationChanged)
+    def playlistCanGoBack(self) -> bool:
+        return bool(self._playlist_folder_stack)
+
+    @pyqtProperty(str, notify=playlistNavigationChanged)
+    def playlistBreadcrumb(self) -> str:
+        if not self._playlist_folder_stack:
+            return ""
+        return " / ".join(p.name for p in self._playlist_folder_stack)
+
     # ── Slots ──
 
     @pyqtSlot(int)
     def setCurrentPage(self, page: int) -> None:
+        if page != 1 and self._current_page == 1:
+            self._playlist_folder_stack.clear()
+            self.playlistNavigationChanged.emit()
         if page in {1, 2, 3}:
             # Also refresh when the user clicks the already-selected tab.
             self._load_libraries()
@@ -386,7 +426,7 @@ class AppBackend(QObject):
                 1: "Playlist",
                 2: "Music",
                 3: "Videos",
-                4: "Download",
+                4: "Tải xuống",
                 5: "Settings",
             }
             self._page_title = titles.get(page, "Liminal")
@@ -409,7 +449,118 @@ class AppBackend(QObject):
         item = model.item_at(index)
         if item is None:
             return
+        if item.get("is_collection"):
+            self.openCollection(index)
+            return
         self._play_item(item)
+
+    @pyqtSlot(int)
+    def openCollection(self, index: int) -> None:
+        if self._current_page != 1:
+            return
+        item = self.playlistModel.item_at(index)
+        if item is None or not item.get("is_collection"):
+            return
+        self._playlist_folder_stack.append(Path(item["path"]))
+        self._reload_playlist_view()
+
+    @pyqtSlot()
+    def goBackPlaylist(self) -> None:
+        if not self._playlist_folder_stack:
+            return
+        self._playlist_folder_stack.pop()
+        self._reload_playlist_view()
+
+    @pyqtSlot()
+    def goBack(self) -> None:
+        if self._current_page == 1 and self._playlist_folder_stack:
+            self.goBackPlaylist()
+        elif self._current_page != 1:
+            self.setCurrentPage(1)
+
+    @pyqtSlot()
+    def nextNavPage(self) -> None:
+        pages = NAV_TAB_PAGES
+        try:
+            idx = pages.index(self._current_page)
+            next_idx = (idx + 1) % len(pages)
+        except ValueError:
+            next_idx = 0
+        self.setCurrentPage(pages[next_idx])
+
+    @pyqtSlot()
+    def previousNavPage(self) -> None:
+        pages = NAV_TAB_PAGES
+        try:
+            idx = pages.index(self._current_page)
+            prev_idx = (idx - 1) % len(pages)
+        except ValueError:
+            prev_idx = 0
+        self.setCurrentPage(pages[prev_idx])
+
+    @pyqtSlot()
+    def quitApp(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    @pyqtSlot(int)
+    def deleteMediaAt(self, index: int) -> None:
+        model = self._model_for_page(self._current_page)
+        item = model.item_at(index)
+        if item is None:
+            return
+        path = Path(item["path"])
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.is_file():
+                path.unlink()
+        except OSError as exc:
+            logger.error("Failed to delete %s: %s", path, exc)
+            return
+        delete_metadata(str(path))
+        if self._current_page == 1:
+            self._reload_playlist_view()
+        else:
+            self._load_libraries()
+
+    @pyqtSlot(int, str, str)
+    def editMediaMetadata(self, index: int, title: str, artist: str) -> None:
+        model = self._model_for_page(self._current_page)
+        item = model.item_at(index)
+        if item is None:
+            return
+        set_metadata(
+            item["path"],
+            title=title.strip(),
+            artist=artist.strip(),
+        )
+        if self._current_page == 1:
+            self._reload_playlist_view()
+        else:
+            self._load_libraries()
+
+    @pyqtSlot(int)
+    def pickMediaCover(self, index: int) -> None:
+        model = self._model_for_page(self._current_page)
+        item = model.item_at(index)
+        if item is None:
+            return
+        parent = QApplication.activeWindow()
+        chosen, _ = QFileDialog.getOpenFileName(
+            parent,
+            "Chọn ảnh bìa",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if not chosen:
+            return
+        set_cover_image(item["path"], chosen)
+        if self._current_page == 1:
+            self._reload_playlist_view()
+        else:
+            self._load_libraries()
 
     @pyqtSlot(str)
     def copyToClipboard(self, text: str) -> None:
@@ -426,20 +577,27 @@ class AppBackend(QObject):
         """Rescan local media after a download completes."""
         self._load_libraries()
 
-    @pyqtSlot(str)
-    def searchOnline(self, query: str) -> None:
+    @pyqtSlot(str, str)
+    def searchOnline(self, query: str, media_type: str) -> None:
         """Start an online search without blocking Qt's event loop."""
         self._search_seq += 1
-        asyncio.create_task(self._search(query, self._search_seq))
+        asyncio.create_task(self._search(query, media_type, self._search_seq))
 
-    async def _search(self, query: str, seq: int) -> None:
+    async def _search(self, query: str, media_type: str, seq: int) -> None:
         query = query.strip()
         if not query:
             if seq == self._search_seq:
                 self.searchResults.emit([])
             return
         try:
-            results = await self.downloader.search(query)
+            results = await asyncio.wait_for(
+                self.downloader.search(query, media_type, limit=10),
+                timeout=15,
+            )
+        except TimeoutError:
+            if seq == self._search_seq:
+                self.searchError.emit("Tìm kiếm quá thời gian chờ (15 giây). Vui lòng thử lại.")
+            return
         except DownloadFailed as exc:
             logger.exception("Online search failed for %r", query)
             if seq == self._search_seq:
@@ -451,44 +609,40 @@ class AppBackend(QObject):
     @pyqtSlot(str, str)
     def downloadMedia(self, url: str, kind: str) -> None:
         """Start an audio/video download without blocking QML."""
-        if not re.match(r"^https?://.+", url.strip(), re.IGNORECASE):
-            self.downloadError.emit("URL không hợp lệ")
+        value = url.strip()
+        if not value:
+            self.downloadError.emit("", "URL hoặc video ID không hợp lệ.")
             return
-        asyncio.create_task(self._download(url, kind))
+        media_type = "music" if kind in {"audio", "music"} else kind
+        asyncio.create_task(self._download(value, media_type))
 
-    async def _download(self, url: str, kind: str) -> None:
+    async def _download(self, url: str, media_type: str) -> None:
+        active_id = url
+
         def hook(data: dict) -> None:
+            nonlocal active_id
+            info = data.get("info_dict") or {}
+            active_id = str(info.get("id") or active_id)
             if data.get("status") != "downloading":
                 return
-            percent = data.get("_percent_str", "0%")
-            try:
-                percent_value = float(str(percent).strip().rstrip("%") or 0)
-            except ValueError:
-                percent_value = 0.0
-            filename = str(data.get("filename", ""))
-            self.downloadProgress.emit(filename, percent_value)
+            downloaded = float(data.get("downloaded_bytes") or 0)
+            total = float(data.get("total_bytes") or data.get("total_bytes_estimate") or 0)
+            # yt-dlp provides real byte counts; estimates are used only when the
+            # server does not announce a Content-Length.
+            percent = min(100.0, downloaded / total * 100.0) if total else 0.0
+            self.downloadProgress.emit(active_id, percent)
 
-        if kind not in {"audio", "video"}:
-            logger.warning("Ignoring download with unsupported kind: %r", kind)
+        if media_type not in {"music", "video"}:
+            self.downloadError.emit(active_id, "Loại media không được hỗ trợ.")
             return
         try:
-            if kind == "audio":
-                await self.downloader.download_audio(
-                    url,
-                    hook,
-                )
-            else:
-                await self.downloader.download_video(
-                    url,
-                    hook,
-                    quality=self._download_quality,
-                )
+            video_id, file_path = await self.downloader.download(url, media_type, hook)
         except DownloadFailed as exc:
             logger.exception("Media download failed for %r", url)
-            self.downloadError.emit(str(exc))
+            self.downloadError.emit(active_id, str(exc))
             return
 
-        self.downloadFinished.emit(kind)
+        self.downloadFinished.emit(video_id, file_path)
         self.rescanLibrary()
 
     @pyqtSlot(int)
@@ -614,6 +768,14 @@ class AppBackend(QObject):
         else:
             self._player.seek(10)
 
+    @pyqtSlot()
+    def seekBackward10(self) -> None:
+        self._player.seek(-10)
+
+    @pyqtSlot()
+    def seekForward10(self) -> None:
+        self._player.seek(10)
+
     @pyqtSlot(float)
     def setVolume(self, vol: float) -> None:
         vol = max(0, min(100, int(round(vol))))
@@ -666,31 +828,37 @@ class AppBackend(QObject):
             return Path(self._video_dir)
         return Path(self._playlist_dir)
 
+    def _current_playlist_folder(self) -> Path:
+        if self._playlist_folder_stack:
+            return self._playlist_folder_stack[-1]
+        return Path(self._playlist_dir)
+
+    def _playlist_infos_to_items(self, infos: list[MediaInfo]) -> list[dict]:
+        items: list[dict] = []
+        for i, info in enumerate(infos):
+            if info.kind == MediaKind.FILE:
+                audio_only = Path(info.path).suffix.lower() in AUDIO_EXTS
+            elif info.kind == MediaKind.ALBUM:
+                audio_only = True
+            else:
+                audio_only = False
+            items.append(_media_item(info, i, audio_only=audio_only))
+        return items
+
+    def _reload_playlist_view(self) -> None:
+        infos = scan_playlist(self._current_playlist_folder())
+        self._all_playlist_items = self._playlist_infos_to_items(infos)
+        self._apply_library_filter(self._all_playlist_items, self.playlistModel)
+        self.playlistNavigationChanged.emit()
+
     def _load_libraries(self) -> None:
         self._music_paths = [info.path for info in scan_music()]
-        self._all_music_items = [
-            _media_item(info, i, audio_only=True) for i, info in enumerate(scan_music())
-        ]
-        self._all_video_items = [
-            _media_item(info, i, audio_only=False) for i, info in enumerate(scan_video())
-        ]
-        # Playlist is the unified media view: include explicitly playlisted
-        # files as well as downloaded Music/Videos, without duplicate paths.
-        self._all_playlist_items = []
-        playlist_infos = scan_playlist() + scan_music() + scan_video()
-        seen_playlist_paths: set[str] = set()
-        for info in playlist_infos:
-            if info.path in seen_playlist_paths:
-                continue
-            seen_playlist_paths.add(info.path)
-            audio_only = Path(info.path).suffix.lower() in AUDIO_EXTS
-            self._all_playlist_items.append(
-                _media_item(info, len(self._all_playlist_items), audio_only=audio_only)
-            )
+        self._all_music_items = self._playlist_infos_to_items(scan_music())
+        self._all_video_items = self._playlist_infos_to_items(scan_video())
+        self._reload_playlist_view()
 
         self._apply_library_filter(self._all_music_items, self.musicModel)
         self._apply_library_filter(self._all_video_items, self.videoModel)
-        self._apply_library_filter(self._all_playlist_items, self.playlistModel)
 
         preview_limit = 12
         self._media_music_preview = self._all_music_items[:preview_limit]

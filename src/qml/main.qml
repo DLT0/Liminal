@@ -18,6 +18,77 @@ ApplicationWindow {
     color: Theme.bgTop
 
     property string searchQuery: ""
+    property var navPages: [1, 2, 3, 5]
+
+    function isTextInputFocused() {
+        var item = root.activeFocusItem
+        return item && (item instanceof TextField || item instanceof TextArea)
+    }
+
+    Shortcut {
+        sequence: "Meta+Q"
+        onActivated: backend.quitApp()
+    }
+
+    Shortcut {
+        sequence: "Super+Q"
+        onActivated: backend.quitApp()
+    }
+
+    Shortcut {
+        sequence: "Tab"
+        onActivated: backend.nextNavPage()
+    }
+
+    Shortcut {
+        sequence: "Shift+Tab"
+        onActivated: backend.previousNavPage()
+    }
+
+    Shortcut {
+        sequence: "Right"
+        onActivated: backend.nextNavPage()
+    }
+
+    Shortcut {
+        sequence: "Left"
+        onActivated: backend.previousNavPage()
+    }
+
+    Shortcut {
+        sequence: "Space"
+        onActivated: {
+            if (!root.isTextInputFocused())
+                backend.togglePause()
+        }
+    }
+
+    Shortcut {
+        sequence: "Escape"
+        onActivated: {
+            if (root.isTextInputFocused()) {
+                root.activeFocusItem.focus = false
+                return
+            }
+            backend.goBack()
+        }
+    }
+
+    Shortcut {
+        sequence: "Z"
+        onActivated: {
+            if (!root.isTextInputFocused())
+                backend.seekBackward10()
+        }
+    }
+
+    Shortcut {
+        sequence: "C"
+        onActivated: {
+            if (!root.isTextInputFocused())
+                backend.seekForward10()
+        }
+    }
 
     Item {
         // oauthOverlay removed
@@ -118,27 +189,35 @@ ApplicationWindow {
                         anchors.fill: parent
                         visible: backend.currentPage === 1
                         model: backend.playlistModel
+                        useVinylStyle: true
+                        showBackButton: backend.playlistCanGoBack
+                        breadcrumb: backend.playlistBreadcrumb
                         emptyTitle: "Playlist trống"
-                        emptyMessage: "Tải bài hát về thư mục Playlist hoặc thêm file vào thư mục đã cấu hình."
+                        emptyMessage: "Tải bài hát về thư mục Playlist hoặc thêm file / thư mục album vào thư mục đã cấu hình."
                         onPlayRequested: function(index) { backend.playMedia(index) }
+                        onOpenCollectionRequested: function(index) { backend.openCollection(index) }
                     }
 
                     LibraryPage {
                         anchors.fill: parent
                         visible: backend.currentPage === 2
                         model: backend.musicModel
+                        useVinylStyle: true
                         emptyTitle: "Chưa có nhạc"
                         emptyMessage: "Thêm file nhạc vào thư mục Music đã cấu hình trong Settings."
                         onPlayRequested: function(index) { backend.playMedia(index) }
+                        onOpenCollectionRequested: function(index) { backend.playMedia(index) }
                     }
 
                     LibraryPage {
                         anchors.fill: parent
                         visible: backend.currentPage === 3
                         model: backend.videoModel
+                        useVinylStyle: false
                         emptyTitle: "Chưa có video"
                         emptyMessage: "Thêm file video vào thư mục Videos đã cấu hình trong Settings."
                         onPlayRequested: function(index) { backend.playMedia(index) }
+                        onOpenCollectionRequested: function(index) { backend.playMedia(index) }
                     }
 
                     Download {

@@ -33,8 +33,10 @@ Item {
         Item { Layout.fillWidth: true }
 
         Item {
-            Layout.preferredWidth: 340
+            Layout.preferredWidth: root.currentPage === 4 ? 0 : 340
             Layout.preferredHeight: 44
+            visible: root.currentPage !== 4
+            clip: true
 
             TextField {
                 id: headerSearch

@@ -11,6 +11,7 @@ from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
 from PyQt6.QtWidgets import QApplication
 
 from src.player import PlayerBridge
+from src.mpris_service import MprisService
 from src.qt.qml_backend import AppBackend
 
 QML_DIR = Path(__file__).resolve().parents[1] / "qml"
@@ -40,7 +41,11 @@ def _register_theme() -> None:
     _theme_registered = True
 
 
-def run_qml_app(app: QApplication, player: PlayerBridge) -> None:
+def run_qml_app(
+    app: QApplication,
+    player: PlayerBridge,
+    mpris: MprisService | None = None,
+) -> None:
     global _engine
 
     _register_theme()
@@ -50,6 +55,8 @@ def run_qml_app(app: QApplication, player: PlayerBridge) -> None:
 
     backend = AppBackend(player)
     backend.setParent(_engine)
+    if mpris is not None:
+        mpris.set_transport_handlers(backend.next, backend.previous)
     _engine.rootContext().setContextProperty("backend", backend)
 
     _engine.load(QUrl.fromLocalFile(str((QML_DIR / "main.qml").resolve())))

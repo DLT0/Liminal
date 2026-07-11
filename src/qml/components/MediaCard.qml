@@ -8,6 +8,13 @@ Item {
     property string title: ""
     property string subtitle: ""
     property string imageSource: ""
+    property string resolvedImageSource: {
+        if (!imageSource)
+            return ""
+        if (imageSource.startsWith("http://") || imageSource.startsWith("https://") || imageSource.startsWith("file://"))
+            return imageSource
+        return "file://" + imageSource
+    }
     property color accentColor: Theme.accentEnd
 
     signal clicked()
@@ -42,7 +49,7 @@ Item {
 
             Image {
                 anchors.fill: parent
-                source: root.imageSource
+                source: root.resolvedImageSource
                 fillMode: Image.PreserveAspectCrop
                 visible: root.imageSource !== ""
             }
@@ -137,7 +144,15 @@ Item {
         id: hoverMa
         anchors.fill: poster
         hoverEnabled: true
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor
-        onClicked: root.clicked()
+        onClicked: function(mouse) {
+            if (mouse.button === Qt.LeftButton)
+                root.clicked()
+            else if (mouse.button === Qt.RightButton)
+                root.contextMenuRequested(mouse.x, mouse.y)
+        }
     }
+
+    signal contextMenuRequested(real x, real y)
 }

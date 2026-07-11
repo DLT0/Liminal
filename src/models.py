@@ -13,6 +13,12 @@ class PlaybackStatus(Enum):
     PAUSED = auto()
 
 
+class MediaKind(Enum):
+    FILE = auto()
+    ALBUM = auto()
+    VIDEO_PLAYLIST = auto()
+
+
 @dataclass
 class MediaInfo:
     """Represents a media file or search result."""
@@ -24,6 +30,9 @@ class MediaInfo:
     num: str = "1"
     url: str = ""  # download URL (set for search results)
     track_id: str = ""  # stable id for remote items
+    kind: MediaKind = MediaKind.FILE
+    child_count: int = 0
+    image: str = ""
 
 
 @dataclass
