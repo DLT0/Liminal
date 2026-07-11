@@ -3,7 +3,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from src.config import MUSIC_DIR, VIDEO_DIR
+from src.settings_store import get_media_root, get_music_dir, get_playlist_dir, get_video_dir
 
 
 class SettingsWidget(QWidget):
@@ -23,13 +23,21 @@ class SettingsWidget(QWidget):
         paths_label.setObjectName("settings-section")
         layout.addWidget(paths_label)
 
-        music = QLabel(f"Music folder: {MUSIC_DIR}")
+        root = QLabel(f"Media root: {get_media_root()}")
+        root.setObjectName("settings-value")
+        layout.addWidget(root)
+
+        music = QLabel(f"Music: {get_music_dir()}")
         music.setObjectName("settings-value")
         layout.addWidget(music)
 
-        video = QLabel(f"Video folder: {VIDEO_DIR}")
+        video = QLabel(f"Videos: {get_video_dir()}")
         video.setObjectName("settings-value")
         layout.addWidget(video)
+
+        playlist = QLabel(f"Playlist: {get_playlist_dir()}")
+        playlist.setObjectName("settings-value")
+        layout.addWidget(playlist)
 
         # Keys
         keys_label = QLabel("[Keys]")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, QSizeF, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtCore import QRectF, QSizeF, QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 from PyQt6.QtWidgets import QApplication, QFrame, QGraphicsScene, QGraphicsView, QWidget
@@ -78,13 +78,8 @@ class IntroSplash(QWidget):
         self.media_player.playbackStateChanged.connect(self._on_playback_state_changed)
         self.media_player.errorOccurred.connect(self._on_player_error)
 
-        # 8. Setup smooth transition: QPropertyAnimation for fade out
-        self.fade_animation = QPropertyAnimation(self, b"windowOpacity")
-        self.fade_animation.setDuration(600)  # 600ms fade transition
-        self.fade_animation.setStartValue(1.0)
-        self.fade_animation.setEndValue(0.0)
-        self.fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self.fade_animation.finished.connect(self._on_fade_finished)
+        # 8. Skip windowOpacity animation due to Wayland warnings
+        self.fade_animation = None
 
         # 9. Setup fallback safety timer (5.0s maximum load/play budget)
         self.safety_timer = QTimer(self)
@@ -156,10 +151,10 @@ class IntroSplash(QWidget):
         self.finished.emit()
 
     def _start_fade_out(self) -> None:
-        """Start animating window opacity to 0."""
+        """Skip animation and close directly due to Wayland opacity limitations."""
         self.duration_timer.stop()
         self._fading = True
-        self.fade_animation.start()
+        self._on_fade_finished()
 
     def _on_fade_finished(self) -> None:
         """Clean up media player resources and notify parent once fade-out completes."""

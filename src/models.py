@@ -23,6 +23,7 @@ class MediaInfo:
     duration: str = "--:--"
     num: str = "1"
     url: str = ""  # download URL (set for search results)
+    track_id: str = ""  # stable id for remote items
 
 
 @dataclass

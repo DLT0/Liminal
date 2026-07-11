@@ -8,7 +8,7 @@ from textual.screen import Screen
 from textual.widgets import Static, Button
 from textual.containers import Vertical, Horizontal
 
-from src.config import MUSIC_DIR, VIDEO_DIR
+from src.settings_store import get_media_root, get_music_dir, get_video_dir
 
 
 class SettingsScreen(Screen):
@@ -16,8 +16,9 @@ class SettingsScreen(Screen):
     def compose(self):
         with Vertical(id="wrapper"):
             yield Static("⚙  S E T T I N G S", id="title")
-            yield Static(f"\nMusic folder: {MUSIC_DIR}", id="setting-music")
-            yield Static(f"Video folder: {VIDEO_DIR}", id="setting-video")
+            yield Static(f"\nMedia root: {get_media_root()}", id="setting-root")
+            yield Static(f"Music: {get_music_dir()}", id="setting-music")
+            yield Static(f"Videos: {get_video_dir()}", id="setting-video")
             yield Static("\n[Keys]", id="keys-header")
             yield Static("↑/↓  Navigate tracks")
             yield Static("Enter  Play selected")

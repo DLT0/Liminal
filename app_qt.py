@@ -9,7 +9,7 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from src.player import PlayerBridge
-from src.qt.main_window import MainWindow
+from src.qt.qml_app import run_qml_app
 
 ICON_PATH = Path(__file__).resolve().parent / "src" / "qt" / "liminal.png"
 
@@ -25,12 +25,16 @@ def main() -> None:
     asyncio.set_event_loop(loop)
 
     player = PlayerBridge()
-    window = MainWindow(player)
 
-    # Launch IntroSplash first. When it finishes, display MainWindow.
+    # Launch IntroSplash first. When it finishes, display QML UI.
     from src.qt.intro_splash import IntroSplash
+
     intro = IntroSplash("src/qt/app_intro.mp4")
-    intro.finished.connect(window.show)
+
+    def _show_main() -> None:
+        run_qml_app(app, player)
+
+    intro.finished.connect(_show_main)
     intro.start()
 
     with loop:

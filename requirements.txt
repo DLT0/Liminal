@@ -1,0 +1,4 @@
+PyQt6>=6.5
+qasync>=0.24
+textual>=0.40
+yt-dlp>=2023.12.30

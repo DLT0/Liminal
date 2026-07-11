@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
@@ -22,7 +23,10 @@ from src.models import PlaybackState, PlaybackStatus
 
 logger = logging.getLogger(__name__)
 
-IPC_SOCKET = "/tmp/liminal-mpv.sock"
+# Each Liminal process needs its own mpv IPC socket.  A shared path lets one
+# app instance unlink another instance's socket, leaving its PlayerBar unable
+# to pause, seek, mute, or change volume.
+IPC_SOCKET = f"/tmp/liminal-mpv-{os.getpid()}.sock"
 
 
 class LiminalPlayer:
@@ -48,12 +52,20 @@ class LiminalPlayer:
     def available(self) -> bool:
         return self._mpv_available
 
-    async def play(self, path: str, audio_only: bool = False) -> None:
-        """Start playing a media file.
+    async def play(
+        self,
+        path: str,
+        audio_only: bool = False,
+        title: str = "",
+        artist: str = "",
+    ) -> None:
+        """Start playing a media file or stream URL.
 
         Args:
-            path: Path to the media file.
+            path: Path to the media file or streaming URL.
             audio_only: If True, no video window opens (for music).
+            title: Optional display title (used for remote streams).
+            artist: Optional display artist (used for remote streams).
         """
         if not self._mpv_available:
             self.state.title = "mpv not installed — install with: sudo pacman -S mpv"
@@ -97,8 +109,13 @@ class LiminalPlayer:
 
         p = Path(path)
         self.state.path = path
-        self.state.title = p.stem
-        self.state.artist = "—"
+        if title:
+            self.state.title = title[:40]
+        elif path.startswith(("http://", "https://")):
+            self.state.title = "Streaming"
+        else:
+            self.state.title = p.stem
+        self.state.artist = artist if artist else "—"
         self.state.status = PlaybackStatus.PLAYING
         self.state.paused = False
 
@@ -112,6 +129,10 @@ class LiminalPlayer:
     async def seek(self, delta: float) -> None:
         if self._writer and self.state.status != PlaybackStatus.STOPPED:
             await self._send_command(["seek", delta, "relative"])
+
+    async def seek_absolute(self, position: float) -> None:
+        if self._writer and self.state.status != PlaybackStatus.STOPPED:
+            await self._send_command(["seek", max(0.0, position), "absolute"])
 
     async def set_volume(self, vol: int) -> None:
         vol = max(0, min(100, vol))
@@ -315,14 +336,25 @@ class PlayerBridge(QObject):
     def available(self) -> bool:
         return self._player.available
 
-    def play(self, path: str, audio_only: bool = False) -> None:
-        asyncio.ensure_future(self._player.play(path, audio_only))
+    def play(
+        self,
+        path: str,
+        audio_only: bool = False,
+        title: str = "",
+        artist: str = "",
+    ) -> None:
+        asyncio.ensure_future(
+            self._player.play(path, audio_only, title=title, artist=artist)
+        )
 
     def toggle_pause(self) -> None:
         asyncio.ensure_future(self._player.toggle_pause())
 
     def seek(self, delta: float) -> None:
         asyncio.ensure_future(self._player.seek(delta))
+
+    def seek_absolute(self, position: float) -> None:
+        asyncio.ensure_future(self._player.seek_absolute(position))
 
     def set_volume(self, vol: int) -> None:
         asyncio.ensure_future(self._player.set_volume(vol))
