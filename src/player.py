@@ -290,8 +290,6 @@ class LiminalPlayer:
                 fut.set_result(msg)
         if "event" in msg:
             ev = msg["event"]
-            if ev != "property-change" or msg.get("name") != "time-pos":
-                print(f"[DEBUG _dispatch] event={ev}, name={msg.get('name')}, data={msg.get('data')}", flush=True)
             if ev == "end-file":
                 self.state.status = PlaybackStatus.STOPPED
                 self.state.time_pos = 0.0
@@ -427,7 +425,6 @@ class PlayerBridge(QObject):
         )
 
     def _on_track_end(self) -> None:
-        print("[DEBUG _on_track_end] emitting track_ended signal", flush=True)
         self.track_ended.emit()
 
     @staticmethod
