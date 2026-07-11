@@ -170,6 +170,7 @@ class LiminalPlayer:
 
     async def stop(self) -> None:
         """Kill mpv and reset state."""
+        saved_volume = self.state.volume
         if self._listener_task:
             self._listener_task.cancel()
             self._listener_task = None
@@ -199,6 +200,7 @@ class LiminalPlayer:
         stale = Path(IPC_SOCKET)
         stale.unlink(missing_ok=True)
         self.state = PlaybackState()
+        self.state.volume = saved_volume
 
     def cleanup_sync(self) -> None:
         """Synchronous cleanup for app exit (called from non-async contexts)."""

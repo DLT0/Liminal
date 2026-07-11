@@ -75,14 +75,14 @@ Item {
         }
         StyledMenuItem {
             iconName: "drive_file_move"
-            text: "Đưa ra ngoài thư mục"
+            text: "Xóa khỏi playlist"
             enabled: backend.libraryCanGoBack && !rowContextMenu.isCollection
             onTriggered: backend.moveMediaOutOfFolder(rowContextMenu.itemIndex)
         }
         StyledMenu {
             id: moveToFolderMenu
-            title: "Chuyển vào thư mục"
-            enabled: !rowContextMenu.isCollection && moveTargetsModel.count > 0
+            title: "Thêm vào playlist khác"
+            enabled: !rowContextMenu.isCollection
 
             Instantiator {
                 model: moveTargetsModel
@@ -96,17 +96,22 @@ Item {
                 onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
                 onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
             }
+            StyledMenuItem {
+                visible: moveTargetsModel.count === 0
+                enabled: false
+                text: "Không còn playlist khác"
+            }
         }
         StyledMenuItem {
             iconName: "image"
             text: "Đổi ảnh bìa"
-            onTriggered: backend.pickMediaCover(rowContextMenu.itemIndex)
+            onTriggered: backend.pickMediaCoverByPath(rowContextMenu.itemPath)
         }
         StyledMenuItem {
             iconName: "edit"
             text: "Chỉnh sửa thông tin"
             onTriggered: editDialog.openFor(
-                rowContextMenu.itemIndex,
+                rowContextMenu.itemPath,
                 rowContextMenu.itemTitle,
                 rowContextMenu.itemArtist
             )
@@ -116,7 +121,7 @@ Item {
             iconName: "delete"
             destructive: true
             text: "Xóa khỏi thư viện"
-            onTriggered: backend.deleteMediaAt(rowContextMenu.itemIndex)
+            onTriggered: backend.deleteMediaByPath(rowContextMenu.itemPath)
         }
     }
 
@@ -281,9 +286,36 @@ Item {
                 onClicked: root.shufflePlayRequested()
             }
 
+            IconButton {
+                id: orderShuffleBtn
+                anchors.verticalCenter: parent.verticalCenter
+                icon: "casino"
+                iconSize: 24
+                width: 40
+                height: 40
+                visible: backend.collectionCanShuffleOrder
+                onClicked: backend.shuffleCollectionOrder()
+            }
+
+            IconButton {
+                id: orderUndoBtn
+                anchors.verticalCenter: parent.verticalCenter
+                icon: "undo"
+                iconSize: 24
+                width: 40
+                height: 40
+                visible: backend.collectionCanShuffleOrder
+                opacity: backend.collectionOrderCanUndo ? 1 : 0.35
+                enabled: backend.collectionOrderCanUndo
+                onClicked: backend.undoCollectionOrderShuffle()
+            }
+
             Item {
                 width: Math.max(0, actionBar.width - actionBar.leftPadding - actionBar.rightPadding
-                                - 36 - 16 - 56 - 16 - 40 - 16 - hintText.implicitWidth)
+                                - 36 - 16 - 56 - 16 - 40 - 16
+                                - (orderShuffleBtn.visible ? 40 + 16 : 0)
+                                - (orderUndoBtn.visible ? 40 + 16 : 0)
+                                - hintText.implicitWidth)
                 height: 1
             }
 

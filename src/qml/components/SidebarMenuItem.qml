@@ -10,6 +10,7 @@ Rectangle {
     property bool active: false
 
     signal clicked()
+    signal doubleClicked()
 
     height: 40
     radius: 12
@@ -87,11 +88,21 @@ Rectangle {
         }
     }
 
+    Timer {
+        id: singleClickDelay
+        interval: 220
+        onTriggered: root.clicked()
+    }
+
     MouseArea {
         id: hoverMa
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: root.clicked()
+        onClicked: singleClickDelay.restart()
+        onDoubleClicked: {
+            singleClickDelay.stop()
+            root.doubleClicked()
+        }
     }
 }

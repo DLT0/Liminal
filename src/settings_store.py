@@ -20,9 +20,8 @@ YOUTUBE_DEFAULTS: dict[str, str] = {
 
 MUSIC_SUBDIR = "Music"
 VIDEOS_SUBDIR = "Videos"
-PLAYLIST_SUBDIR = "Playlist"
 
-MEDIA_SUBDIRS = (MUSIC_SUBDIR, VIDEOS_SUBDIR, PLAYLIST_SUBDIR)
+MEDIA_SUBDIRS = (MUSIC_SUBDIR, VIDEOS_SUBDIR)
 
 
 def _media_root_candidates(preferred: Path | None = None) -> list[Path]:
@@ -72,7 +71,6 @@ def media_layout(root: Path) -> dict[str, Path]:
         "media_root": root,
         "music_dir": root / MUSIC_SUBDIR,
         "video_dir": root / VIDEOS_SUBDIR,
-        "playlist_dir": root / PLAYLIST_SUBDIR,
     }
 
 
@@ -108,7 +106,14 @@ def load_raw_settings() -> dict:
             data = {}
     except (OSError, json.JSONDecodeError):
         data = {}
-    merged = {"version": SETTINGS_VERSION, "theme_index": 0, "download_quality": "1080", **YOUTUBE_DEFAULTS}
+    merged = {
+        "version": SETTINGS_VERSION,
+        "theme_index": 0,
+        "download_quality": "1080",
+        "volume": 100,
+        "muted": False,
+        **YOUTUBE_DEFAULTS,
+    }
     merged.update({k: v for k, v in data.items() if k in merged or k == "media_root"})
     for key, default in YOUTUBE_DEFAULTS.items():
         value = data.get(key, default)
@@ -194,7 +199,6 @@ def _layout_to_settings(layout: dict[str, Path]) -> dict[str, str]:
         "media_root": str(layout["media_root"]),
         "music_dir": str(layout["music_dir"]),
         "video_dir": str(layout["video_dir"]),
-        "playlist_dir": str(layout["playlist_dir"]),
     }
 
 
@@ -215,7 +219,3 @@ def get_music_dir() -> Path:
 
 def get_video_dir() -> Path:
     return Path(load_settings()["video_dir"])
-
-
-def get_playlist_dir() -> Path:
-    return Path(load_settings()["playlist_dir"])

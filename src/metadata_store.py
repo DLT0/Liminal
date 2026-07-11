@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from src.downloader import extract_youtube_id
 from src.settings_store import CONFIG_DIR
 
 METADATA_FILE = CONFIG_DIR / "metadata.json"
@@ -154,6 +155,47 @@ def read_video_thumbnail(path: Path) -> str:
         return str(target.resolve()) if target.is_file() else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def read_embedded_source_id(path: Path) -> str:
+    """Read a YouTube video id from embedded tags (WOAS, comment, description)."""
+    if MutagenFile is None:
+        return ""
+    try:
+        audio = MutagenFile(path)
+        tags = getattr(audio, "tags", None)
+        if not tags:
+            return ""
+        for name in (
+            "WOAS",
+            "comment",
+            "COMM::eng",
+            "COMM",
+            "TXXX:URL",
+            "TXXX:WEBSITE",
+            "TIT3",
+            "description",
+        ):
+            text = _first_tag(tags, name)
+            video_id = extract_youtube_id(text)
+            if video_id:
+                return video_id
+        return ""
+    except Exception:
+        return ""
+
+
+def resolve_source_id(path: str | Path, *, cache: bool = True) -> str:
+    """Return the YouTube source id for a library file, persisting when discovered."""
+    resolved = str(Path(path).resolve())
+    meta = get_metadata(resolved)
+    stored = str(meta.get("source_id") or "")
+    if stored:
+        return stored
+    embedded = read_embedded_source_id(Path(resolved))
+    if embedded and cache:
+        set_metadata(resolved, source_id=embedded)
+    return embedded
 
 
 def read_embedded_metadata(path: Path) -> dict[str, str]:

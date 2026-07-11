@@ -5,7 +5,7 @@ import Liminal 1.0
 Dialog {
     id: root
 
-    title: "Tạo thư mục mới"
+    title: "Tạo playlist mới"
     modal: true
     anchors.centerIn: parent
     standardButtons: Dialog.Ok | Dialog.Cancel
@@ -21,7 +21,7 @@ Dialog {
     onAccepted: backend.createFolder(nameField.text)
 
     function openDialog() {
-        nameField.text = "Thư mục mới"
+        nameField.text = "Playlist mới"
         open()
     }
 
@@ -31,7 +31,7 @@ Dialog {
 
         Text {
             width: parent.width
-            text: "Tên thư mục"
+            text: "Tên playlist"
             font.family: Theme.fontFamily
             font.pixelSize: Theme.captionSize
             font.weight: Font.DemiBold
@@ -41,7 +41,7 @@ Dialog {
         TextField {
             id: nameField
             width: parent.width
-            placeholderText: "Nhập tên thư mục"
+            placeholderText: "Nhập tên playlist"
             font.family: Theme.fontFamily
             color: Theme.textPrimary
             placeholderTextColor: Theme.textMuted

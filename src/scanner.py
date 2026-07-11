@@ -13,25 +13,38 @@ from src.metadata_store import (
     read_video_thumbnail,
     resolve_display,
 )
-from src.settings_store import get_music_dir, get_playlist_dir, get_video_dir
+from src.settings_store import get_music_dir, get_video_dir
 from src.models import MediaInfo, MediaKind
 
 
+def _entry_path(path: Path) -> str:
+    """Filesystem path used for folder order and album membership operations."""
+    try:
+        return str(path)
+    except OSError:
+        return str(path)
+
+
 def _media_from_file(path: Path, *, audio_only: bool) -> MediaInfo:
-    embedded = read_embedded_metadata(path) if audio_only else {}
-    detected_image = embedded.get("image", "") if audio_only else read_video_thumbnail(path)
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    embedded = read_embedded_metadata(resolved) if audio_only else {}
+    detected_image = embedded.get("image", "") if audio_only else read_video_thumbnail(resolved)
     display = resolve_display(
-        str(path.resolve()),
-        default_title=embedded.get("title") or path.stem,
+        str(resolved),
+        default_title=embedded.get("title") or resolved.stem,
         default_artist=embedded.get("artist") or ("Music" if audio_only else "Video"),
         default_image=detected_image,
     )
     return MediaInfo(
-        path=str(path.resolve()),
+        path=_entry_path(path),
         title=display["title"],
         artist=display["artist"],
         image=display["image"],
         kind=MediaKind.FILE,
+        canonical_path=str(resolved),
     )
 
 
@@ -145,7 +158,7 @@ def find_folder_preview_image(directory: Path) -> str:
 
 def _collection_kind(audio_count: int, video_count: int) -> tuple[MediaKind, str, int]:
     if audio_count == 0 and video_count == 0:
-        return MediaKind.FOLDER, "Thư mục trống", 0
+        return MediaKind.FOLDER, "Playlist trống", 0
     if video_count > 0 and audio_count == 0:
         return MediaKind.VIDEO_PLAYLIST, f"{video_count} video", video_count
     if audio_count > 0 and video_count == 0:
@@ -160,14 +173,34 @@ def scan_library_folder(folder: Path) -> list[MediaInfo]:
     if not folder.exists():
         return []
 
+    child_audio_counts: dict[str, int] = {}
+    child_video_counts: dict[str, int] = {}
+    for entry in folder.rglob("*"):
+        if not entry.is_file():
+            continue
+        ext = entry.suffix.lower()
+        if ext not in AUDIO_EXTS and ext not in VIDEO_EXTS:
+            continue
+        try:
+            relative = entry.relative_to(folder)
+        except ValueError:
+            continue
+        if not relative.parts:
+            continue
+        child_name = relative.parts[0]
+        if ext in AUDIO_EXTS:
+            child_audio_counts[child_name] = child_audio_counts.get(child_name, 0) + 1
+        else:
+            child_video_counts[child_name] = child_video_counts.get(child_name, 0) + 1
+
     items: list[MediaInfo] = []
 
     for child in sorted(folder.iterdir()):
         if child.name.startswith("."):
             continue
         if child.is_dir():
-            audio_count = _count_media_in_tree(child, AUDIO_EXTS)
-            video_count = _count_media_in_tree(child, VIDEO_EXTS)
+            audio_count = child_audio_counts.get(child.name, 0)
+            video_count = child_video_counts.get(child.name, 0)
             kind, subtitle, child_count = _collection_kind(audio_count, video_count)
 
             display = resolve_display(
@@ -185,7 +218,7 @@ def scan_library_folder(folder: Path) -> list[MediaInfo]:
                 MediaInfo(
                     path=str(child.resolve()),
                     title=display["title"],
-                    artist=display["artist"] if display["artist"] != "Unknown Artist" else subtitle,
+                    artist=subtitle,
                     image=folder_image,
                     kind=kind,
                     child_count=child_count,
@@ -196,10 +229,8 @@ def scan_library_folder(folder: Path) -> list[MediaInfo]:
 
         if child.is_file():
             ext = child.suffix.lower()
-            if ext in AUDIO_EXTS:
-                items.append(_media_from_file(child, audio_only=True))
-            elif ext in VIDEO_EXTS:
-                items.append(_media_from_file(child, audio_only=False))
+            if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
+                items.append(_media_from_file(child, audio_only=ext in AUDIO_EXTS))
 
     items = apply_order(items, folder, key=lambda item: Path(item.path).name)
 
@@ -207,20 +238,3 @@ def scan_library_folder(folder: Path) -> list[MediaInfo]:
         item.num = str(i)
 
     return items
-
-
-def scan_playlist(folder: Path | None = None) -> list[MediaInfo]:
-    """Scan playlist directory at one level (collections + root files)."""
-    directory = folder or get_playlist_dir()
-    return scan_library_folder(directory)
-
-
-def scan_playlist_recursive() -> list[MediaInfo]:
-    """Legacy flat scan of entire playlist tree (audio + video)."""
-    directory = get_playlist_dir()
-    extensions = AUDIO_EXTS | VIDEO_EXTS
-    return scan_directory(directory, extensions)
-
-
-# Backward-compatible alias
-_scan_playlist_folder = scan_library_folder

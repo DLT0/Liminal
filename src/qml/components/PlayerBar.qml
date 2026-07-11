@@ -12,6 +12,14 @@ GlassPanel {
 
     property string trackTitle: "LIMINAL"
     property string trackArtist: "Offline Media Player"
+    property string trackThumbnail: ""
+    property string resolvedThumbnail: {
+        if (!trackThumbnail)
+            return ""
+        if (trackThumbnail.startsWith("http://") || trackThumbnail.startsWith("https://") || trackThumbnail.startsWith("file://"))
+            return trackThumbnail
+        return "file://" + trackThumbnail
+    }
     property bool isPlaying: false
     property bool hasMedia: false
     property int volumeLevel: 100
@@ -77,9 +85,35 @@ GlassPanel {
                 clip: true
                 spacing: 12
 
-                AppLogo {
-                    logoSize: Theme.thumbSize
-                    cornerRadius: 10
+                Item {
+                    width: Theme.thumbSize
+                    height: Theme.thumbSize
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 10
+                        clip: true
+                        color: Theme.cardBg
+                        border.color: Theme.cardBorder
+                        border.width: 1
+                        visible: root.trackThumbnail !== ""
+
+                        Image {
+                            anchors.fill: parent
+                            source: root.resolvedThumbnail
+                            fillMode: Image.PreserveAspectCrop
+                            smooth: true
+                            antialiasing: true
+                            mipmap: true
+                        }
+                    }
+
+                    AppLogo {
+                        anchors.fill: parent
+                        logoSize: Theme.thumbSize
+                        cornerRadius: 10
+                        visible: root.trackThumbnail === ""
+                    }
                 }
 
                 ColumnLayout {

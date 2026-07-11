@@ -29,8 +29,4 @@ def __getattr__(name: str):
         from src.settings_store import get_video_dir
 
         return get_video_dir()
-    if name == "PLAYLIST_DIR":
-        from src.settings_store import get_playlist_dir
-
-        return get_playlist_dir()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

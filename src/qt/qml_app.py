@@ -5,8 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QUrl
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtGui import QIcon, QWindow
 from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
 from PyQt6.QtWidgets import QApplication
 
@@ -64,5 +64,11 @@ def run_qml_app(
     if not _engine.rootObjects():
         print("Failed to load QML UI.", file=sys.stderr)
         sys.exit(1)
+
+    root = _engine.rootObjects()[0]
+    if isinstance(root, QWindow):
+        backend.set_main_window(root)
+
+    QTimer.singleShot(0, backend.load_initial_page)
 
     app.aboutToQuit.connect(backend.cleanup)

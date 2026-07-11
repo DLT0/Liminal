@@ -7,7 +7,7 @@ Item {
 
     property alias model: grid.model
     property string emptyTitle: "Thư viện trống"
-    property string emptyMessage: "Tải media về hoặc thêm file vào thư mục đã cấu hình."
+    property string emptyMessage: "Tải media về hoặc thêm file vào playlist đã cấu hình."
     property bool useVinylStyle: false
     property bool useVideoStyle: false
     property bool widescreenPosters: false
@@ -77,7 +77,7 @@ Item {
         id: emptyContextMenu
         StyledMenuItem {
             iconName: "create_new_folder"
-            text: "Tạo thư mục mới"
+            text: "Tạo playlist mới"
             onTriggered: createFolderDialog.openDialog()
         }
     }
@@ -92,7 +92,7 @@ Item {
 
         StyledMenuItem {
             iconName: contextMenu.isCollection ? "folder_open" : "play_arrow"
-            text: contextMenu.isCollection ? "Mở album / playlist" : "Phát"
+            text: contextMenu.isCollection ? "Mở playlist" : "Phát"
             onTriggered: {
                 if (contextMenu.isCollection)
                     root.openCollectionRequested(contextMenu.itemIndex)
@@ -102,8 +102,8 @@ Item {
         }
         StyledMenu {
             id: moveToFolderMenu
-            title: "Chuyển vào thư mục"
-            enabled: !contextMenu.isCollection && moveTargetsModel.count > 0
+            title: "Thêm vào playlist khác"
+            enabled: !contextMenu.isCollection
 
             Instantiator {
                 model: moveTargetsModel
@@ -117,17 +117,22 @@ Item {
                 onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
                 onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
             }
+            StyledMenuItem {
+                visible: moveTargetsModel.count === 0
+                enabled: false
+                text: "Không còn playlist khác"
+            }
         }
         StyledMenuItem {
             iconName: "image"
             text: "Đổi ảnh bìa"
-            onTriggered: backend.pickMediaCover(contextMenu.itemIndex)
+            onTriggered: backend.pickMediaCoverByPath(contextMenu.itemPath)
         }
         StyledMenuItem {
             iconName: "edit"
             text: "Chỉnh sửa thông tin"
             onTriggered: editDialog.openFor(
-                contextMenu.itemIndex,
+                contextMenu.itemPath,
                 contextMenu.itemTitle,
                 contextMenu.itemArtist
             )
@@ -137,7 +142,7 @@ Item {
             iconName: "delete"
             destructive: true
             text: "Xóa khỏi thư viện"
-            onTriggered: backend.deleteMediaAt(contextMenu.itemIndex)
+            onTriggered: backend.deleteMediaByPath(contextMenu.itemPath)
         }
     }
 
@@ -379,7 +384,7 @@ Item {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Chuột phải để tạo thư mục"
+                text: "Chuột phải để tạo playlist"
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted

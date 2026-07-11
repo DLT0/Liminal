@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 from typing import Callable
+from urllib.parse import parse_qs, urlparse
 
 try:
     import yt_dlp
@@ -15,6 +17,38 @@ except ImportError:  # Keep the application launchable without the optional down
 
 class DownloadFailed(Exception):
     """A user-facing yt-dlp failure without leaking its traceback to QML."""
+
+
+class Download403Failed(DownloadFailed):
+    """HTTP 403 during download — may be retried after the rest of a batch."""
+
+
+PLAYLIST_RESOLVE_LIMIT = 50
+_INVALID_FOLDER_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_YOUTUBE_ID_RE = re.compile(
+    r"(?:youtube\.com/(?:watch\?(?:[^&\s]+&)*v=|embed/|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})"
+)
+
+
+def extract_youtube_id(value: str) -> str:
+    """Return an 11-char YouTube video id from a URL or bare id string."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    match = _YOUTUBE_ID_RE.search(text)
+    if match:
+        return match.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", text):
+        return text
+    return ""
+
+
+def _sanitize_folder_name(name: str) -> str:
+    cleaned = _INVALID_FOLDER_CHARS.sub("", name.strip())
+    cleaned = cleaned.rstrip(". ")
+    if not cleaned:
+        return "Playlist"
+    return cleaned[:120]
 
 
 def _duration_text(value: object) -> str:
@@ -42,6 +76,39 @@ def _is_video_result(item: dict) -> bool:
     url = str(item.get("webpage_url") or item.get("url") or "")
     lowered = url.lower()
     return not any(marker in lowered for marker in ("/channel/", "/playlist?", "list=", "/@"))
+
+
+def _youtube_playlist_id(url: str) -> str | None:
+    """Return the ``list`` query parameter from a YouTube URL, if present."""
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if host == "youtu.be":
+        playlist_id = (parse_qs(parsed.query).get("list") or [None])[0]
+        return str(playlist_id) if playlist_id else None
+    if "youtube" not in host:
+        return None
+    if parsed.path.rstrip("/") == "/playlist":
+        playlist_id = (parse_qs(parsed.query).get("list") or [None])[0]
+        return str(playlist_id) if playlist_id else None
+    playlist_id = (parse_qs(parsed.query).get("list") or [None])[0]
+    return str(playlist_id) if playlist_id else None
+
+
+def _entry_to_result(item: dict, media_type: str) -> dict | None:
+    if not item:
+        return None
+    video_id = str(item.get("id") or "")
+    if not video_id:
+        return None
+    return {
+        "id": video_id,
+        "title": str(item.get("title") or "Không có tiêu đề"),
+        "artist": str(item.get("uploader") or item.get("channel") or ""),
+        "duration": _duration_text(item.get("duration")),
+        "thumbnail_url": _thumbnail(item),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "media_type": media_type,
+    }
 
 
 class Downloader:
@@ -116,11 +183,73 @@ class Downloader:
 
         return await loop.run_in_executor(None, blocking_search)
 
+    async def resolve_link(
+        self,
+        url: str,
+        media_type: str,
+        limit: int = PLAYLIST_RESOLVE_LIMIT,
+    ) -> dict[str, object]:
+        """Expand a pasted URL into downloadable entries (playlist or single video)."""
+        error = self.availability_error()
+        if error:
+            raise DownloadFailed(error)
+        target = url.strip()
+        if not target.startswith(("http://", "https://")):
+            target = f"https://www.youtube.com/watch?v={target}"
+        limit = max(1, min(int(limit), PLAYLIST_RESOLVE_LIMIT))
+        playlist_id = _youtube_playlist_id(target)
+        loop = asyncio.get_running_loop()
+
+        def blocking_resolve() -> dict[str, object]:
+            try:
+                if playlist_id:
+                    opts = {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "extract_flat": "in_playlist",
+                        "skip_download": True,
+                        "playlistend": limit,
+                    }
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(target, download=False)
+                    entries = list((info or {}).get("entries") or [])
+                    results: list[dict] = []
+                    for item in entries:
+                        row = _entry_to_result(item, media_type)
+                        if row:
+                            results.append(row)
+                        if len(results) >= limit:
+                            break
+                    if not results:
+                        raise DownloadFailed("Playlist không có video nào để tải.")
+                    folder = _sanitize_folder_name(
+                        str((info or {}).get("title") or f"Playlist {playlist_id}")
+                    )
+                    return {"playlist_folder": folder, "items": results}
+
+                with yt_dlp.YoutubeDL({
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                }) as ydl:
+                    info = ydl.extract_info(target, download=False)
+                row = _entry_to_result(info or {}, media_type)
+                if not row:
+                    raise DownloadFailed("Không thể đọc thông tin video từ link.")
+                return {"playlist_folder": None, "items": [row]}
+            except DownloadFailed:
+                raise
+            except Exception as exc:
+                raise DownloadFailed(f"Không thể đọc link: {exc}") from exc
+
+        return await loop.run_in_executor(None, blocking_resolve)
+
     async def download(
         self,
         url_or_id: str,
         media_type: str,
         progress_hook: Callable[[dict], None],
+        output_subdir: str | None = None,
     ) -> tuple[str, str]:
         error = self.availability_error(require_ffmpeg=media_type == "music")
         if error:
@@ -131,7 +260,9 @@ class Downloader:
         target = url_or_id.strip()
         if not target.startswith(("http://", "https://")):
             target = f"https://www.youtube.com/watch?v={target}"
-        output_dir = self.music_dir if media_type == "music" else self.video_dir
+        base_dir = self.music_dir if media_type == "music" else self.video_dir
+        subdir = _sanitize_folder_name(output_subdir) if output_subdir and output_subdir.strip() else ""
+        output_dir = base_dir / subdir if subdir else base_dir
         output_dir.mkdir(parents=True, exist_ok=True)
         opts = {
             "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
@@ -178,6 +309,10 @@ class Downloader:
                     final_path = prepared.with_suffix(".mp3") if media_type == "music" else prepared
                     return video_id, str(final_path.resolve())
             except Exception as exc:
-                raise DownloadFailed(f"Tải xuống thất bại: {exc}") from exc
+                text = str(exc)
+                message = f"Tải xuống thất bại: {exc}"
+                if "403" in text:
+                    raise Download403Failed(message) from exc
+                raise DownloadFailed(message) from exc
 
         return await loop.run_in_executor(None, blocking_download)

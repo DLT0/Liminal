@@ -6,7 +6,7 @@ import Liminal 1.0
 Dialog {
     id: root
 
-    property int itemIndex: -1
+    property string itemPath: ""
     property string initialTitle: ""
     property string initialArtist: ""
 
@@ -24,11 +24,11 @@ Dialog {
     }
 
     onAccepted: {
-        backend.editMediaMetadata(itemIndex, titleField.text, artistField.text)
+        backend.editMediaMetadataByPath(itemPath, titleField.text, artistField.text)
     }
 
-    function openFor(index, title, artist) {
-        itemIndex = index
+    function openFor(path, title, artist) {
+        itemPath = path
         titleField.text = title
         artistField.text = artist
         open()
@@ -39,7 +39,7 @@ Dialog {
 
         Text {
             Layout.fillWidth: true
-            text: "Tên bài / album"
+            text: "Tên bài / playlist"
             font.family: Theme.fontFamily
             font.pixelSize: Theme.captionSize
             font.weight: Font.DemiBold
@@ -49,7 +49,7 @@ Dialog {
         TextField {
             id: titleField
             Layout.fillWidth: true
-            placeholderText: "Nhập tên bài hát hoặc album"
+            placeholderText: "Nhập tên bài hát hoặc playlist"
             font.family: Theme.fontFamily
             color: Theme.textPrimary
             placeholderTextColor: Theme.textMuted

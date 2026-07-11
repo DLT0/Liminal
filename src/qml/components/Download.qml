@@ -21,6 +21,8 @@ Item {
     property real directDownloadProgress: 0
     property string directDownloadState: "idle"
     property string directDownloadError: ""
+    property bool linkFromResolve: false
+    property string playlistFolder: ""
 
     function formatDuration(value) {
         var seconds = Number(value || 0)
@@ -39,14 +41,28 @@ Item {
         return -1
     }
 
-    function markDownloadStarted(url) {
+    function markDownloadQueued(url) {
         activeDownloadUrl = url
         var idx = findResultIndex(url)
         if (idx < 0) {
             directDownloadActive = true
             directDownloadProgress = 0
-            directDownloadState = "downloading"
+            directDownloadState = "queued"
             directDownloadError = ""
+            return
+        }
+
+        activeDownloadId = results.get(idx).id
+        results.setProperty(idx, "downloadState", "queued")
+        results.setProperty(idx, "downloadProgress", 0)
+        results.setProperty(idx, "downloadError", "")
+    }
+
+    function markDownloadActive(url) {
+        activeDownloadUrl = url
+        var idx = findResultIndex(url)
+        if (idx < 0) {
+            directDownloadState = "downloading"
             return
         }
 
@@ -56,7 +72,42 @@ Item {
         results.setProperty(idx, "downloadError", "")
     }
 
-    function beginDownload(url, forcedKind) {
+    function playlistDownloadStats() {
+        var total = results.count
+        var done = 0
+        var active = 0
+        for (var i = 0; i < total; ++i) {
+            var state = results.get(i).downloadState
+            if (state === "done")
+                done++
+            else if (state === "queued" || state === "downloading")
+                active++
+        }
+        return { total: total, done: done, active: active }
+    }
+
+    function populateResults(items) {
+        results.clear()
+        for (var i = 0; i < items.length; ++i) {
+            var item = items[i]
+            var inLibrary = Boolean(item.in_library)
+            results.append({
+                id: item.id || "",
+                title: item.title || "Không có tiêu đề",
+                artist: item.artist || "",
+                duration: item.duration || "--:--",
+                thumbnail: item.thumbnail_url || "",
+                url: item.url || "",
+                inLibrary: inLibrary,
+                downloadState: inLibrary ? "library" : "idle",
+                downloadProgress: 0,
+                downloadError: ""
+            })
+        }
+        searchStatus = results.count > 0 ? "results" : "empty"
+    }
+
+    function startDownload(url, forcedKind) {
         var trimmed = url.trim()
         if (!trimmed.match(/^https?:\/\/.+/)) {
             errorStatus = "Link không hợp lệ. Hãy dán URL đầy đủ bắt đầu bằng http:// hoặc https://."
@@ -67,11 +118,39 @@ Item {
         errorStatus = ""
 
         if (kind === "music") {
-            markDownloadStarted(trimmed)
-            backend.downloadMedia(trimmed, "audio")
+            markDownloadQueued(trimmed)
+            backend.downloadMedia(trimmed, "audio", playlistFolder)
         } else {
             videoQualityPopup.targetUrl = trimmed
+            videoQualityPopup.outputFolder = playlistFolder
             videoQualityPopup.open()
+        }
+    }
+
+    function submitLink(url) {
+        var trimmed = url.trim()
+        if (!trimmed.match(/^https?:\/\/.+/)) {
+            errorStatus = "Link không hợp lệ. Hãy dán URL đầy đủ bắt đầu bằng http:// hoặc https://."
+            return
+        }
+
+        errorStatus = ""
+        linkFromResolve = true
+        playlistFolder = ""
+        searchStatus = "loading"
+        backend.resolveLink(trimmed, mediaType)
+    }
+
+    function downloadAllFromList() {
+        var kind = mediaType === "music" ? "audio" : "video"
+        for (var i = 0; i < results.count; ++i) {
+            var row = results.get(i)
+            if (row.downloadState !== "idle" && row.downloadState !== "error")
+                continue
+            results.setProperty(i, "downloadState", "queued")
+            results.setProperty(i, "downloadProgress", 0)
+            results.setProperty(i, "downloadError", "")
+            backend.downloadMedia(row.url, kind, playlistFolder)
         }
     }
 
@@ -100,28 +179,41 @@ Item {
 
         function onSearchResults(items) {
             root.errorStatus = ""
-            results.clear()
-            for (var i = 0; i < items.length; ++i) {
-                var item = items[i]
-                results.append({
-                    id: item.id || "",
-                    title: item.title || "Không có tiêu đề",
-                    artist: item.artist || "",
-                    duration: item.duration || "--:--",
-                    thumbnail: item.thumbnail_url || "",
-                    url: item.url || "",
-                    downloadState: "idle",
-                    downloadProgress: 0,
-                    downloadError: ""
-                })
+            if (root.intakeMode === "link" && items.length === 1) {
+                root.searchStatus = "idle"
+                root.linkFromResolve = false
+                root.playlistFolder = ""
+                root.startDownload(items[0].url || items[0].id)
+                return
             }
-            root.searchStatus = results.count > 0 ? "results" : "empty"
+
+            root.populateResults(items)
+            root.linkFromResolve = root.intakeMode === "link" && results.count > 0
+        }
+
+        function onPlaylistLinkReady(folder, items) {
+            root.errorStatus = ""
+            root.playlistFolder = folder || ""
+            root.linkFromResolve = true
+            root.populateResults(items)
         }
 
         function onSearchError(message) {
-            root.errorStatus = message || "Không thể tìm kiếm media."
+            root.errorStatus = message || (root.intakeMode === "link"
+                ? "Không thể đọc link."
+                : "Không thể tìm kiếm media.")
             root.searchStatus = "idle"
+            root.linkFromResolve = false
+            root.playlistFolder = ""
             errorTimer.restart()
+        }
+
+        function onDownloadJobStarted(url) {
+            root.markDownloadActive(url)
+        }
+
+        function onDownloadJobRequeued(url) {
+            root.markDownloadQueued(url)
         }
 
         function onDownloadProgress(videoId, percent) {
@@ -138,6 +230,7 @@ Item {
             if (idx >= 0) {
                 results.setProperty(idx, "downloadState", "done")
                 results.setProperty(idx, "downloadProgress", 100)
+                results.setProperty(idx, "inLibrary", true)
             }
             if (root.directDownloadActive && root.directDownloadState === "downloading") {
                 root.directDownloadProgress = 100
@@ -279,6 +372,7 @@ Item {
         y: Math.round((parent.height - height) / 2)
 
         property string targetUrl: ""
+        property string outputFolder: ""
 
         readonly property var qualityOptions: [
             { value: "480",  label: "480p", size: "~80MB",  recommended: false },
@@ -483,8 +577,11 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            root.markDownloadStarted(videoQualityPopup.targetUrl)
-                            backend.downloadMedia(videoQualityPopup.targetUrl, "video")
+                            root.markDownloadQueued(videoQualityPopup.targetUrl)
+                            backend.downloadMedia(
+                                videoQualityPopup.targetUrl,
+                                "video",
+                                videoQualityPopup.outputFolder)
                             videoQualityPopup.close()
                         }
                     }
@@ -505,9 +602,9 @@ Item {
             id: intakeTopSpacer
             Layout.fillWidth: true
             Layout.preferredHeight: implicitHeight
-            implicitHeight: root.intakeMode === "link" || root.searchStatus !== "results"
-                ? Math.max(0, (root.height - intakeCard.implicitHeight) / 2 - 24)
-                : 0
+            implicitHeight: root.searchStatus === "results"
+                ? 0
+                : Math.max(0, (root.height - intakeCard.implicitHeight) / 2 - 24)
 
             Behavior on implicitHeight {
                 NumberAnimation {
@@ -554,14 +651,26 @@ Item {
                                 label: "Tìm kiếm"
                                 iconName: "search"
                                 selected: root.intakeMode === "search"
-                                onTapped: root.intakeMode = "search"
+                                onTapped: {
+                                    root.intakeMode = "search"
+                                    root.results.clear()
+                                    root.searchStatus = "idle"
+                                    root.linkFromResolve = false
+                                    root.playlistFolder = ""
+                                }
                             }
 
                             SegmentedButton {
                                 label: "Dán link"
                                 iconName: "link"
                                 selected: root.intakeMode === "link"
-                                onTapped: root.intakeMode = "link"
+                                onTapped: {
+                                    root.intakeMode = "link"
+                                    root.results.clear()
+                                    root.searchStatus = "idle"
+                                    root.linkFromResolve = false
+                                    root.playlistFolder = ""
+                                }
                             }
                         }
                     }
@@ -651,7 +760,7 @@ Item {
                             anchors.rightMargin: queryField.text.length > 0 ? 36 : 12
                             placeholderText: root.intakeMode === "search"
                                 ? "Tìm tên " + (root.mediaType === "music" ? "bài hát" : "video") + " trên YouTube…"
-                                : "Dán link YouTube cần tải trực tiếp…"
+                                : "Dán link YouTube (video hoặc playlist)…"
                             font.family: Theme.fontFamily
                             color: Theme.textPrimary
                             placeholderTextColor: Theme.textMuted
@@ -661,7 +770,7 @@ Item {
                                 if (root.intakeMode === "search")
                                     root.runSearch(text)
                                 else
-                                    root.beginDownload(text)
+                                    root.submitLink(text)
                             }
                         }
 
@@ -703,7 +812,7 @@ Item {
                                 if (root.intakeMode === "search")
                                     root.runSearch(queryField.text)
                                 else
-                                    root.beginDownload(queryField.text)
+                                    root.submitLink(queryField.text)
                             }
                         }
                     }
@@ -754,9 +863,69 @@ Item {
                 }
 
                 Button {
-                    visible: root.intakeMode === "search" && queryField.text.trim().length > 0
+                    visible: queryField.text.trim().length > 0
                     text: "Thử lại"
-                    onClicked: root.runSearch(queryField.text)
+                    onClicked: {
+                        if (root.intakeMode === "search")
+                            root.runSearch(queryField.text)
+                        else
+                            root.submitLink(queryField.text)
+                    }
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.intakeMode === "link" && root.searchStatus === "results" && results.count > 1
+            spacing: 12
+
+            Text {
+                Layout.fillWidth: true
+                text: {
+                    var stats = root.playlistDownloadStats()
+                    var base = root.playlistFolder.length > 0
+                        ? "Playlist · " + results.count + " mục → " + root.playlistFolder
+                        : "Playlist · " + results.count + " mục"
+                    if (stats.active > 0)
+                        return base + " · " + stats.done + "/" + stats.total + " · tải lần lượt"
+                    return base
+                }
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.bodySize
+                font.weight: Font.DemiBold
+                color: Theme.textSecondary
+            }
+
+            Rectangle {
+                Layout.preferredWidth: downloadAllLabel.implicitWidth + 24
+                Layout.preferredHeight: 32
+                radius: 8
+                opacity: downloadAllHover.enabled ? 1 : 0.45
+                color: downloadAllHover.containsMouse ? Theme.glassStrong : Theme.bgTop
+                border.color: Theme.cardBorder
+                border.width: 1
+
+                Text {
+                    id: downloadAllLabel
+                    anchors.centerIn: parent
+                    text: {
+                        var stats = root.playlistDownloadStats()
+                        return stats.active > 0 ? "Đang tải…" : "Tải tất cả"
+                    }
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.captionSize
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                }
+
+                MouseArea {
+                    id: downloadAllHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    enabled: root.playlistDownloadStats().active === 0
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: root.downloadAllFromList()
                 }
             }
         }
@@ -767,7 +936,7 @@ Item {
             Layout.fillHeight: true
             spacing: 8
             clip: true
-            visible: root.intakeMode === "search" && root.searchStatus === "results"
+            visible: root.searchStatus === "results"
             opacity: visible ? 1 : 0
             model: results
 
@@ -790,6 +959,7 @@ Item {
                 required property string duration
                 required property string thumbnail
                 required property string url
+                required property bool inLibrary
                 required property string downloadState
                 required property real downloadProgress
                 required property string downloadError
@@ -853,9 +1023,19 @@ Item {
                             elide: Text.ElideRight
                         }
 
+                        Text {
+                            Layout.fillWidth: true
+                            visible: inLibrary
+                            text: "Đã có trong thư viện"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.captionSize
+                            color: "#34D399"
+                            elide: Text.ElideRight
+                        }
+
                         WaveformProgress {
                             Layout.fillWidth: true
-                            visible: downloadState !== "idle"
+                            visible: downloadState !== "idle" && downloadState !== "library"
                             progress: downloadProgress
                             state: downloadState
                         }
@@ -874,7 +1054,9 @@ Item {
                         Layout.preferredHeight: 36
                         radius: 18
                         color: downloadState === "done" ? "#34D39926"
+                               : downloadState === "library" ? "#34D39926"
                                : downloadState === "downloading" ? Qt.rgba(Theme.accentStart.r, Theme.accentStart.g, Theme.accentStart.b, 0.15)
+                               : downloadState === "queued" ? Qt.rgba(Theme.textMuted.r, Theme.textMuted.g, Theme.textMuted.b, 0.12)
                                : downloadState === "error" ? "#F8717126"
                                : Theme.glassStrong
 
@@ -882,11 +1064,15 @@ Item {
                             id: statusIcon
                             anchors.centerIn: parent
                             name: downloadState === "done" ? "check"
+                                 : downloadState === "library" ? (root.mediaType === "video" ? "movie" : "library_music")
                                  : downloadState === "downloading" ? "progress_activity"
+                                 : downloadState === "queued" ? "schedule"
                                  : downloadState === "error" ? "error"
                                  : "download"
                             color: downloadState === "done" ? "#34D399"
+                                   : downloadState === "library" ? "#34D399"
                                    : downloadState === "downloading" ? Theme.accentStart
+                                   : downloadState === "queued" ? Theme.textMuted
                                    : downloadState === "error" ? "#F87171"
                                    : Theme.textPrimary
                             font.pixelSize: 16
@@ -903,14 +1089,21 @@ Item {
                         MouseArea {
                             id: downloadBtn
                             anchors.fill: parent
-                            enabled: downloadState !== "downloading" && downloadState !== "done" && url !== ""
+                            enabled: downloadState !== "downloading"
+                                   && downloadState !== "queued"
+                                   && downloadState !== "done"
+                                   && downloadState !== "library"
+                                   && url !== ""
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             hoverEnabled: true
-                            onClicked: root.beginDownload(url)
+                            onClicked: root.startDownload(url)
 
                             AppToolTip {
-                                visible: downloadBtn.containsMouse && downloadState === "error"
-                                text: downloadError
+                                visible: downloadBtn.containsMouse
+                                       && (downloadState === "error" || downloadState === "library")
+                                text: downloadState === "library"
+                                    ? "Bài này đã có trong thư viện"
+                                    : downloadError
                             }
                         }
                     }
@@ -932,7 +1125,10 @@ Item {
             id: searchPlaceholder
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: root.intakeMode === "search" && root.searchStatus !== "results"
+            visible: root.searchStatus !== "results"
+                && (root.intakeMode === "search"
+                    || root.searchStatus === "loading"
+                    || root.searchStatus === "empty")
             opacity: visible ? 1 : 0
 
             Behavior on opacity {
@@ -963,8 +1159,14 @@ Item {
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: {
-                        if (root.searchStatus === "loading") return "Đang tìm kiếm…"
-                        if (root.searchStatus === "empty") return "Không tìm thấy kết quả."
+                        if (root.searchStatus === "loading" && root.intakeMode === "link")
+                            return "Đang đọc playlist…"
+                        if (root.searchStatus === "loading")
+                            return "Đang tìm kiếm…"
+                        if (root.searchStatus === "empty" && root.intakeMode === "link")
+                            return "Không tìm thấy video trong link."
+                        if (root.searchStatus === "empty")
+                            return "Không tìm thấy kết quả."
                         return "Nhập từ khóa để tìm media cần tải."
                     }
                     font.family: Theme.fontFamily
@@ -978,8 +1180,8 @@ Item {
         // centered regardless of the window height.
         Item {
             Layout.fillWidth: true
-            Layout.fillHeight: root.intakeMode === "link"
-            visible: root.intakeMode === "link"
+            Layout.fillHeight: root.intakeMode === "link" && root.searchStatus !== "results"
+            visible: root.intakeMode === "link" && root.searchStatus !== "results"
         }
     }
 }

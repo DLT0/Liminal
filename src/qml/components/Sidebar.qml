@@ -13,7 +13,7 @@ GlassPanel {
     property int currentPage: 2
     property string searchText: ""
 
-    signal pageSelected(int index)
+    signal pageSelected(int index, bool again)
     signal searchChanged(string text)
 
     readonly property var menuItems: [
@@ -77,7 +77,11 @@ GlassPanel {
                 icon: modelData.icon
                 label: modelData.label
                 active: root.currentPage === modelData.page
-                onClicked: root.pageSelected(modelData.page)
+                onClicked: root.pageSelected(modelData.page, false)
+                onDoubleClicked: {
+                    if (modelData.page === 2 || modelData.page === 3)
+                        root.pageSelected(modelData.page, true)
+                }
             }
         }
     }

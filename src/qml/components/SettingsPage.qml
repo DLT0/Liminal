@@ -9,7 +9,6 @@ Item {
     property string mediaRoot: ""
     property string musicDir: ""
     property string videoDir: ""
-    property string playlistDir: ""
     property int themeIndex: 0
     property string ytDlpUpdateStatus: ""
 
@@ -38,7 +37,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                text: "Thư mục lưu trữ: Chọn một thư mục gốc, Liminal sẽ tự tạo Music, Videos và Playlist bên trong."
+                text: "Thư mục lưu trữ: Chọn một thư mục gốc, Liminal sẽ tự tạo Music và Videos bên trong."
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.bodySize
                 color: Theme.textMuted

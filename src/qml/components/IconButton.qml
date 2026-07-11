@@ -14,6 +14,7 @@ Rectangle {
     property string tooltipText: {
         var labels = {
             "arrow_back": "Quay lại", "shuffle": active ? "Tắt phát ngẫu nhiên" : "Phát ngẫu nhiên",
+            "casino": "Xáo trộn danh sách", "undo": "Hoàn tác xáo trộn",
             "skip_previous": "Bài trước", "skip_next": "Bài tiếp theo",
             "repeat": "Bật phát lặp", "repeat_one": "Tắt phát lặp",
             "volume_up": "Tắt âm", "volume_down": "Tắt âm", "volume_mute": "Tắt âm",

@@ -35,6 +35,7 @@ class MediaInfo:
     child_count: int = 0
     image: str = ""
     preview_images: list[str] = field(default_factory=list)
+    canonical_path: str = ""  # resolved file path (for symlinked album entries)
 
 
 @dataclass
