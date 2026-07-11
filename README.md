@@ -91,17 +91,57 @@ Giao diện văn bản trong terminal dành cho người dùng thích làm việ
 
 #### GUI (PyQt6 + QML)
 
-Ngoài chuột, ứng dụng hỗ trợ các phím tắt sau:
+Ngoài chuột, ứng dụng hỗ trợ điều hướng bàn phím theo hai vùng: **sidebar** (menu trái) và **nội dung trang** (thư viện, tải xuống, cài đặt…). Click vào sidebar hoặc dùng `Shift+Tab` từ nội dung trang để focus sidebar.
+
+##### Sidebar
 
 | Phím | Hành động |
 |------|-----------|
-| `Tab` | Chuyển sang tab tiếp theo (Playlist → Music → Videos → Settings) |
-| `Shift+Tab` | Chuyển sang tab trước |
-| `←` / `→` | Chuyển tab sidebar |
+| `↑` / `↓` | Chọn mục menu (Music, Videos, Download, Settings) và chuyển trang |
+| `Enter` / `Space` | Xác nhận mục menu đang chọn |
+| `Tab` | Chuyển focus sang nội dung trang hiện tại |
+| `Shift+Tab` | Quay lại sidebar (từ ô tìm kiếm) |
+
+##### Thư viện (Music, Videos, Playlist)
+
+Click vào ô tìm kiếm hoặc nhấn `Tab` từ lưới thư viện để gõ tìm kiếm.
+
+| Phím | Hành động |
+|------|-----------|
+| `↑` / `↓` / `←` / `→` | Di chuyển giữa album, bài hát, video trong lưới |
+| `Enter` / `Space` | Mở album / playlist hoặc phát media đang chọn |
+| `Tab` | Chuyển sang ô tìm kiếm |
+| `Shift+Tab` | Quay lại sidebar |
+| Chuột phải | Menu ngữ cảnh (phát, đổi ảnh bìa, xóa…) |
+| `Super+Shift+N` / `Meta+Shift+N` | Tạo thư mục mới (Music, Videos, Playlist) |
+
+Trang **Music** có hai lưới (Album của tôi và Đĩa đơn): nhấn `↓` ở hàng cuối của album sẽ chuyển xuống Đĩa đơn; `↑` ở hàng đầu của Đĩa đơn sẽ quay lại album.
+
+##### Trong album / playlist (chế độ chi tiết)
+
+| Phím | Hành động |
+|------|-----------|
+| `↑` / `↓` | Chọn bài trong danh sách |
+| `Enter` / `Space` | Phát bài đang chọn |
+| `Shift+Tab` | Quay lại sidebar |
+
+##### Tải xuống (Download)
+
+| Phím | Hành động |
+|------|-----------|
+| `Tab` (từ sidebar) | Focus ô nhập link / tìm kiếm |
+| `Enter` | Tìm kiếm hoặc bắt đầu tải (tùy chế độ) |
+| `Tab` | Chuyển focus sang lưới kết quả / nội dung trang |
+| `Shift+Tab` | Quay lại sidebar |
+
+##### Phát nhạc / video (toàn cục)
+
+| Phím | Hành động |
+|------|-----------|
 | `Space` | Pause / phát tiếp |
 | `Z` | Lùi 10 giây |
 | `C` | Tiến 10 giây |
-| `Esc` | Thoát ô tìm kiếm; hoặc lùi thư mục playlist; hoặc về tab Playlist |
+| `Esc` | Thoát ô tìm kiếm; hoặc lùi thư mục; hoặc quay lại màn hình trước |
 | `Meta+Q` / `Super+Q` | Thoát ứng dụng |
 
 `Space`, `Z` và `C` không kích hoạt khi đang gõ trong ô tìm kiếm.

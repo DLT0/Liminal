@@ -42,11 +42,12 @@ Item {
 
         property real spinAngle: 0
 
-        NumberAnimation on spinAngle {
+        RotationAnimation on spinAngle {
             id: spinAnim
             running: hoverMa.containsMouse
-            from: spinAngle
-            to: spinAngle + 360
+            from: 0
+            to: 360
+            direction: RotationAnimation.Clockwise
             duration: 2200
             loops: Animation.Infinite
             easing.type: Easing.Linear

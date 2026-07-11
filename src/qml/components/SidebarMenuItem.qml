@@ -8,6 +8,7 @@ Rectangle {
     property string icon: ""
     property string label: ""
     property bool active: false
+    property bool keyboardFocused: false
 
     signal clicked()
 
@@ -80,6 +81,25 @@ Rectangle {
         color: hoverMa.containsMouse && !root.active ? Theme.hoverOverlay : "transparent"
 
         Behavior on color {
+            ColorAnimation {
+                duration: Theme.colorDuration
+                easing.type: Easing.OutCubic
+            }
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        radius: parent.radius
+        visible: root.keyboardFocused
+        color: root.active
+            ? Qt.rgba(1, 1, 1, 0.14)
+            : "transparent"
+        border.color: root.active ? "#CCFFFFFF" : Theme.accentStart
+        border.width: Theme.focusRingWidth
+        z: 5
+
+        Behavior on border.color {
             ColorAnimation {
                 duration: Theme.colorDuration
                 easing.type: Easing.OutCubic

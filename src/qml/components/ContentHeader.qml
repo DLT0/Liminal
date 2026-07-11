@@ -13,6 +13,13 @@ Item {
 
     signal searchChanged(string text)
     signal searchSubmitted(string text)
+    signal contentFocusRequested()
+    signal sidebarFocusRequested()
+
+    function focusSearch() {
+        headerSearch.forceActiveFocus()
+        headerSearch.selectAll()
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -36,11 +43,43 @@ Item {
             Layout.preferredWidth: root.currentPage === 4 ? 0 : 340
             Layout.preferredHeight: 44
             visible: root.currentPage !== 4
-            clip: true
+            clip: false
+
+            Rectangle {
+                id: searchBg
+                anchors.fill: parent
+                radius: 24
+                color: Theme.inputBg
+                border.color: headerSearch.activeFocus ? Theme.accentStart : Theme.inputBorder
+                border.width: headerSearch.activeFocus ? Theme.focusRingWidth : 1
+
+                Behavior on border.color {
+                    ColorAnimation {
+                        duration: Theme.colorDuration
+                        easing.type: Easing.OutCubic
+                    }
+                }
+
+                Behavior on border.width {
+                    NumberAnimation {
+                        duration: Theme.colorDuration
+                        easing.type: Easing.OutCubic
+                    }
+                }
+            }
+
+            KeyboardFocusRing {
+                anchors.fill: parent
+                show: headerSearch.activeFocus
+                ringRadius: 24
+                ringWidth: Theme.focusRingWidth
+                glowOpacity: 0.22
+            }
 
             TextField {
                 id: headerSearch
                 anchors.fill: parent
+                focusPolicy: Qt.ClickFocus
                 placeholderText: root.searchPlaceholder
                 font.family: Theme.fontFamily
                 font.pixelSize: 14
@@ -51,16 +90,21 @@ Item {
                 topPadding: 10
                 bottomPadding: 10
 
-                background: Rectangle {
-                    radius: 24
-                    color: Theme.inputBg
-                    border.color: Theme.inputBorder
-                    border.width: 1
-                }
+                background: Item {}
 
                 onTextChanged: root.searchChanged(text)
 
                 Keys.onReturnPressed: root.searchSubmitted(text)
+
+                Keys.onTabPressed: {
+                    root.contentFocusRequested()
+                    event.accepted = true
+                }
+
+                Keys.onBacktabPressed: {
+                    root.sidebarFocusRequested()
+                    event.accepted = true
+                }
             }
 
             AppIcon {

@@ -16,6 +16,32 @@ Item {
     signal pickMediaRoot()
     signal themeSelected(int index)
     signal updateYtDlpRequested()
+    signal sidebarFocusRequested()
+
+    function activateFocus() {
+        pageFocus.forceActiveFocus()
+    }
+
+    FocusScope {
+        id: pageFocus
+        anchors.fill: parent
+        focus: false
+
+        Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Backtab) {
+                root.sidebarFocusRequested()
+                event.accepted = true
+            }
+        }
+
+        KeyboardFocusRing {
+            anchors.fill: parent
+            anchors.margins: 8
+            ringRadius: Theme.cardRadius
+            ringWidth: Theme.focusRingWidth
+            show: pageFocus.activeFocus
+            glowOpacity: 0.14
+        }
 
     ScrollView {
         anchors.fill: parent
@@ -218,5 +244,6 @@ Item {
                 }
             }
         }
+    }
     }
 }

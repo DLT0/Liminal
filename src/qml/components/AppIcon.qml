@@ -8,9 +8,13 @@ Text {
     property bool filled: false
 
     text: name
+    width: Math.ceil(font.pixelSize * 1.25)
+    height: width
     color: Theme.textSecondary
     horizontalAlignment: Text.AlignHCenter
     verticalAlignment: Text.AlignVCenter
+    wrapMode: Text.NoWrap
+    maximumLineCount: 1
 
     font.family: iconFont.name
     font.pixelSize: 20

@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import Liminal 1.0
-import "DragDrop.js" as DragDrop
 
 Item {
     id: root
@@ -22,31 +21,136 @@ Item {
 
     signal playRequested(int index)
     signal openCollectionRequested(int index)
-    signal reorderRequested(int fromIndex, int toIndex)
     signal playAllRequested()
     signal shufflePlayRequested()
+    signal sidebarFocusRequested()
+    signal searchFocusRequested()
+
+    property int selectedIndex: -1
+    readonly property bool hasKeyboardFocus: keyboardScope.activeFocus
+
+    function activateFocus(selectLast) {
+        if (listView.count === 0) {
+            keyboardScope.forceActiveFocus()
+            selectedIndex = -1
+            return
+        }
+        keyboardScope.forceActiveFocus()
+        selectedIndex = selectLast ? listView.count - 1 : 0
+        listView.currentIndex = selectedIndex
+        listView.positionViewAtIndex(selectedIndex, ListView.Visible)
+    }
+
+    function clearSelection() {
+        selectedIndex = -1
+        listView.currentIndex = -1
+    }
+
+    function activateSelectedItem() {
+        if (selectedIndex < 0 || selectedIndex >= listView.count)
+            return
+        listView.positionViewAtIndex(selectedIndex, ListView.Visible)
+        var row = listView.itemAtIndex(selectedIndex)
+        if (!row)
+            return
+        if (row.isCollection)
+            root.openCollectionRequested(selectedIndex)
+        else
+            root.playRequested(selectedIndex)
+    }
+
+    FocusScope {
+        id: keyboardScope
+        anchors.fill: parent
+        focus: false
+
+        Keys.onPressed: function(event) {
+            switch (event.key) {
+            case Qt.Key_Up:
+                if (selectedIndex > 0) {
+                    selectedIndex--
+                    listView.currentIndex = selectedIndex
+                    listView.positionViewAtIndex(selectedIndex, ListView.Visible)
+                } else if (selectedIndex === 0) {
+                    root.sidebarFocusRequested()
+                } else if (listView.count > 0) {
+                    selectedIndex = 0
+                    listView.currentIndex = 0
+                    listView.positionViewAtIndex(0, ListView.Visible)
+                }
+                event.accepted = true
+                break
+            case Qt.Key_Down:
+                if (selectedIndex < listView.count - 1) {
+                    selectedIndex++
+                    listView.currentIndex = selectedIndex
+                    listView.positionViewAtIndex(selectedIndex, ListView.Visible)
+                } else if (selectedIndex < 0 && listView.count > 0) {
+                    selectedIndex = 0
+                    listView.currentIndex = 0
+                    listView.positionViewAtIndex(0, ListView.Visible)
+                }
+                event.accepted = true
+                break
+            case Qt.Key_Return:
+            case Qt.Key_Enter:
+            case Qt.Key_Space:
+                activateSelectedItem()
+                event.accepted = true
+                break
+            case Qt.Key_Backtab:
+                root.sidebarFocusRequested()
+                event.accepted = true
+                break
+            case Qt.Key_Tab:
+                root.searchFocusRequested()
+                event.accepted = true
+                break
+            }
+        }
+    }
 
     EditMediaDialog {
         id: editDialog
         parent: Overlay.overlay
     }
 
-    function openRowContextMenu(index, isCollection, title, artist, anchorItem, x, y) {
+    ListModel {
+        id: moveTargetsModel
+    }
+
+    function populateMoveTargets(sourcePath) {
+        moveTargetsModel.clear()
+        if (!sourcePath)
+            return
+        var folders = backend.foldersForMove(sourcePath)
+        for (var i = 0; i < folders.length; i++)
+            moveTargetsModel.append(folders[i])
+    }
+
+    function openRowContextMenu(index, isCollection, title, artist, itemPath, anchorItem, x, y) {
         rowContextMenu.itemIndex = index
         rowContextMenu.isCollection = isCollection
         rowContextMenu.itemTitle = title
         rowContextMenu.itemArtist = artist
+        rowContextMenu.itemPath = itemPath
+        if (!isCollection)
+            populateMoveTargets(itemPath)
+        else
+            moveTargetsModel.clear()
         rowContextMenu.popup(anchorItem, x, y)
     }
 
-    Menu {
+    StyledMenu {
         id: rowContextMenu
         property int itemIndex: -1
         property bool isCollection: false
         property string itemTitle: ""
         property string itemArtist: ""
+        property string itemPath: ""
 
-        MenuItem {
+        StyledMenuItem {
+            iconName: rowContextMenu.isCollection ? "folder_open" : "play_arrow"
             text: rowContextMenu.isCollection ? "Mở playlist" : "Phát"
             onTriggered: {
                 if (rowContextMenu.isCollection)
@@ -55,26 +159,49 @@ Item {
                     root.playRequested(rowContextMenu.itemIndex)
             }
         }
-        MenuItem {
+        StyledMenuItem {
+            iconName: "drive_file_move"
             text: "Đưa ra ngoài thư mục"
             enabled: backend.libraryCanGoBack && !rowContextMenu.isCollection
             onTriggered: backend.moveMediaOutOfFolder(rowContextMenu.itemIndex)
         }
-        MenuItem {
+        StyledMenu {
+            id: moveToFolderMenu
+            title: "Chuyển vào thư mục"
+            enabled: !rowContextMenu.isCollection && moveTargetsModel.count > 0
+
+            Instantiator {
+                model: moveTargetsModel
+                delegate: StyledMenuItem {
+                    iconName: "folder"
+                    required property string title
+                    required property string path
+                    text: title
+                    onTriggered: backend.moveMediaToFolder(rowContextMenu.itemPath, path)
+                }
+                onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
+                onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
+            }
+        }
+        StyledMenuItem {
+            iconName: "image"
             text: "Đổi ảnh bìa"
             onTriggered: backend.pickMediaCover(rowContextMenu.itemIndex)
         }
-        MenuItem {
-            text: "Sửa tên / tác giả"
+        StyledMenuItem {
+            iconName: "edit"
+            text: "Chỉnh sửa thông tin"
             onTriggered: editDialog.openFor(
                 rowContextMenu.itemIndex,
                 rowContextMenu.itemTitle,
                 rowContextMenu.itemArtist
             )
         }
-        MenuSeparator {}
-        MenuItem {
-            text: "Xóa"
+        StyledMenuSeparator {}
+        StyledMenuItem {
+            iconName: "delete"
+            destructive: true
+            text: "Xóa khỏi thư viện"
             onTriggered: backend.deleteMediaAt(rowContextMenu.itemIndex)
         }
     }
@@ -249,7 +376,7 @@ Item {
             Text {
                 id: hintText
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Kéo thả để sắp xếp · Chuột phải để thao tác"
+                text: "Mũi tên lên/xuống để sắp xếp · Phát ngẫu nhiên không đổi thứ tự · Chuột phải để thao tác"
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted
@@ -265,8 +392,6 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             spacing: 2
 
-            property bool fileDragActive: false
-
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
             delegate: Rectangle {
@@ -274,15 +399,11 @@ Item {
                 width: listView.width
                 height: 56
                 radius: Theme.libraryCardRadius
-                opacity: rowDragHandler.active ? 0.42 : 1.0
 
-                property int rowIndex: index
                 property string rowPath: model.path
                 property string rowImage: model.imageSource
-                property string enteringDragPath: ""
-                property bool dropHighlight: rowDropArea.containsDrag
-                        && enteringDragPath !== ""
-                        && enteringDragPath !== rowPath
+                property bool isCollection: model.isCollection
+                property bool keyboardSelected: root.hasKeyboardFocus && root.selectedIndex === index
                 property string resolvedRowImage: {
                     if (!rowImage)
                         return ""
@@ -291,41 +412,28 @@ Item {
                     return "file://" + rowImage
                 }
 
-                color: dropHighlight || rowHoverHandler.hovered || rowDragHandler.active
-                       ? Theme.hoverOverlay : "transparent"
+                color: keyboardSelected
+                    ? Qt.rgba(Theme.accentStart.r, Theme.accentStart.g, Theme.accentStart.b, 0.14)
+                    : (rowHoverHandler.hovered ? Theme.hoverOverlay : "transparent")
 
-                Behavior on opacity {
-                    NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                KeyboardFocusRing {
+                    anchors.fill: parent
+                    show: keyboardSelected
+                    ringRadius: Theme.focusListRadius
+                    ringWidth: Theme.focusRingWidth
                 }
+
                 Behavior on color {
                     ColorAnimation { duration: 120 }
-                }
-
-                Drag.active: rowDragHandler.active
-                Drag.source: row
-                Drag.keys: ["liminal/media"]
-                Drag.dragType: Drag.Automatic
-                Drag.supportedActions: Qt.MoveAction
-                Drag.mimeData: { "text/plain": rowPath }
-                Drag.hotSpot.x: width / 2
-                Drag.hotSpot.y: height / 2
-
-                DragHandler {
-                    id: rowDragHandler
-                    enabled: !model.isCollection
-                    dragThreshold: 10
-                    onActiveChanged: listView.fileDragActive = active
                 }
 
                 HoverHandler {
                     id: rowHoverHandler
                     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchScreen
-                    enabled: !listView.fileDragActive
                 }
 
                 TapHandler {
                     acceptedButtons: Qt.LeftButton
-                    enabled: !listView.fileDragActive
                     onTapped: {
                         if (model.isCollection)
                             root.openCollectionRequested(index)
@@ -339,7 +447,16 @@ Item {
                     acceptedButtons: Qt.RightButton
                     z: -1
                     onClicked: function(mouse) {
-                        root.openRowContextMenu(index, model.isCollection, model.title, model.subtitle, row, mouse.x, mouse.y)
+                        root.openRowContextMenu(
+                            index,
+                            model.isCollection,
+                            model.title,
+                            model.subtitle,
+                            rowPath,
+                            row,
+                            mouse.x,
+                            mouse.y
+                        )
                     }
                 }
 
@@ -384,7 +501,7 @@ Item {
 
                     Column {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width - 180
+                        width: parent.width - 280
                         spacing: 2
 
                         Text {
@@ -415,18 +532,28 @@ Item {
                         color: Theme.textMuted
                     }
 
-                    Item {
-                        id: dragHandle
+                    Row {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: Theme.iconButtonSize
-                        height: Theme.iconButtonSize
-                        visible: !model.isCollection
+                        spacing: 2
 
-                        AppIcon {
-                            anchors.centerIn: parent
-                            name: "drag_indicator"
-                            font.pixelSize: 18
-                            color: rowDragHandler.active ? Theme.accentStart : Theme.textMuted
+                        IconButton {
+                            icon: "arrow_upward"
+                            iconSize: 18
+                            width: 32
+                            height: 32
+                            opacity: index > 0 ? 1 : 0.3
+                            enabled: index > 0
+                            onClicked: backend.moveCollectionItemUp(index)
+                        }
+
+                        IconButton {
+                            icon: "arrow_downward"
+                            iconSize: 18
+                            width: 32
+                            height: 32
+                            opacity: index < listView.count - 1 ? 1 : 0.3
+                            enabled: index < listView.count - 1
+                            onClicked: backend.moveCollectionItemDown(index)
                         }
                     }
 
@@ -436,30 +563,6 @@ Item {
                         iconSize: 18
                         visible: !model.isCollection && backend.libraryCanGoBack
                         onClicked: backend.moveMediaOutOfFolder(index)
-                    }
-                }
-
-                DropArea {
-                    id: rowDropArea
-                    anchors.fill: parent
-                    z: listView.fileDragActive ? 50 : -10
-                    keys: ["liminal/media"]
-
-                    onEntered: function(drag) {
-                        enteringDragPath = DragDrop.readMimePath(drag)
-                    }
-                    onExited: enteringDragPath = ""
-                    onDropped: function(drop) {
-                        DragDrop.acceptDrop(drop)
-                        var src = DragDrop.readMimePath(drop) || enteringDragPath
-                        enteringDragPath = ""
-                        if (!src || src === rowPath)
-                            return
-                        if (model.isCollection) {
-                            backend.moveMediaByPath(src, rowPath)
-                            return
-                        }
-                        backend.reorderCollectionByPath(src, rowPath)
                     }
                 }
             }

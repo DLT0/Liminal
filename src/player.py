@@ -150,7 +150,7 @@ class LiminalPlayer:
         vol = max(0, min(100, vol))
         self.state.volume = vol
         if self._writer:
-            await self._send_command(["set", "volume", vol])
+            await self._send_command(["set_property", "volume", vol])
 
     async def stop(self) -> None:
         """Kill mpv and reset state."""

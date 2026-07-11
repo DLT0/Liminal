@@ -134,6 +134,8 @@ QtObject {
     readonly property int gridColumns:     5
     readonly property int cardRadius:      12
     readonly property int libraryCardRadius: 0   // playlist / music / video grids — square corners
+    readonly property int focusRingWidth:    2
+    readonly property int focusListRadius:   10
     readonly property int cardGap:         20
     readonly property real videoPosterAspect: 16 / 9   // YouTube thumbnail ratio
 

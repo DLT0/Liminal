@@ -20,11 +20,6 @@ ApplicationWindow {
     property string searchQuery: ""
     property var navPages: [2, 3, 4, 5]
 
-    function isTextInputFocused() {
-        var item = root.activeFocusItem
-        return item && (item instanceof TextField || item instanceof TextArea)
-    }
-
     Shortcut {
         sequence: "Meta+Q"
         onActivated: backend.quitApp()
@@ -33,81 +28,6 @@ ApplicationWindow {
     Shortcut {
         sequence: "Super+Q"
         onActivated: backend.quitApp()
-    }
-
-    Shortcut {
-        sequence: "Tab"
-        onActivated: backend.nextNavPage()
-    }
-
-    Shortcut {
-        sequence: "Shift+Tab"
-        onActivated: backend.previousNavPage()
-    }
-
-    Shortcut {
-        sequence: "Right"
-        onActivated: backend.nextNavPage()
-    }
-
-    Shortcut {
-        sequence: "Left"
-        onActivated: backend.previousNavPage()
-    }
-
-    Shortcut {
-        sequence: "Space"
-        onActivated: {
-            if (!root.isTextInputFocused())
-                backend.togglePause()
-        }
-    }
-
-    Shortcut {
-        sequence: "Escape"
-        onActivated: {
-            if (root.isTextInputFocused()) {
-                root.activeFocusItem.focus = false
-                return
-            }
-            backend.goBack()
-        }
-    }
-
-    Shortcut {
-        sequence: "Z"
-        onActivated: {
-            if (!root.isTextInputFocused())
-                backend.seekBackward10()
-        }
-    }
-
-    Shortcut {
-        sequence: "C"
-        onActivated: {
-            if (!root.isTextInputFocused())
-                backend.seekForward10()
-        }
-    }
-
-    Shortcut {
-        sequence: "Meta+Shift+N"
-        onActivated: {
-            if (!root.isTextInputFocused() && backend.currentPage >= 1 && backend.currentPage <= 3)
-                createFolderShortcut()
-        }
-    }
-
-    Shortcut {
-        sequence: "Super+Shift+N"
-        onActivated: {
-            if (!root.isTextInputFocused() && backend.currentPage >= 1 && backend.currentPage <= 3)
-                createFolderShortcut()
-        }
-    }
-
-    function createFolderShortcut() {
-        backend.createFolder("Thư mục mới")
     }
 
     Item {
@@ -164,6 +84,7 @@ ApplicationWindow {
             spacing: 0
 
             Sidebar {
+                id: sidebar
                 Layout.fillHeight: true
                 currentPage: backend.currentPage
                 onPageSelected: function(page) {
@@ -177,6 +98,7 @@ ApplicationWindow {
                     contentHeader.setSearchText(text)
                     backend.setSearchFilter(text)
                 }
+                onContentFocusRequested: root.focusCurrentPageContent()
             }
 
             ColumnLayout {
@@ -198,6 +120,8 @@ ApplicationWindow {
                     onSearchSubmitted: function(text) {
                         // Discover search removed
                     }
+                    onContentFocusRequested: root.focusCurrentPageContent()
+                    onSidebarFocusRequested: sidebar.focusSidebar()
                 }
 
                 Item {
@@ -225,6 +149,8 @@ ApplicationWindow {
                         onOpenCollectionRequested: function(index) { backend.openCollection(index) }
                         onPlayAllRequested: backend.togglePlayCollection()
                         onShufflePlayRequested: backend.playCollectionShuffled()
+                        onSidebarFocusRequested: sidebar.focusSidebar()
+                        onSearchFocusRequested: contentHeader.focusSearch()
                     }
 
                     Flickable {
@@ -302,6 +228,12 @@ ApplicationWindow {
                                 onOpenCollectionRequested: function(index) { backend.openMusicAlbum(index) }
                                 onPlayAllRequested: backend.togglePlayCollection()
                                 onShufflePlayRequested: backend.playCollectionShuffled()
+                                onSidebarFocusRequested: sidebar.focusSidebar()
+                                onSearchFocusRequested: contentHeader.focusSearch()
+                                onFocusNextSectionRequested: {
+                                    musicSinglesPage.activateFocus()
+                                    musicPage.contentY = Math.max(0, musicSinglesPage.y - Theme.contentPadding)
+                                }
                             }
 
                             Text {
@@ -337,6 +269,12 @@ ApplicationWindow {
                                 emptyTitle: "Chưa có đĩa đơn"
                                 emptyMessage: "Thêm file nhạc trực tiếp vào thư mục Music."
                                 onPlayRequested: function(index) { backend.playMusicSingle(index) }
+                                onSidebarFocusRequested: sidebar.focusSidebar()
+                                onSearchFocusRequested: contentHeader.focusSearch()
+                                onFocusPreviousSectionRequested: {
+                                    musicAlbumsPage.activateFocus(true)
+                                    musicPage.contentY = Math.max(0, musicAlbumsPage.y - Theme.contentPadding)
+                                }
                             }
                         }
                     }
@@ -363,15 +301,20 @@ ApplicationWindow {
                         onOpenCollectionRequested: function(index) { backend.openCollection(index) }
                         onPlayAllRequested: backend.togglePlayCollection()
                         onShufflePlayRequested: backend.playCollectionShuffled()
+                        onSidebarFocusRequested: sidebar.focusSidebar()
+                        onSearchFocusRequested: contentHeader.focusSearch()
                     }
 
                     Download {
+                        id: downloadPage
                         anchors.fill: parent
                         visible: backend.currentPage === 4
+                        onSidebarFocusRequested: sidebar.focusSidebar()
                     }
 
 
                     SettingsPage {
+                        id: settingsPage
                         anchors.fill: parent
                         visible: backend.currentPage === 5
                         mediaRoot: backend.mediaRoot
@@ -384,6 +327,7 @@ ApplicationWindow {
                         onPickMediaRoot: backend.pickMediaRoot()
                         onThemeSelected: function(index) { backend.setThemeIndex(index) }
                         onUpdateYtDlpRequested: backend.updateYtDlp()
+                        onSidebarFocusRequested: sidebar.focusSidebar()
                     }
                 }
             }
@@ -391,6 +335,7 @@ ApplicationWindow {
 
         PlayerBar {
             Layout.fillWidth: true
+            visible: backend.playerBarVisible
             trackTitle: backend.trackTitle
             trackArtist: backend.trackArtist
             isPlaying: backend.isPlaying

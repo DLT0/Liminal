@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import Liminal 1.0
-import "DragDrop.js" as DragDrop
 
 Item {
     id: root
@@ -33,6 +32,127 @@ Item {
     signal createFolderRequested()
     signal playAllRequested()
     signal shufflePlayRequested()
+    signal focusNextSectionRequested()
+    signal focusPreviousSectionRequested()
+    signal sidebarFocusRequested()
+    signal searchFocusRequested()
+
+    property int selectedIndex: -1
+    readonly property bool hasKeyboardFocus: keyboardScope.activeFocus
+
+    onInCollectionViewChanged: {
+        if (inCollectionView && keyboardScope.activeFocus)
+            Qt.callLater(function() { detailView.activateFocus() })
+        else if (!inCollectionView)
+            selectedIndex = -1
+    }
+
+    function activateFocus(selectLast) {
+        if (root.inCollectionView) {
+            detailView.activateFocus(selectLast)
+            return
+        }
+        if (grid.count === 0) {
+            keyboardScope.forceActiveFocus()
+            selectedIndex = -1
+            return
+        }
+        keyboardScope.forceActiveFocus()
+        selectedIndex = selectLast ? grid.count - 1 : 0
+        grid.positionViewAtIndex(selectedIndex, GridView.Visible)
+    }
+
+    function clearSelection() {
+        selectedIndex = -1
+    }
+
+    function moveSelection(deltaRow, deltaCol) {
+        if (grid.count === 0)
+            return false
+
+        var cols = grid.columns
+        if (selectedIndex < 0)
+            selectedIndex = 0
+
+        var row = Math.floor(selectedIndex / cols)
+        var col = selectedIndex % cols
+        var newRow = row + deltaRow
+        var newCol = col + deltaCol
+
+        if (newCol < 0 || newCol >= cols)
+            return false
+
+        var newIndex = newRow * cols + newCol
+        if (newIndex < 0) {
+            focusPreviousSectionRequested()
+            return true
+        }
+        if (newIndex >= grid.count) {
+            focusNextSectionRequested()
+            return true
+        }
+
+        selectedIndex = newIndex
+        grid.positionViewAtIndex(newIndex, GridView.Visible)
+        return true
+    }
+
+    function activateSelectedItem() {
+        if (selectedIndex < 0 || selectedIndex >= grid.count)
+            return
+        grid.positionViewAtIndex(selectedIndex, GridView.Visible)
+        var cell = grid.itemAtIndex(selectedIndex)
+        if (!cell)
+            return
+        if (cell.isFolder)
+            root.openCollectionRequested(selectedIndex)
+        else
+            root.playRequested(selectedIndex)
+    }
+
+    FocusScope {
+        id: keyboardScope
+        anchors.fill: parent
+        focus: false
+
+        Keys.onPressed: function(event) {
+            if (root.inCollectionView)
+                return
+
+            switch (event.key) {
+            case Qt.Key_Left:
+                moveSelection(0, -1)
+                event.accepted = true
+                break
+            case Qt.Key_Right:
+                moveSelection(0, 1)
+                event.accepted = true
+                break
+            case Qt.Key_Up:
+                moveSelection(-1, 0)
+                event.accepted = true
+                break
+            case Qt.Key_Down:
+                moveSelection(1, 0)
+                event.accepted = true
+                break
+            case Qt.Key_Return:
+            case Qt.Key_Enter:
+            case Qt.Key_Space:
+                activateSelectedItem()
+                event.accepted = true
+                break
+            case Qt.Key_Backtab:
+                root.sidebarFocusRequested()
+                event.accepted = true
+                break
+            case Qt.Key_Tab:
+                root.searchFocusRequested()
+                event.accepted = true
+                break
+            }
+        }
+    }
 
     CreateFolderDialog {
         id: createFolderDialog
@@ -44,11 +164,29 @@ Item {
         parent: Overlay.overlay
     }
 
-    function openContextMenu(index, isCollection, title, artist, anchorItem, x, y) {
+    ListModel {
+        id: moveTargetsModel
+    }
+
+    function populateMoveTargets(sourcePath) {
+        moveTargetsModel.clear()
+        if (!sourcePath)
+            return
+        var folders = backend.foldersForMove(sourcePath)
+        for (var i = 0; i < folders.length; i++)
+            moveTargetsModel.append(folders[i])
+    }
+
+    function openContextMenu(index, isCollection, title, artist, itemPath, anchorItem, x, y) {
         contextMenu.itemIndex = index
         contextMenu.isCollection = isCollection
         contextMenu.itemTitle = title
         contextMenu.itemArtist = artist
+        contextMenu.itemPath = itemPath
+        if (!isCollection)
+            populateMoveTargets(itemPath)
+        else
+            moveTargetsModel.clear()
         contextMenu.popup(anchorItem, x, y)
     }
 
@@ -56,22 +194,25 @@ Item {
         emptyContextMenu.popup(anchorItem, x, y)
     }
 
-    Menu {
+    StyledMenu {
         id: emptyContextMenu
-        MenuItem {
+        StyledMenuItem {
+            iconName: "create_new_folder"
             text: "Tạo thư mục mới"
             onTriggered: createFolderDialog.openDialog()
         }
     }
 
-    Menu {
+    StyledMenu {
         id: contextMenu
         property int itemIndex: -1
         property bool isCollection: false
         property string itemTitle: ""
         property string itemArtist: ""
+        property string itemPath: ""
 
-        MenuItem {
+        StyledMenuItem {
+            iconName: contextMenu.isCollection ? "folder_open" : "play_arrow"
             text: contextMenu.isCollection ? "Mở album / playlist" : "Phát"
             onTriggered: {
                 if (contextMenu.isCollection)
@@ -80,21 +221,43 @@ Item {
                     root.playRequested(contextMenu.itemIndex)
             }
         }
-        MenuItem {
+        StyledMenu {
+            id: moveToFolderMenu
+            title: "Chuyển vào thư mục"
+            enabled: !contextMenu.isCollection && moveTargetsModel.count > 0
+
+            Instantiator {
+                model: moveTargetsModel
+                delegate: StyledMenuItem {
+                    iconName: "folder"
+                    required property string title
+                    required property string path
+                    text: title
+                    onTriggered: backend.moveMediaToFolder(contextMenu.itemPath, path)
+                }
+                onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
+                onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
+            }
+        }
+        StyledMenuItem {
+            iconName: "image"
             text: "Đổi ảnh bìa"
             onTriggered: backend.pickMediaCover(contextMenu.itemIndex)
         }
-        MenuItem {
-            text: "Sửa tên / tác giả"
+        StyledMenuItem {
+            iconName: "edit"
+            text: "Chỉnh sửa thông tin"
             onTriggered: editDialog.openFor(
                 contextMenu.itemIndex,
                 contextMenu.itemTitle,
                 contextMenu.itemArtist
             )
         }
-        MenuSeparator {}
-        MenuItem {
-            text: "Xóa"
+        StyledMenuSeparator {}
+        StyledMenuItem {
+            iconName: "delete"
+            destructive: true
+            text: "Xóa khỏi thư viện"
             onTriggered: backend.deleteMediaAt(contextMenu.itemIndex)
         }
     }
@@ -112,9 +275,10 @@ Item {
         isPlaying: root.isPlaying
         onPlayRequested: function(index) { root.playRequested(index) }
         onOpenCollectionRequested: function(index) { root.openCollectionRequested(index) }
-        onReorderRequested: function(fromIdx, toIdx) { backend.reorderCollectionItems(fromIdx, toIdx) }
         onPlayAllRequested: function() { root.playAllRequested() }
         onShufflePlayRequested: function() { root.shufflePlayRequested() }
+        onSidebarFocusRequested: root.sidebarFocusRequested()
+        onSearchFocusRequested: root.searchFocusRequested()
     }
 
     // Lobby grid
@@ -183,7 +347,6 @@ Item {
             clip: true
             visible: count > 0
 
-            property bool fileDragActive: false
             property int columns: root.gridColumns
             interactive: root.scrollEnabled
             cellWidth: Math.floor((width - (columns - 1) * Theme.cardGap) / columns)
@@ -202,58 +365,19 @@ Item {
                 id: cell
                 width: grid.cellWidth - Theme.cardGap
                 height: grid.cellHeight - 8
-                opacity: cardDragHandler.active ? 0.38 : 1.0
 
                 property bool isFolder: model.isCollection
                 property bool showVinyl: !isFolder && root.useVinylStyle && model.audioOnly
                 property bool showArtistFolder: isFolder && root.useVinylStyle
                 property string itemPath: model.path
-                property string enteringDragPath: ""
+                property bool keyboardSelected: root.hasKeyboardFocus && root.selectedIndex === index
 
-                Behavior on opacity {
-                    NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
-                }
-
-                Drag.active: cardDragHandler.active
-                Drag.source: cell
-                Drag.dragType: Drag.Automatic
-                Drag.supportedActions: Qt.MoveAction
-                Drag.keys: ["liminal/media"]
-                Drag.mimeData: { "text/plain": itemPath }
-                Drag.hotSpot.x: width / 2
-                Drag.hotSpot.y: height / 2
-
-                DragHandler {
-                    id: cardDragHandler
-                    enabled: !isFolder
-                    dragThreshold: 8
-                    onActiveChanged: grid.fileDragActive = active
-                }
-
-                DropArea {
-                    id: folderDropArea
+                KeyboardFocusRing {
                     anchors.fill: parent
-                    enabled: isFolder
-                    z: grid.fileDragActive ? 50 : -10
-                    keys: ["liminal/media"]
-
-                    onEntered: function(drag) {
-                        enteringDragPath = DragDrop.readMimePath(drag)
-                    }
-                    onExited: enteringDragPath = ""
-                    onDropped: function(drop) {
-                        DragDrop.acceptDrop(drop)
-                        var src = DragDrop.readMimePath(drop) || enteringDragPath
-                        enteringDragPath = ""
-                        if (src && src !== itemPath)
-                            backend.moveMediaByPath(src, itemPath)
-                    }
+                    show: keyboardSelected
+                    ringRadius: Theme.cardRadius
+                    ringWidth: Theme.focusRingWidth
                 }
-
-                readonly property bool folderDropHighlight: isFolder
-                        && folderDropArea.containsDrag
-                        && enteringDragPath !== ""
-                        && enteringDragPath !== itemPath
 
                 TapHandler {
                     onTapped: {
@@ -269,7 +393,16 @@ Item {
                     acceptedButtons: Qt.RightButton
                     z: -1
                     onClicked: function(mouse) {
-                        root.openContextMenu(index, isFolder, model.title, model.subtitle, cell, mouse.x, mouse.y)
+                        root.openContextMenu(
+                            index,
+                            isFolder,
+                            model.title,
+                            model.subtitle,
+                            itemPath,
+                            cell,
+                            mouse.x,
+                            mouse.y
+                        )
                     }
                 }
 
@@ -279,13 +412,10 @@ Item {
                     title: model.title
                     subtitle: model.subtitle
                     imageSource: model.imageSource
-                    mediaPath: itemPath
                     accentColor: model.accentColor
-                    dropActive: folderDropHighlight
-                    dropScale: folderDropHighlight ? 1.07 : 1.0
                     onClicked: root.openCollectionRequested(index)
                     onContextMenuRequested: function(x, y) {
-                        root.openContextMenu(index, true, model.title, model.subtitle, cell, x, y)
+                        root.openContextMenu(index, true, model.title, model.subtitle, itemPath, cell, x, y)
                     }
                 }
 
@@ -298,13 +428,10 @@ Item {
                     subtitle: model.subtitle
                     trackCount: model.childCount || 0
                     trackThumbnails: model.trackThumbnails || []
-                    mediaPath: itemPath
                     accentColor: model.accentColor
-                    dropActive: folderDropHighlight
-                    dropScale: folderDropHighlight ? 1.07 : 1.0
                     onClicked: root.openCollectionRequested(index)
                     onContextMenuRequested: function(x, y) {
-                        root.openContextMenu(index, true, model.title, model.subtitle, cell, x, y)
+                        root.openContextMenu(index, true, model.title, model.subtitle, itemPath, cell, x, y)
                     }
                 }
 
@@ -350,10 +477,24 @@ Item {
             }
         }
 
-        Column {
+        Item {
             anchors.centerIn: parent
-            spacing: 8
+            width: emptyColumn.width + 48
+            height: emptyColumn.height + 32
             visible: grid.count === 0
+
+            KeyboardFocusRing {
+                anchors.fill: parent
+                show: root.hasKeyboardFocus
+                ringRadius: Theme.cardRadius
+                ringWidth: Theme.focusRingWidth
+                glowOpacity: 0.16
+            }
+
+            Column {
+                id: emptyColumn
+                anchors.centerIn: parent
+                spacing: 8
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -377,10 +518,11 @@ Item {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Chuột phải để tạo thư mục · Super+Shift+N"
+                text: "Chuột phải để tạo thư mục · Super+Shift+N · Mũi tên để chọn · Enter để mở/phát"
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted
+            }
             }
         }
     }

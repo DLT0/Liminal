@@ -8,7 +8,6 @@ Item {
     property string title: ""
     property string subtitle: ""
     property string imageSource: ""
-    property string mediaPath: ""
     property string resolvedImageSource: {
         if (!imageSource)
             return ""
@@ -17,32 +16,22 @@ Item {
         return "file://" + imageSource
     }
     property color accentColor: Theme.accentEnd
-    property bool dropActive: false
-    property real dropScale: 1.0
 
     signal clicked()
     signal contextMenuRequested(real x, real y)
-    signal itemDropped(string sourcePath)
 
-    readonly property real cardScale: (hoverHandler.hovered || dropActive) ? Theme.hoverScale : 1.0
+    readonly property real cardScale: hoverHandler.hovered ? Theme.hoverScale : 1.0
 
     width: implicitWidth
     height: folderBody.height + titleLabel.implicitHeight + subtitleLabel.implicitHeight + 12
 
-    scale: cardScale * dropScale
+    scale: cardScale
     transformOrigin: Item.Center
 
     Behavior on scale {
         NumberAnimation {
             duration: Theme.hoverDuration
             easing.type: Easing.OutCubic
-        }
-    }
-
-    Behavior on dropScale {
-        NumberAnimation {
-            duration: 200
-            easing.type: Easing.OutBack
         }
     }
 
@@ -178,14 +167,8 @@ Item {
         Rectangle {
             anchors.fill: folderFront
             radius: Theme.libraryCardRadius
-            color: root.dropActive ? Theme.hoverOverlay : "transparent"
-            border.color: root.dropActive ? Theme.accentStart : "transparent"
-            border.width: root.dropActive ? 2 : 0
+            color: "transparent"
             z: 3
-
-            Behavior on border.width {
-                NumberAnimation { duration: 150 }
-            }
         }
     }
 

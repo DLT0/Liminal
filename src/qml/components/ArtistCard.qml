@@ -10,14 +10,10 @@ Item {
     property string subtitle: ""
     property int trackCount: 0
     property var trackThumbnails: []
-    property string mediaPath: ""
     property color accentColor: Theme.accentEnd
-    property bool dropActive: false
-    property real dropScale: 1.0
 
     signal clicked()
     signal contextMenuRequested(real x, real y)
-    signal itemDropped(string sourcePath)
 
     function resolvedThumbnail(index) {
         if (index < 0 || index >= trackThumbnails.length)
@@ -38,25 +34,18 @@ Item {
         return trackCount + " bài"
     }
 
-    readonly property real cardScale: (hoverHandler.hovered || dropActive) ? Theme.hoverScale : 1.0
+    readonly property real cardScale: hoverHandler.hovered ? Theme.hoverScale : 1.0
 
     width: implicitWidth
     height: artBlock.height + textBlock.implicitHeight
 
-    scale: cardScale * dropScale
+    scale: cardScale
     transformOrigin: Item.Center
 
     Behavior on scale {
         NumberAnimation {
             duration: Theme.hoverDuration
             easing.type: Easing.OutCubic
-        }
-    }
-
-    Behavior on dropScale {
-        NumberAnimation {
-            duration: 200
-            easing.type: Easing.OutBack
         }
     }
 
@@ -151,9 +140,9 @@ Item {
             Rectangle {
                 anchors.fill: parent
                 radius: Theme.libraryCardRadius
-                color: root.dropActive ? Theme.hoverOverlay : "transparent"
-                border.color: root.dropActive ? Theme.accentStart : (hoverHandler.hovered ? Theme.accentStart : Theme.cardBorder)
-                border.width: root.dropActive ? 2 : 1
+                color: "transparent"
+                border.color: hoverHandler.hovered ? Theme.accentStart : Theme.cardBorder
+                border.width: 1
 
                 Behavior on border.color {
                     ColorAnimation { duration: Theme.colorDuration }

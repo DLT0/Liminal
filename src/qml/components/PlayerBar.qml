@@ -22,7 +22,7 @@ GlassPanel {
     property bool loopOn: false
 
     property bool seeking: false
-    property bool volumeDragging: false
+    property bool volumeAdjusting: false
 
     signal previousClicked()
     signal playClicked()
@@ -63,13 +63,10 @@ GlassPanel {
         anchors.bottomMargin: 8
         spacing: 4
 
-        // Top row: track info | transport | volume
-        // Top row: track info | transport | volume
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 52
 
-            // Left: thumbnail + info
             RowLayout {
                 anchors.left: parent.left
                 anchors.top: parent.top
@@ -108,7 +105,6 @@ GlassPanel {
                 }
             }
 
-            // Center: transport controls only
             RowLayout {
                 anchors.centerIn: parent
                 height: parent.height
@@ -186,7 +182,6 @@ GlassPanel {
                 }
             }
 
-            // Right: volume + settings
             RowLayout {
                 anchors.right: parent.right
                 anchors.top: parent.top
@@ -213,9 +208,10 @@ GlassPanel {
                     live: true
                     padding: 10
 
-                    onPressedChanged: {
-                        root.volumeDragging = pressed
-                        if (!pressed)
+                    onPressedChanged: root.volumeAdjusting = pressed
+
+                    onValueChanged: {
+                        if (pressed)
                             root.volumeAdjusted(value)
                     }
 
@@ -261,7 +257,6 @@ GlassPanel {
             }
         }
 
-        // Bottom row: full-width progress (no overlap with transport buttons)
         RowLayout {
             Layout.fillWidth: true
             Layout.preferredHeight: 28
@@ -331,7 +326,7 @@ GlassPanel {
     }
 
     onVolumeLevelChanged: {
-        if (!volumeDragging && !volSlider.pressed && volSlider.value !== volumeLevel)
+        if (!volumeAdjusting && volSlider.value !== volumeLevel)
             volSlider.value = volumeLevel
     }
 

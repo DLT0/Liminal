@@ -6,6 +6,12 @@ import Liminal 1.0
 Item {
     id: root
 
+    signal sidebarFocusRequested()
+
+    function activateFocus() {
+        queryField.forceActiveFocus()
+    }
+
     Component.onCompleted: {
         if (backend.downloadDependencyError.length > 0)
             errorStatus = backend.downloadDependencyError
@@ -484,12 +490,35 @@ Item {
                     spacing: 8
 
                     Rectangle {
+                        id: queryFieldBg
                         Layout.fillWidth: true
                         implicitHeight: 42
                         radius: 8
                         color: Theme.bgTop
                         border.color: queryField.activeFocus ? Theme.accentStart : Theme.inputBorder
-                        border.width: 1
+                        border.width: queryField.activeFocus ? Theme.focusRingWidth : 1
+
+                        Behavior on border.color {
+                            ColorAnimation {
+                                duration: Theme.colorDuration
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+
+                        Behavior on border.width {
+                            NumberAnimation {
+                                duration: Theme.colorDuration
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+
+                        KeyboardFocusRing {
+                            anchors.fill: parent
+                            show: queryField.activeFocus
+                            ringRadius: 8
+                            ringWidth: Theme.focusRingWidth
+                            glowOpacity: 0.22
+                        }
 
                         AppIcon {
                             id: inputIcon
@@ -519,6 +548,13 @@ Item {
                                     root.runSearch(text)
                                 else
                                     root.beginDownload(text)
+                            }
+
+                            Keys.onPressed: function(event) {
+                                if (event.key === Qt.Key_Backtab) {
+                                    root.sidebarFocusRequested()
+                                    event.accepted = true
+                                }
                             }
                         }
 
@@ -572,14 +608,16 @@ Item {
                     progress: root.directDownloadProgress
                     state: root.directDownloadState
 
-                    ToolTip.visible: directHover.containsMouse && root.directDownloadState === "error"
-                    ToolTip.text: root.directDownloadError
-
                     MouseArea {
                         id: directHover
                         anchors.fill: parent
                         hoverEnabled: true
                         acceptedButtons: Qt.NoButton
+                    }
+
+                    AppToolTip {
+                        visible: directHover.containsMouse && root.directDownloadState === "error"
+                        text: root.directDownloadError
                     }
                 }
             }
@@ -763,8 +801,10 @@ Item {
                             hoverEnabled: true
                             onClicked: root.beginDownload(url)
 
-                            ToolTip.visible: containsMouse && downloadState === "error"
-                            ToolTip.text: downloadError
+                            AppToolTip {
+                                visible: downloadBtn.containsMouse && downloadState === "error"
+                                text: downloadError
+                            }
                         }
                     }
                 }
