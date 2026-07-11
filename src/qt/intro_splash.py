@@ -68,7 +68,7 @@ class IntroSplash(QWidget):
         # 6. Setup QMediaPlayer & Audio Output
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
-        self.audio_output.setVolume(1.0)
+        self.audio_output.setMuted(True)
         self.media_player.setAudioOutput(self.audio_output)
         # Set video output to our QGraphicsVideoItem instead of QVideoWidget
         self.media_player.setVideoOutput(self.video_item)

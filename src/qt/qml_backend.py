@@ -23,12 +23,13 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
-from src.config import AUDIO_EXTS
+from src.config import AUDIO_EXTS, VIDEO_EXTS
 from src.downloader import Downloader, DownloadFailed
+from src.folder_order import write_order
 from src.metadata_store import delete_metadata, set_cover_image, set_metadata
 from src.models import MediaInfo, MediaKind, PlaybackStatus
 from src.player import PlayerBridge
-from src.scanner import scan_music, scan_playlist, scan_video
+from src.scanner import find_folder_preview_image, scan_directory, scan_library_folder
 from src.settings_store import load_raw_settings, load_settings, save_raw_settings, save_settings
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ ACCENT_COLORS = [
     "#6366f1",
 ]
 
-NAV_TAB_PAGES = [1, 2, 3, 5]
+NAV_TAB_PAGES = [2, 3, 4, 5]
 
 
 def _is_remote(path: str) -> bool:
@@ -51,9 +52,9 @@ def _is_remote(path: str) -> bool:
 
 
 def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict:
-    is_collection = info.kind in (MediaKind.ALBUM, MediaKind.VIDEO_PLAYLIST)
+    is_collection = info.kind in (MediaKind.ALBUM, MediaKind.VIDEO_PLAYLIST, MediaKind.FOLDER)
     if is_collection:
-        audio_only = info.kind == MediaKind.ALBUM
+        audio_only = info.kind in (MediaKind.ALBUM, MediaKind.FOLDER)
     return {
         "title": info.title,
         "subtitle": info.artist or ("Music" if audio_only else "Video"),
@@ -68,6 +69,7 @@ def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict
         "is_collection": is_collection,
         "kind": info.kind.name.lower(),
         "child_count": info.child_count,
+        "preview_images": list(info.preview_images) if is_collection else [],
         "download_percent": 0.0,
         "download_status": "",
         "is_downloading": False,
@@ -76,6 +78,8 @@ def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict
 
 class MediaListModel(QAbstractListModel):
     """List model for GridView media cards."""
+
+    countChanged = pyqtSignal()
 
     TitleRole = Qt.ItemDataRole.UserRole + 1
     SubtitleRole = Qt.ItemDataRole.UserRole + 2
@@ -93,6 +97,7 @@ class MediaListModel(QAbstractListModel):
     IsCollectionRole = Qt.ItemDataRole.UserRole + 14
     KindRole = Qt.ItemDataRole.UserRole + 15
     ChildCountRole = Qt.ItemDataRole.UserRole + 16
+    TrackThumbnailsRole = Qt.ItemDataRole.UserRole + 17
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -101,6 +106,10 @@ class MediaListModel(QAbstractListModel):
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         if parent.isValid():
             return 0
+        return len(self._items)
+
+    @pyqtProperty(int, notify=countChanged)
+    def count(self) -> int:
         return len(self._items)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
@@ -124,6 +133,7 @@ class MediaListModel(QAbstractListModel):
             self.IsCollectionRole: "is_collection",
             self.KindRole: "kind",
             self.ChildCountRole: "child_count",
+            self.TrackThumbnailsRole: "preview_images",
         }
         key = role_map.get(role)
         if key is None:
@@ -135,6 +145,8 @@ class MediaListModel(QAbstractListModel):
             return bool(value)
         if role == self.ChildCountRole:
             return int(value or 0)
+        if role == self.TrackThumbnailsRole:
+            return list(value or [])
         if role == self.DownloadPercentRole:
             return float(value or 0.0)
         return value
@@ -157,17 +169,22 @@ class MediaListModel(QAbstractListModel):
             self.IsCollectionRole: b"isCollection",
             self.KindRole: b"kind",
             self.ChildCountRole: b"childCount",
+            self.TrackThumbnailsRole: b"trackThumbnails",
         }
 
     def set_items(self, items: list[dict]) -> None:
         self.beginResetModel()
         self._items = items
         self.endResetModel()
+        self.countChanged.emit()
 
     def item_at(self, row: int) -> dict | None:
         if 0 <= row < len(self._items):
             return self._items[row]
         return None
+
+    def item_paths(self) -> list[str]:
+        return [str(item.get("path", "")) for item in self._items]
 
     def update_download_state(
         self,
@@ -224,6 +241,7 @@ class AppBackend(QObject):
     downloadQualityChanged = pyqtSignal()
     ytDlpUpdateStatusChanged = pyqtSignal()
     playlistNavigationChanged = pyqtSignal()
+    libraryNavigationChanged = pyqtSignal()
     searchResults = pyqtSignal(list)
     searchError = pyqtSignal(str)
     downloadProgress = pyqtSignal(str, float)
@@ -237,8 +255,8 @@ class AppBackend(QObject):
         self._track_artist = "Offline Media Player"
         self._is_playing = False
         self._volume = 100
-        self._current_page: int = 1
-        self._page_title = "Playlist"
+        self._current_page: int = 2
+        self._page_title = "Music"
         self._filter = ""
         self._app_icon_url = QUrl.fromLocalFile(str(APP_ICON_PATH.resolve())).toString()
 
@@ -259,7 +277,10 @@ class AppBackend(QObject):
         self._download_quality: str = str(raw.get("download_quality", "1080"))
         self._yt_dlp_update_status: str = ""
 
-        self._music_paths = [info.path for info in scan_music()]
+        self._music_paths = [
+            info.path
+            for info in scan_directory(Path(self._music_dir), AUDIO_EXTS)
+        ]
         self._current_path = ""
         self._current_audio_only = True
         self._shuffle_on = False
@@ -273,11 +294,18 @@ class AppBackend(QObject):
         self._media_video_preview: list[dict] = []
 
         self._all_music_items: list[dict] = []
+        self._all_music_singles: list[dict] = []
+        self._all_music_albums: list[dict] = []
         self._all_video_items: list[dict] = []
         self._all_playlist_items: list[dict] = []
         self._playlist_folder_stack: list[Path] = []
+        self._music_folder_stack: list[Path] = []
+        self._video_folder_stack: list[Path] = []
 
         self._music_model = MediaListModel(self)
+        self._music_singles_model = MediaListModel(self)
+        self._music_albums_model = MediaListModel(self)
+        self._music_section = "singles"
         self._video_model = MediaListModel(self)
         self._playlist_model = MediaListModel(self)
         self._media_music_model = MediaListModel(self)
@@ -303,6 +331,14 @@ class AppBackend(QObject):
     @pyqtProperty(QObject, constant=True)
     def musicModel(self) -> MediaListModel:
         return self._music_model
+
+    @pyqtProperty(QObject, constant=True)
+    def musicSinglesModel(self) -> MediaListModel:
+        return self._music_singles_model
+
+    @pyqtProperty(QObject, constant=True)
+    def musicAlbumsModel(self) -> MediaListModel:
+        return self._music_albums_model
 
     @pyqtProperty(QObject, constant=True)
     def videoModel(self) -> MediaListModel:
@@ -406,17 +442,76 @@ class AppBackend(QObject):
 
     @pyqtProperty(str, notify=playlistNavigationChanged)
     def playlistBreadcrumb(self) -> str:
-        if not self._playlist_folder_stack:
+        return self._breadcrumb_for_stack(self._playlist_folder_stack)
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def inCollectionView(self) -> bool:
+        return bool(self._folder_stack_for_page(self._current_page))
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def libraryCanGoBack(self) -> bool:
+        return bool(self._folder_stack_for_page(self._current_page))
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def libraryBreadcrumb(self) -> str:
+        return self._breadcrumb_for_stack(self._folder_stack_for_page(self._current_page))
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def collectionBannerTitle(self) -> str:
+        folder = self._current_library_folder()
+        return folder.name if self.inCollectionView else ""
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def collectionBannerSubtitle(self) -> str:
+        if not self.inCollectionView:
             return ""
-        return " / ".join(p.name for p in self._playlist_folder_stack)
+        model = self._model_for_page(self._current_page)
+        count = model.rowCount()
+        audio = 0
+        video = 0
+        for row in range(count):
+            item = model.item_at(row)
+            if item is None or item.get("is_collection"):
+                continue
+            if item.get("audio_only"):
+                audio += 1
+            else:
+                video += 1
+        parts: list[str] = []
+        if audio:
+            parts.append(f"{audio} bài")
+        if video:
+            parts.append(f"{video} video")
+        return " · ".join(parts) if parts else "Playlist trống"
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def collectionBannerImage(self) -> str:
+        if not self.inCollectionView:
+            return ""
+        return find_folder_preview_image(self._current_library_folder())
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def collectionHasPlayableTracks(self) -> bool:
+        return bool(self._collection_media_items())
 
     # ── Slots ──
 
     @pyqtSlot(int)
     def setCurrentPage(self, page: int) -> None:
+        # Playlist remains available as a storage model, but is no longer a
+        # navigable top-level page.
+        if page == 1:
+            page = 2
         if page != 1 and self._current_page == 1:
             self._playlist_folder_stack.clear()
             self.playlistNavigationChanged.emit()
+            self.libraryNavigationChanged.emit()
+        if page != 2 and self._current_page == 2:
+            self._music_folder_stack.clear()
+            self.libraryNavigationChanged.emit()
+        if page != 3 and self._current_page == 3:
+            self._video_folder_stack.clear()
+            self.libraryNavigationChanged.emit()
         if page in {1, 2, 3}:
             # Also refresh when the user clicks the already-selected tab.
             self._load_libraries()
@@ -432,12 +527,18 @@ class AppBackend(QObject):
             self._page_title = titles.get(page, "Liminal")
             self.pageTitleChanged.emit()
             self.currentPageChanged.emit()
+            self.libraryNavigationChanged.emit()
 
     @pyqtSlot(str)
     def setSearchFilter(self, text: str) -> None:
         self._filter = text.strip().lower()
         if self._current_page == 2:
-            self._apply_library_filter(self._all_music_items, self.musicModel)
+            if self.inCollectionView:
+                active = self._music_albums_model if self._music_section == "albums" else self._music_singles_model
+                self._apply_library_filter(self._all_music_items, active)
+            else:
+                self._apply_library_filter(self._all_music_singles, self._music_singles_model)
+                self._apply_library_filter(self._all_music_albums, self._music_albums_model)
         elif self._current_page == 3:
             self._apply_library_filter(self._all_video_items, self.videoModel)
         elif self._current_page == 1:
@@ -452,31 +553,171 @@ class AppBackend(QObject):
         if item.get("is_collection"):
             self.openCollection(index)
             return
+        if self.inCollectionView:
+            self._set_playback_queue(self._collection_media_items())
         self._play_item(item)
 
     @pyqtSlot(int)
-    def openCollection(self, index: int) -> None:
-        if self._current_page != 1:
+    def playMusicSingle(self, index: int) -> None:
+        self._music_section = "singles"
+        self._music_model.set_items(self._music_singles_model._items)
+        self.playMedia(index)
+
+    @pyqtSlot(int)
+    def openMusicAlbum(self, index: int) -> None:
+        self._music_section = "albums"
+        self.openCollection(index)
+
+    @pyqtSlot()
+    def playCollection(self) -> None:
+        items = self._collection_media_items()
+        if not items:
             return
-        item = self.playlistModel.item_at(index)
+        self._set_playback_queue(items)
+        self._play_item(items[0])
+
+    @pyqtSlot()
+    def playCollectionShuffled(self) -> None:
+        items = self._collection_media_items()
+        if not items:
+            return
+        self._set_playback_queue(items)
+        if not self._shuffle_on:
+            self._shuffle_on = True
+            self.shuffleChanged.emit()
+        self._play_item(random.choice(items))
+
+    @pyqtSlot()
+    def togglePlayCollection(self) -> None:
+        if self._is_playing:
+            self.togglePause()
+            return
+        self.playCollection()
+
+    @pyqtSlot(int)
+    def openCollection(self, index: int) -> None:
+        if self._current_page not in {1, 2, 3}:
+            return
+        model = self._model_for_page(self._current_page)
+        item = model.item_at(index)
         if item is None or not item.get("is_collection"):
             return
-        self._playlist_folder_stack.append(Path(item["path"]))
-        self._reload_playlist_view()
+        self._folder_stack_for_page(self._current_page).append(Path(item["path"]))
+        self._reload_library_view(self._current_page)
 
     @pyqtSlot()
     def goBackPlaylist(self) -> None:
-        if not self._playlist_folder_stack:
+        self.goBackLibrary()
+
+    @pyqtSlot()
+    def goBackLibrary(self) -> None:
+        stack = self._folder_stack_for_page(self._current_page)
+        if not stack:
             return
-        self._playlist_folder_stack.pop()
-        self._reload_playlist_view()
+        stack.pop()
+        self._reload_library_view(self._current_page)
 
     @pyqtSlot()
     def goBack(self) -> None:
-        if self._current_page == 1 and self._playlist_folder_stack:
-            self.goBackPlaylist()
-        elif self._current_page != 1:
-            self.setCurrentPage(1)
+        if self._current_page in {1, 2, 3} and self._folder_stack_for_page(self._current_page):
+            self.goBackLibrary()
+        elif self._current_page != 2:
+            self.setCurrentPage(2)
+
+    @pyqtSlot(str)
+    def createFolder(self, name: str) -> None:
+        if self._current_page not in {1, 2, 3}:
+            return
+        parent = self._current_library_folder()
+        base = (name or "Thư mục mới").strip() or "Thư mục mới"
+        candidate = parent / base
+        if candidate.exists():
+            n = 2
+            while (parent / f"{base} ({n})").exists():
+                n += 1
+            candidate = parent / f"{base} ({n})"
+        try:
+            candidate.mkdir(parents=False, exist_ok=False)
+        except OSError as exc:
+            logger.error("Failed to create folder %s: %s", candidate, exc)
+            return
+        self._reload_library_view(self._current_page)
+
+    @pyqtSlot(str, str)
+    def moveMediaByPath(self, source_path: str, dest_folder_path: str) -> None:
+        if self._current_page not in {1, 2, 3}:
+            return
+        src = Path(source_path)
+        dest_dir = Path(dest_folder_path)
+        if not src.exists() or not dest_dir.is_dir():
+            return
+        if src.resolve() == dest_dir.resolve() or dest_dir.resolve().is_relative_to(src.resolve()):
+            return
+        target = dest_dir / src.name
+        if target.exists():
+            return
+        try:
+            shutil.move(str(src), str(target))
+        except OSError as exc:
+            logger.error("Failed to move %s -> %s: %s", src, target, exc)
+            return
+        delete_metadata(str(src.resolve()))
+        self._load_libraries()
+
+    @pyqtSlot(int)
+    def moveMediaOutOfFolder(self, index: int) -> None:
+        if self._current_page not in {1, 2, 3}:
+            return
+        stack = self._folder_stack_for_page(self._current_page)
+        if not stack:
+            return
+        model = self._model_for_page(self._current_page)
+        item = model.item_at(index)
+        if item is None or item.get("is_collection"):
+            return
+        src = Path(item["path"])
+        dest_dir = stack[-1].parent
+        target = dest_dir / src.name
+        if target.exists():
+            return
+        try:
+            shutil.move(str(src), str(target))
+        except OSError as exc:
+            logger.error("Failed to move %s out of folder: %s", src, exc)
+            return
+        delete_metadata(str(src.resolve()))
+        self._reload_library_view(self._current_page)
+
+    @pyqtSlot(int, int)
+    def reorderCollectionItems(self, from_index: int, to_index: int) -> None:
+        if self._current_page not in {1, 2, 3}:
+            return
+        if from_index == to_index:
+            return
+        model = self._model_for_page(self._current_page)
+        paths = model.item_paths()
+        if not (0 <= from_index < len(paths) and 0 <= to_index < len(paths)):
+            return
+        moved = paths.pop(from_index)
+        paths.insert(to_index, moved)
+        names = [Path(p).name for p in paths]
+        write_order(self._current_library_folder(), names)
+        self._reload_library_view(self._current_page)
+
+    @pyqtSlot(str, str)
+    def reorderCollectionByPath(self, from_path: str, to_path: str) -> None:
+        if self._current_page not in {1, 2, 3}:
+            return
+        if not from_path or from_path == to_path:
+            return
+        model = self._model_for_page(self._current_page)
+        paths = model.item_paths()
+        try:
+            from_idx = paths.index(from_path)
+            to_idx = paths.index(to_path)
+        except ValueError:
+            return
+        self.reorderCollectionItems(from_idx, to_idx)
 
     @pyqtSlot()
     def nextNavPage(self) -> None:
@@ -521,7 +762,7 @@ class AppBackend(QObject):
             return
         delete_metadata(str(path))
         if self._current_page == 1:
-            self._reload_playlist_view()
+            self._reload_library_view(1)
         else:
             self._load_libraries()
 
@@ -537,7 +778,7 @@ class AppBackend(QObject):
             artist=artist.strip(),
         )
         if self._current_page == 1:
-            self._reload_playlist_view()
+            self._reload_library_view(1)
         else:
             self._load_libraries()
 
@@ -558,7 +799,7 @@ class AppBackend(QObject):
             return
         set_cover_image(item["path"], chosen)
         if self._current_page == 1:
-            self._reload_playlist_view()
+            self._reload_library_view(1)
         else:
             self._load_libraries()
 
@@ -817,7 +1058,7 @@ class AppBackend(QObject):
     def _model_for_page(self, page: int) -> MediaListModel:
         return {
             1: self.playlistModel,
-            2: self.musicModel,
+            2: self._music_albums_model if self._music_section == "albums" else self._music_singles_model,
             3: self.videoModel,
         }.get(page, self.playlistModel)
 
@@ -828,41 +1069,92 @@ class AppBackend(QObject):
             return Path(self._video_dir)
         return Path(self._playlist_dir)
 
+    def _folder_stack_for_page(self, page: int) -> list[Path]:
+        return {
+            1: self._playlist_folder_stack,
+            2: self._music_folder_stack,
+            3: self._video_folder_stack,
+        }.get(page, self._playlist_folder_stack)
+
+    def _root_dir_for_page(self, page: int) -> Path:
+        return {
+            1: Path(self._playlist_dir),
+            2: Path(self._music_dir),
+            3: Path(self._video_dir),
+        }.get(page, Path(self._playlist_dir))
+
+    def _breadcrumb_for_stack(self, stack: list[Path]) -> str:
+        if not stack:
+            return ""
+        return " / ".join(p.name for p in stack)
+
+    def _current_library_folder(self) -> Path:
+        stack = self._folder_stack_for_page(self._current_page)
+        if stack:
+            return stack[-1]
+        return self._root_dir_for_page(self._current_page)
+
     def _current_playlist_folder(self) -> Path:
-        if self._playlist_folder_stack:
-            return self._playlist_folder_stack[-1]
-        return Path(self._playlist_dir)
+        return self._current_library_folder() if self._current_page == 1 else Path(self._playlist_dir)
 
     def _playlist_infos_to_items(self, infos: list[MediaInfo]) -> list[dict]:
         items: list[dict] = []
         for i, info in enumerate(infos):
             if info.kind == MediaKind.FILE:
                 audio_only = Path(info.path).suffix.lower() in AUDIO_EXTS
-            elif info.kind == MediaKind.ALBUM:
+            elif info.kind in (MediaKind.ALBUM, MediaKind.FOLDER):
                 audio_only = True
             else:
                 audio_only = False
             items.append(_media_item(info, i, audio_only=audio_only))
         return items
 
+    def _reload_library_view(self, page: int) -> None:
+        folder = self._folder_stack_for_page(page)[-1] if self._folder_stack_for_page(page) else self._root_dir_for_page(page)
+        infos = scan_library_folder(folder)
+        items = self._playlist_infos_to_items(infos)
+        if page == 1:
+            self._all_playlist_items = items
+            self._apply_library_filter(self._all_playlist_items, self.playlistModel)
+            self.playlistNavigationChanged.emit()
+        elif page == 2:
+            self._all_music_items = items
+            if self._folder_stack_for_page(page):
+                active = self._music_albums_model if self._music_section == "albums" else self._music_singles_model
+                self._apply_library_filter(self._all_music_items, active)
+                self._music_model.set_items(active._items)
+            else:
+                self._all_music_singles = [item for item in items if not item.get("is_collection")]
+                self._all_music_albums = [item for item in items if item.get("is_collection")]
+                self._apply_library_filter(self._all_music_singles, self._music_singles_model)
+                self._apply_library_filter(self._all_music_albums, self._music_albums_model)
+                self._music_model.set_items(self._music_singles_model._items)
+        elif page == 3:
+            self._all_video_items = items
+            self._apply_library_filter(self._all_video_items, self.videoModel)
+        self.libraryNavigationChanged.emit()
+
     def _reload_playlist_view(self) -> None:
-        infos = scan_playlist(self._current_playlist_folder())
-        self._all_playlist_items = self._playlist_infos_to_items(infos)
-        self._apply_library_filter(self._all_playlist_items, self.playlistModel)
-        self.playlistNavigationChanged.emit()
+        self._reload_library_view(1)
 
     def _load_libraries(self) -> None:
-        self._music_paths = [info.path for info in scan_music()]
-        self._all_music_items = self._playlist_infos_to_items(scan_music())
-        self._all_video_items = self._playlist_infos_to_items(scan_video())
-        self._reload_playlist_view()
-
-        self._apply_library_filter(self._all_music_items, self.musicModel)
-        self._apply_library_filter(self._all_video_items, self.videoModel)
+        self._music_paths = [
+            info.path
+            for info in scan_directory(Path(self._music_dir), AUDIO_EXTS)
+        ]
+        self._reload_library_view(1)
+        self._reload_library_view(2)
+        self._reload_library_view(3)
 
         preview_limit = 12
-        self._media_music_preview = self._all_music_items[:preview_limit]
-        self._media_video_preview = self._all_video_items[:preview_limit]
+        flat_music = self._playlist_infos_to_items(
+            scan_directory(Path(self._music_dir), AUDIO_EXTS)
+        )
+        flat_video = self._playlist_infos_to_items(
+            scan_directory(Path(self._video_dir), VIDEO_EXTS)
+        )
+        self._media_music_preview = flat_music[:preview_limit]
+        self._media_video_preview = flat_video[:preview_limit]
         self.mediaMusicModel.set_items(self._media_music_preview)
         self.mediaVideoModel.set_items(self._media_video_preview)
 
@@ -878,6 +1170,32 @@ class AppBackend(QObject):
                 if q in item["title"].lower() or q in item["subtitle"].lower()
             ]
         )
+
+    def _collection_media_items(self) -> list[dict]:
+        if not self.inCollectionView:
+            return []
+        model = self._model_for_page(self._current_page)
+        items: list[dict] = []
+        for row in range(model.rowCount()):
+            item = model.item_at(row)
+            if item is None or item.get("is_collection"):
+                continue
+            path = item.get("path") or item.get("url") or ""
+            if not path:
+                continue
+            if not item.get("audio_only") and not _is_remote(path):
+                if not Path(path).exists():
+                    continue
+            items.append(item)
+        return items
+
+    def _set_playback_queue(self, items: list[dict]) -> None:
+        self._music_paths = [
+            path
+            for item in items
+            if item.get("audio_only")
+            and (path := (item.get("path") or item.get("url") or ""))
+        ]
 
     def _play_item(self, item: dict) -> None:
         path = item.get("path") or item.get("url") or ""

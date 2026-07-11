@@ -16,8 +16,12 @@ Item {
         return "file://" + imageSource
     }
     property color accentColor: Theme.accentEnd
+    property bool widescreen: false
+    property bool clickEnabled: true
 
     signal clicked()
+
+    readonly property real posterAspect: widescreen ? Theme.videoPosterAspect : 1
 
     readonly property real cardScale: hoverMa.containsMouse ? Theme.hoverScale : 1.0
 
@@ -38,12 +42,12 @@ Item {
     Item {
         id: poster
         width: parent.width
-        height: width
+        height: width / posterAspect
 
         Rectangle {
             id: clipRect
             anchors.fill: parent
-            radius: Theme.cardRadius
+            radius: Theme.libraryCardRadius
             clip: true
             color: Theme.cardBg
 
@@ -120,7 +124,7 @@ Item {
 
         Rectangle {
             anchors.fill: parent
-            radius: Theme.cardRadius
+            radius: Theme.libraryCardRadius
             color: "transparent"
             border.color: Theme.cardBorder
             border.width: 1
@@ -143,6 +147,7 @@ Item {
     MouseArea {
         id: hoverMa
         anchors.fill: poster
+        enabled: root.clickEnabled
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor

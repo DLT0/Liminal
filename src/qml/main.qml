@@ -18,7 +18,7 @@ ApplicationWindow {
     color: Theme.bgTop
 
     property string searchQuery: ""
-    property var navPages: [1, 2, 3, 5]
+    property var navPages: [2, 3, 4, 5]
 
     function isTextInputFocused() {
         var item = root.activeFocusItem
@@ -88,6 +88,26 @@ ApplicationWindow {
             if (!root.isTextInputFocused())
                 backend.seekForward10()
         }
+    }
+
+    Shortcut {
+        sequence: "Meta+Shift+N"
+        onActivated: {
+            if (!root.isTextInputFocused() && backend.currentPage >= 1 && backend.currentPage <= 3)
+                createFolderShortcut()
+        }
+    }
+
+    Shortcut {
+        sequence: "Super+Shift+N"
+        onActivated: {
+            if (!root.isTextInputFocused() && backend.currentPage >= 1 && backend.currentPage <= 3)
+                createFolderShortcut()
+        }
+    }
+
+    function createFolderShortcut() {
+        backend.createFolder("Thư mục mới")
     }
 
     Item {
@@ -186,38 +206,163 @@ ApplicationWindow {
 
 
                     LibraryPage {
+                        id: playlistPage
                         anchors.fill: parent
                         visible: backend.currentPage === 1
                         model: backend.playlistModel
                         useVinylStyle: true
-                        showBackButton: backend.playlistCanGoBack
-                        breadcrumb: backend.playlistBreadcrumb
+                        showBackButton: backend.libraryCanGoBack
+                        breadcrumb: backend.libraryBreadcrumb
+                        inCollectionView: backend.inCollectionView
+                        bannerTitle: backend.collectionBannerTitle
+                        bannerSubtitle: backend.collectionBannerSubtitle
+                        bannerImage: backend.collectionBannerImage
+                        hasPlayableTracks: backend.collectionHasPlayableTracks
+                        isPlaying: backend.isPlaying
                         emptyTitle: "Playlist trống"
                         emptyMessage: "Tải bài hát về thư mục Playlist hoặc thêm file / thư mục album vào thư mục đã cấu hình."
                         onPlayRequested: function(index) { backend.playMedia(index) }
                         onOpenCollectionRequested: function(index) { backend.openCollection(index) }
+                        onPlayAllRequested: backend.togglePlayCollection()
+                        onShufflePlayRequested: backend.playCollectionShuffled()
                     }
 
-                    LibraryPage {
+                    Flickable {
+                        id: musicPage
+                        objectName: "musicPage"
                         anchors.fill: parent
                         visible: backend.currentPage === 2
-                        model: backend.musicModel
-                        useVinylStyle: true
-                        emptyTitle: "Chưa có nhạc"
-                        emptyMessage: "Thêm file nhạc vào thư mục Music đã cấu hình trong Settings."
-                        onPlayRequested: function(index) { backend.playMedia(index) }
-                        onOpenCollectionRequested: function(index) { backend.playMedia(index) }
+                        clip: true
+                        contentWidth: width
+                        contentHeight: musicContent.height
+
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                        // Flickable's children live in its content item.  Give that item
+                        // an explicit height so the two embedded LibraryPages cannot end up
+                        // with a zero-height anchor binding.
+                        Item {
+                            id: musicContent
+                            width: musicPage.width
+                            height: backend.inCollectionView
+                                ? musicPage.height
+                                : musicSinglesPage.y + musicSinglesPage.height + Theme.contentPadding
+
+                            readonly property int musicColumns: 5
+                            readonly property real musicCellWidth: Math.floor(
+                                (width - 2 * Theme.contentPadding - (musicColumns - 1) * Theme.cardGap) / musicColumns
+                            )
+                            readonly property real musicCellHeight: musicCellWidth + 60
+                            readonly property real albumsHeight: Math.max(
+                                180,
+                                Math.ceil((Number(backend.musicAlbumsModel.count) || 0) / musicColumns) * musicCellHeight + 16
+                            )
+                            readonly property real singlesHeight: Math.max(
+                                180,
+                                Math.ceil((Number(backend.musicSinglesModel.count) || 0) / musicColumns) * musicCellHeight + 16
+                            )
+
+                            Text {
+                                id: albumsTitle
+                                x: Theme.contentPadding
+                                y: Theme.contentPadding
+                                width: parent.width - 2 * Theme.contentPadding
+                                text: "Album của tôi"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 24
+                                font.weight: Font.Bold
+                                color: Theme.textPrimary
+                                visible: !backend.inCollectionView
+                            }
+
+                            LibraryPage {
+                                id: musicAlbumsPage
+                                objectName: "musicAlbumsPage"
+                                x: 0
+                                y: backend.inCollectionView ? 0 : albumsTitle.y + albumsTitle.height + 4
+                                width: parent.width
+                                height: backend.inCollectionView ? parent.height : musicContent.albumsHeight
+                                model: backend.musicAlbumsModel
+                                useVinylStyle: true
+                                showScrollBar: false
+                                scrollEnabled: false
+                                verticalContentMargin: 8
+                                gridColumns: musicContent.musicColumns
+                                showBackButton: backend.libraryCanGoBack
+                                breadcrumb: backend.libraryBreadcrumb
+                                inCollectionView: backend.inCollectionView
+                                bannerTitle: backend.collectionBannerTitle
+                                bannerSubtitle: backend.collectionBannerSubtitle
+                                bannerImage: backend.collectionBannerImage
+                                hasPlayableTracks: backend.collectionHasPlayableTracks
+                                isPlaying: backend.isPlaying
+                                emptyTitle: "Chưa có album"
+                                emptyMessage: "Tạo thư mục album trong thư mục Music để hiển thị tại đây."
+                                onPlayRequested: function(index) { backend.playMedia(index) }
+                                onOpenCollectionRequested: function(index) { backend.openMusicAlbum(index) }
+                                onPlayAllRequested: backend.togglePlayCollection()
+                                onShufflePlayRequested: backend.playCollectionShuffled()
+                            }
+
+                            Text {
+                                id: singlesTitle
+                                x: Theme.contentPadding
+                                y: musicAlbumsPage.y + musicAlbumsPage.height + 8
+                                width: parent.width - 2 * Theme.contentPadding
+                                text: "Đĩa đơn"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 24
+                                font.weight: Font.Bold
+                                color: Theme.textPrimary
+                                visible: !backend.inCollectionView
+                            }
+
+                            LibraryPage {
+                                id: musicSinglesPage
+                                objectName: "musicSinglesPage"
+                                x: 0
+                                y: singlesTitle.y + singlesTitle.height + 4
+                                width: parent.width
+                                height: musicContent.singlesHeight
+                                visible: !backend.inCollectionView
+                                model: backend.musicSinglesModel
+                                useVinylStyle: true
+                                showScrollBar: false
+                                scrollEnabled: false
+                                verticalContentMargin: 8
+                                gridColumns: musicContent.musicColumns
+                                showBackButton: false
+                                inCollectionView: false
+                                isPlaying: backend.isPlaying
+                                emptyTitle: "Chưa có đĩa đơn"
+                                emptyMessage: "Thêm file nhạc trực tiếp vào thư mục Music."
+                                onPlayRequested: function(index) { backend.playMusicSingle(index) }
+                            }
+                        }
                     }
 
                     LibraryPage {
+                        id: videoPage
                         anchors.fill: parent
                         visible: backend.currentPage === 3
                         model: backend.videoModel
                         useVinylStyle: false
+                        useVideoStyle: true
+                        widescreenPosters: true
+                        showBackButton: backend.libraryCanGoBack
+                        breadcrumb: backend.libraryBreadcrumb
+                        inCollectionView: backend.inCollectionView
+                        bannerTitle: backend.collectionBannerTitle
+                        bannerSubtitle: backend.collectionBannerSubtitle
+                        bannerImage: backend.collectionBannerImage
+                        hasPlayableTracks: backend.collectionHasPlayableTracks
+                        isPlaying: backend.isPlaying
                         emptyTitle: "Chưa có video"
                         emptyMessage: "Thêm file video vào thư mục Videos đã cấu hình trong Settings."
                         onPlayRequested: function(index) { backend.playMedia(index) }
-                        onOpenCollectionRequested: function(index) { backend.playMedia(index) }
+                        onOpenCollectionRequested: function(index) { backend.openCollection(index) }
+                        onPlayAllRequested: backend.togglePlayCollection()
+                        onShufflePlayRequested: backend.playCollectionShuffled()
                     }
 
                     Download {

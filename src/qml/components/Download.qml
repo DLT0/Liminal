@@ -11,11 +11,16 @@ Item {
             errorStatus = backend.downloadDependencyError
     }
 
+    property string intakeMode: "search"   // search | link
     property string mediaType: "music"     // music | video
     property string searchStatus: "idle"   // idle | loading | results | empty
     property string errorStatus: ""
     property string activeDownloadUrl: ""
     property string activeDownloadId: ""
+    property bool directDownloadActive: false
+    property real directDownloadProgress: 0
+    property string directDownloadState: "idle"
+    property string directDownloadError: ""
 
     function formatDuration(value) {
         var seconds = Number(value || 0)
@@ -37,8 +42,13 @@ Item {
     function markDownloadStarted(url) {
         activeDownloadUrl = url
         var idx = findResultIndex(url)
-        if (idx < 0)
+        if (idx < 0) {
+            directDownloadActive = true
+            directDownloadProgress = 0
+            directDownloadState = "downloading"
+            directDownloadError = ""
             return
+        }
 
         activeDownloadId = results.get(idx).id
         results.setProperty(idx, "downloadState", "downloading")
@@ -48,8 +58,10 @@ Item {
 
     function beginDownload(url, forcedKind) {
         var trimmed = url.trim()
-        if (!trimmed.match(/^https?:\/\/.+/))
+        if (!trimmed.match(/^https?:\/\/.+/)) {
+            errorStatus = "Link không hợp lệ. Hãy dán URL đầy đủ bắt đầu bằng http:// hoặc https://."
             return
+        }
 
         var kind = forcedKind || mediaType
         errorStatus = ""
@@ -117,6 +129,8 @@ Item {
             var idx = root.findResultIndex(videoId)
             if (idx >= 0)
                 results.setProperty(idx, "downloadProgress", value)
+            else if (root.directDownloadActive && root.directDownloadState === "downloading")
+                root.directDownloadProgress = value
         }
 
         function onDownloadFinished(videoId, filePath) {
@@ -124,6 +138,10 @@ Item {
             if (idx >= 0) {
                 results.setProperty(idx, "downloadState", "done")
                 results.setProperty(idx, "downloadProgress", 100)
+            }
+            if (root.directDownloadActive && root.directDownloadState === "downloading") {
+                root.directDownloadProgress = 100
+                root.directDownloadState = "done"
             }
             root.activeDownloadUrl = ""
             root.activeDownloadId = ""
@@ -135,6 +153,10 @@ Item {
             if (idx >= 0) {
                 results.setProperty(idx, "downloadState", "error")
                 results.setProperty(idx, "downloadError", root.errorStatus)
+            }
+            if (root.directDownloadActive && root.directDownloadState === "downloading") {
+                root.directDownloadState = "error"
+                root.directDownloadError = root.errorStatus
             }
             root.activeDownloadUrl = ""
             root.activeDownloadId = ""
@@ -357,8 +379,27 @@ Item {
         anchors.topMargin: 0
         spacing: 16
 
+        // In link mode the intake card stays centered. Collapsing this spacer
+        // moves it to the top when Search is selected, leaving room for results.
+        Item {
+            id: intakeTopSpacer
+            Layout.fillWidth: true
+            Layout.preferredHeight: implicitHeight
+            implicitHeight: root.intakeMode === "link" || root.searchStatus !== "results"
+                ? Math.max(0, (root.height - intakeCard.implicitHeight) / 2 - 24)
+                : 0
+
+            Behavior on implicitHeight {
+                NumberAnimation {
+                    duration: 320
+                    easing.type: Easing.OutCubic
+                }
+            }
+        }
+
         // Unified intake card
         Rectangle {
+            id: intakeCard
             Layout.fillWidth: true
             radius: Theme.cardRadius + 4
             color: Theme.glassFill
@@ -375,6 +416,37 @@ Item {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
+
+                    Rectangle {
+                        Layout.preferredHeight: 38
+                        Layout.preferredWidth: modeRow.implicitWidth + 8
+                        radius: 8
+                        color: Theme.bgTop
+                        border.color: Theme.cardBorder
+                        border.width: 1
+
+                        Row {
+                            id: modeRow
+                            anchors.centerIn: parent
+                            spacing: 2
+
+                            SegmentedButton {
+                                label: "Tìm kiếm"
+                                iconName: "search"
+                                selected: root.intakeMode === "search"
+                                onTapped: root.intakeMode = "search"
+                            }
+
+                            SegmentedButton {
+                                label: "Dán link"
+                                iconName: "link"
+                                selected: root.intakeMode === "link"
+                                onTapped: root.intakeMode = "link"
+                            }
+                        }
+                    }
+
+                    Item { Layout.fillWidth: true }
 
                     Rectangle {
                         Layout.preferredHeight: 38
@@ -405,7 +477,6 @@ Item {
                         }
                     }
 
-                    Item { Layout.fillWidth: true }
                 }
 
                 RowLayout {
@@ -425,7 +496,7 @@ Item {
                             anchors.left: parent.left
                             anchors.leftMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
-                            name: "search"
+                            name: root.intakeMode === "search" ? "search" : "link"
                             color: Theme.textMuted
                             font.pixelSize: 16
                         }
@@ -435,13 +506,20 @@ Item {
                             anchors.fill: parent
                             anchors.leftMargin: 36
                             anchors.rightMargin: queryField.text.length > 0 ? 36 : 12
-                            placeholderText: "Tìm tên " + (root.mediaType === "music" ? "bài hát" : "video") + " trên YouTube…"
+                            placeholderText: root.intakeMode === "search"
+                                ? "Tìm tên " + (root.mediaType === "music" ? "bài hát" : "video") + " trên YouTube…"
+                                : "Dán link YouTube cần tải trực tiếp…"
                             font.family: Theme.fontFamily
                             color: Theme.textPrimary
                             placeholderTextColor: Theme.textMuted
                             background: Item {}
                             onTextChanged: root.errorStatus = ""
-                            Keys.onReturnPressed: root.runSearch(text)
+                            Keys.onReturnPressed: {
+                                if (root.intakeMode === "search")
+                                    root.runSearch(text)
+                                else
+                                    root.beginDownload(text)
+                            }
                         }
 
                         IconButton {
@@ -468,7 +546,7 @@ Item {
                         Text {
                             id: actionLabel
                             anchors.centerIn: parent
-                            text: "Tìm kiếm"
+                            text: root.intakeMode === "search" ? "Tìm kiếm" : "Tải xuống"
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.bodySize
                             font.weight: Font.DemiBold
@@ -478,8 +556,30 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.runSearch(queryField.text)
+                            onClicked: {
+                                if (root.intakeMode === "search")
+                                    root.runSearch(queryField.text)
+                                else
+                                    root.beginDownload(queryField.text)
+                            }
                         }
+                    }
+                }
+
+                WaveformProgress {
+                    Layout.fillWidth: true
+                    visible: root.intakeMode === "link" && root.directDownloadActive
+                    progress: root.directDownloadProgress
+                    state: root.directDownloadState
+
+                    ToolTip.visible: directHover.containsMouse && root.directDownloadState === "error"
+                    ToolTip.text: root.directDownloadError
+
+                    MouseArea {
+                        id: directHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.NoButton
                     }
                 }
             }
@@ -509,7 +609,7 @@ Item {
                 }
 
                 Button {
-                    visible: queryField.text.trim().length > 0
+                    visible: root.intakeMode === "search" && queryField.text.trim().length > 0
                     text: "Thử lại"
                     onClicked: root.runSearch(queryField.text)
                 }
@@ -522,8 +622,14 @@ Item {
             Layout.fillHeight: true
             spacing: 8
             clip: true
-            visible: root.searchStatus === "results"
+            visible: root.intakeMode === "search" && root.searchStatus === "results"
+            opacity: visible ? 1 : 0
             model: results
+
+            Behavior on opacity {
+                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+            }
+            transform: Translate { y: (1 - resultList.opacity) * 12 }
 
             delegate: Rectangle {
                 id: resultRow
@@ -676,9 +782,16 @@ Item {
         }
 
         Item {
+            id: searchPlaceholder
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: root.searchStatus !== "results"
+            visible: root.intakeMode === "search" && root.searchStatus !== "results"
+            opacity: visible ? 1 : 0
+
+            Behavior on opacity {
+                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+            }
+            transform: Translate { y: (1 - searchPlaceholder.opacity) * 12 }
 
             Column {
                 anchors.centerIn: parent
@@ -712,6 +825,14 @@ Item {
                     color: Theme.textMuted
                 }
             }
+        }
+
+        // Balances the fixed top offset so the link card remains visually
+        // centered regardless of the window height.
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: root.intakeMode === "link"
+            visible: root.intakeMode === "link"
         }
     }
 }

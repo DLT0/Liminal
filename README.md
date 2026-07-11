@@ -66,6 +66,8 @@ ghi metadata và nhúng thumbnail. Scanner dùng `mutagen` để đọc title/ar
 trích cover nhúng vào cache `~/.cache/liminal/thumbnails` cho QML hiển thị.
 Video tải mới giữ thumbnail JPG cạnh file video. Với video cũ không có ảnh đi
 kèm, scanner dùng `ffmpeg` trích một frame đại diện và lưu vào cùng cache trên.
+Ngoài tìm kiếm, chế độ **Dán link** nhận URL YouTube trực tiếp và tải bằng cùng
+pipeline yt-dlp; người dùng có thể chọn đầu ra Nhạc (MP3) hoặc Video (MP4).
 
 ### 2. Chạy ứng dụng
 

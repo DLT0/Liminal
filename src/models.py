@@ -17,6 +17,7 @@ class MediaKind(Enum):
     FILE = auto()
     ALBUM = auto()
     VIDEO_PLAYLIST = auto()
+    FOLDER = auto()
 
 
 @dataclass
@@ -33,6 +34,7 @@ class MediaInfo:
     kind: MediaKind = MediaKind.FILE
     child_count: int = 0
     image: str = ""
+    preview_images: list[str] = field(default_factory=list)
 
 
 @dataclass

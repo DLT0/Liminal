@@ -16,6 +16,7 @@ Item {
         return "file://" + imageSource
     }
     property color accentColor: Theme.accentEnd
+    property bool clickEnabled: true
 
     signal clicked()
 
@@ -202,6 +203,7 @@ Item {
     MouseArea {
         id: hoverMa
         anchors.fill: vinylDisc
+        enabled: root.clickEnabled
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor

@@ -133,7 +133,9 @@ QtObject {
     readonly property int contentPadding:  24
     readonly property int gridColumns:     5
     readonly property int cardRadius:      12
+    readonly property int libraryCardRadius: 0   // playlist / music / video grids — square corners
     readonly property int cardGap:         20
+    readonly property real videoPosterAspect: 16 / 9   // YouTube thumbnail ratio
 
     // ── Typography ──
     readonly property string fontFamily: "Inter, Segoe UI, Noto Sans, sans-serif"

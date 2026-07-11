@@ -33,6 +33,17 @@ def _thumbnail(info: dict) -> str:
     return str(info.get("thumbnail") or "")
 
 
+def _is_video_result(item: dict) -> bool:
+    """Reject channel/playlist entries returned by YouTube search."""
+    if not item.get("id") or item.get("_type") not in (None, "url"):
+        return False
+    if item.get("ie_key") not in (None, "Youtube", "YoutubeTab"):
+        return False
+    url = str(item.get("webpage_url") or item.get("url") or "")
+    lowered = url.lower()
+    return not any(marker in lowered for marker in ("/channel/", "/playlist?", "list=", "/@"))
+
+
 class Downloader:
     """Run the blocking yt-dlp Python API in executor worker threads."""
 
@@ -66,11 +77,15 @@ class Downloader:
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     data = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-                    entries = list((data or {}).get("entries") or [])[:limit]
+                    entries = list((data or {}).get("entries") or [])
                     results = []
                     for item in entries:
                         if not item:
                             continue
+                        if not _is_video_result(item):
+                            continue
+                        if len(results) >= limit:
+                            break
                         video_id = str(item.get("id") or "")
                         # Flat search is fast. Enrich only when fields needed by the UI
                         # are absent, and tolerate an individual metadata lookup failing.

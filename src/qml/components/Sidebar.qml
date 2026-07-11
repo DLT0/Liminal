@@ -10,14 +10,13 @@ GlassPanel {
     radius: 0
     strong: false
 
-    property int currentPage: 1
+    property int currentPage: 2
     property string searchText: ""
 
     signal pageSelected(int index)
     signal searchChanged(string text)
 
     readonly property var menuItems: [
-        { icon: "queue_music", label: "Playlist", page: 1 },
         { icon: "music_note", label: "Music", page: 2 },
         { icon: "movie", label: "Videos", page: 3 },
         { icon: "download", label: "Download", page: 4 },
