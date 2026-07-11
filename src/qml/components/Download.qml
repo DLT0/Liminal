@@ -269,14 +269,40 @@ Item {
     Popup {
         id: videoQualityPopup
         parent: Overlay.overlay
-        x: Math.round((parent.width - width) / 2)
-        y: Math.round((parent.height - height) / 2)
-        width: 320
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 24
+        width: 460
+        height: qualityPopupContent.implicitHeight + topPadding + bottomPadding
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
 
         property string targetUrl: ""
+
+        readonly property var qualityOptions: [
+            { value: "480",  label: "480p", size: "~80MB",  recommended: false },
+            { value: "720",  label: "720p", size: "~150MB", recommended: false },
+            { value: "1080", label: "FHD",  size: "~350MB", recommended: true },
+            { value: "1440", label: "2K",   size: "~600MB", recommended: false },
+            { value: "2160", label: "4K",   size: "~1.2GB", recommended: false },
+            { value: "best", label: "Max",  size: "Tối đa", recommended: false }
+        ]
+
+        function currentQualityOption() {
+            for (var i = 0; i < qualityOptions.length; ++i) {
+                if (qualityOptions[i].value === backend.downloadQuality)
+                    return qualityOptions[i]
+            }
+            return qualityOptions[2]
+        }
+
+        function qualityMetaText(option) {
+            var parts = [option.size]
+            if (option.recommended)
+                parts.push("Khuyến nghị")
+            return parts.join(" · ")
+        }
 
         background: Rectangle {
             color: Theme.cardBg
@@ -286,87 +312,181 @@ Item {
         }
 
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 20
-            spacing: 16
+            id: qualityPopupContent
+            width: videoQualityPopup.availableWidth
+            spacing: 18
 
-            Text {
-                text: "Chọn chất lượng Video"
-                font.family: Theme.fontFamily
-                font.pixelSize: 18
-                font.weight: Font.Bold
-                color: Theme.textPrimary
-                Layout.alignment: Qt.AlignHCenter
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 20
+
+                Text {
+                    id: titleText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Chọn chất lượng Video"
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                }
+
+                AppIcon {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "layers"
+                    color: Theme.textMuted
+                    font.pixelSize: 16
+                }
             }
 
-            Flow {
+            Column {
                 Layout.fillWidth: true
                 spacing: 10
 
-                Repeater {
-                    model: ["480", "720", "1080", "1440", "2160", "best"]
-                    delegate: Rectangle {
-                        width: 130
-                        height: 40
-                        radius: 8
-                        color: backend.downloadQuality === modelData ? Theme.accentStart : Theme.glassFill
-                        border.color: backend.downloadQuality === modelData ? Theme.accentEnd : Theme.glassBorder
-                        border.width: backend.downloadQuality === modelData ? 2 : 1
+                Item {
+                    id: qualitySegment
+                    width: parent.width
+                    height: 34
 
-                        Text {
-                            anchors.centerIn: parent
-                            text: {
-                                if (modelData === "1080") return "FHD"
-                                if (modelData === "1440") return "2K"
-                                if (modelData === "2160") return "4K"
-                                if (modelData === "best") return "Max"
-                                return modelData + "p"
+                    Rectangle {
+                        anchors.top: parent.top
+                        width: parent.width
+                        height: 1
+                        color: Theme.glassStrongBorder
+                    }
+
+                    Row {
+                        id: qualityRow
+                        anchors.top: parent.top
+                        anchors.topMargin: 1
+                        width: parent.width
+                        height: parent.height - 2
+
+                        Repeater {
+                            model: videoQualityPopup.qualityOptions
+
+                            delegate: Item {
+                                required property var modelData
+                                required property int index
+
+                                width: qualityRow.width / videoQualityPopup.qualityOptions.length
+                                height: qualityRow.height
+
+                                readonly property bool selected:
+                                    backend.downloadQuality === modelData.value
+
+                                Rectangle {
+                                    visible: index > 0
+                                    x: 0
+                                    width: 1
+                                    height: parent.height * 0.55
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: Theme.glassStrongBorder
+                                }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData.label
+                                    font.family: "JetBrains Mono, Cascadia Mono, Consolas, monospace"
+                                    font.pixelSize: 11
+                                    font.weight: selected ? Font.Bold : Font.Normal
+                                    color: selected ? Theme.textPrimary : Theme.textMuted
+                                }
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    width: selected ? parent.width * 0.72 : 0
+                                    height: 2
+                                    radius: 1
+                                    color: Theme.accentStart
+                                    Behavior on width {
+                                        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    hoverEnabled: true
+                                    onClicked: backend.setDownloadQuality(modelData.value)
+                                }
                             }
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.bodySize
-                            font.weight: backend.downloadQuality === modelData ? Font.Bold : Font.Normal
-                            color: backend.downloadQuality === modelData ? Theme.textOnAccent : Theme.textSecondary
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: backend.setDownloadQuality(modelData)
                         }
                     }
+
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: Theme.glassStrongBorder
+                    }
+                }
+
+                Text {
+                    id: qualityMetaText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: videoQualityPopup.qualityMetaText(videoQualityPopup.currentQualityOption())
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.captionSize
+                    color: Theme.textMuted
                 }
             }
 
             RowLayout {
                 Layout.fillWidth: true
-                Layout.topMargin: 10
-                spacing: 10
+                Layout.topMargin: 4
+                Layout.preferredHeight: 32
+                spacing: 0
 
-                Button {
-                    Layout.fillWidth: true
-                    text: "Huỷ"
-                    onClicked: videoQualityPopup.close()
+                Item {
+                    Layout.preferredWidth: cancelLabel.implicitWidth + 16
+                    Layout.preferredHeight: 32
+
+                    Text {
+                        id: cancelLabel
+                        anchors.centerIn: parent
+                        text: "[ Huỷ ]"
+                        font.family: "JetBrains Mono, Cascadia Mono, Consolas, monospace"
+                        font.pixelSize: Theme.bodySize
+                        color: cancelHover.containsMouse ? Theme.textPrimary : Theme.textSecondary
+                    }
+
+                    MouseArea {
+                        id: cancelHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: videoQualityPopup.close()
+                    }
                 }
 
-                Button {
-                    Layout.fillWidth: true
-                    text: "Tải ngay"
-                    onClicked: {
-                        root.markDownloadStarted(videoQualityPopup.targetUrl)
-                        backend.downloadMedia(videoQualityPopup.targetUrl, "video")
-                        videoQualityPopup.close()
+                Item { Layout.fillWidth: true }
+
+                Item {
+                    Layout.preferredWidth: downloadLabel.implicitWidth + 16
+                    Layout.preferredHeight: 32
+
+                    Text {
+                        id: downloadLabel
+                        anchors.centerIn: parent
+                        text: "[ Tải ngay ]"
+                        font.family: "JetBrains Mono, Cascadia Mono, Consolas, monospace"
+                        font.pixelSize: Theme.bodySize
+                        font.weight: Font.DemiBold
+                        color: downloadHover.containsMouse ? Theme.accentCyan : Theme.textPrimary
                     }
-                    background: Rectangle {
-                        color: Theme.accentEnd
-                        radius: 6
-                    }
-                    contentItem: Text {
-                        text: parent.text
-                        font.family: Theme.fontFamily
-                        color: Theme.textOnAccent
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                        font.weight: Font.Bold
+
+                    MouseArea {
+                        id: downloadHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.markDownloadStarted(videoQualityPopup.targetUrl)
+                            backend.downloadMedia(videoQualityPopup.targetUrl, "video")
+                            videoQualityPopup.close()
+                        }
                     }
                 }
             }
