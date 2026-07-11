@@ -195,7 +195,6 @@ GlassPanel {
                     Layout.fillWidth: true
                     from: 0
                     to: root.duration > 0 ? root.duration : 1
-                    value: root.position
                     enabled: root.hasMedia && root.duration > 0
                     opacity: enabled ? 1 : 0.45
 
@@ -204,7 +203,6 @@ GlassPanel {
                         if (!pressed)
                             root.seekRequested(value)
                     }
-                    onMoved: root.seekRequested(value)
 
                     background: Rectangle {
                         x: progressSlider.leftPadding
@@ -263,8 +261,6 @@ GlassPanel {
                 Layout.preferredWidth: 88
                 from: 0
                 to: 100
-                value: root.volumeLevel
-                onMoved: root.volumeAdjusted(value)
                 onPressedChanged: {
                     if (!pressed)
                         root.volumeAdjusted(value)
@@ -324,5 +320,10 @@ GlassPanel {
 
     onDurationChanged: {
         progressSlider.to = duration > 0 ? duration : 1
+    }
+
+    Component.onCompleted: {
+        progressSlider.value = position
+        volSlider.value = volumeLevel
     }
 }

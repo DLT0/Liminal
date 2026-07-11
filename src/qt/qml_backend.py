@@ -614,12 +614,15 @@ class AppBackend(QObject):
         else:
             self._player.seek(10)
 
-    @pyqtSlot(int)
-    def setVolume(self, vol: int) -> None:
-        vol = max(0, min(100, vol))
+    @pyqtSlot(float)
+    def setVolume(self, vol: float) -> None:
+        vol = max(0, min(100, int(round(vol))))
         if vol > 0 and self._muted:
             self._muted = False
             self.mutedChanged.emit()
+        if self._volume != vol:
+            self._volume = vol
+            self.volumeChanged.emit()
         self._player.set_volume(vol)
 
     @pyqtSlot()
