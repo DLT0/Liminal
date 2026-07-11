@@ -80,6 +80,22 @@ def _metadata_path(item: dict) -> str:
     return item.get("canonical_path") or item.get("path") or ""
 
 
+def _resolve_metadata_path(path: str) -> str:
+    """Map a UI path (e.g. playlist symlink) to the metadata storage key."""
+    value = path.strip()
+    if not value:
+        return ""
+    try:
+        resolved = Path(value)
+        if resolved.is_file() or resolved.is_symlink():
+            return str(canonical_path(resolved))
+        if resolved.is_dir():
+            return str(resolved.resolve())
+    except OSError:
+        pass
+    return value
+
+
 def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict:
     is_collection = info.kind in (MediaKind.ALBUM, MediaKind.VIDEO_PLAYLIST, MediaKind.FOLDER)
     if is_collection:
@@ -255,6 +271,11 @@ class _DownloadJob:
     retry_403: bool = False
 
 
+_LARGE_BATCH_THRESHOLD = 30
+_GOOD_NETWORK_BPS = 512 * 1024  # 512 KB/s
+_MAX_CONCURRENT_DOWNLOADS = 2
+
+
 class AppBackend(QObject):
     """Exposed to QML as ``backend`` context property."""
 
@@ -279,6 +300,7 @@ class AppBackend(QObject):
     themeIndexChanged = pyqtSignal()
     pageTitleChanged = pyqtSignal()
     downloadQualityChanged = pyqtSignal()
+    downloadConcurrencyChanged = pyqtSignal()
     ytDlpUpdateStatusChanged = pyqtSignal()
     libraryNavigationChanged = pyqtSignal()
     musicSearchChanged = pyqtSignal()
@@ -286,6 +308,8 @@ class AppBackend(QObject):
     searchResults = pyqtSignal(list)
     searchError = pyqtSignal(str)
     playlistLinkReady = pyqtSignal(str, list)
+    playlistQueued = pyqtSignal(str, str, list)
+    linkQueueError = pyqtSignal(str, str)
     downloadProgress = pyqtSignal(str, float)
     downloadFinished = pyqtSignal(str, str)
     downloadError = pyqtSignal(str, str)
@@ -315,7 +339,9 @@ class AppBackend(QObject):
         self._download_queue: asyncio.Queue[_DownloadJob] | None = None
         self._download_worker_started = False
         self._deferred_403_jobs: list[_DownloadJob] = []
-        self._download_job_in_progress = False
+        self._download_jobs_in_progress = 0
+        self._download_speed_ema = 0.0
+        self._published_download_concurrency = 1
         self.downloader = Downloader(
             Path(self._music_dir),
             Path(self._video_dir),
@@ -513,6 +539,10 @@ class AppBackend(QObject):
     @pyqtProperty(str, notify=downloadQualityChanged)
     def downloadQuality(self) -> str:
         return self._download_quality
+
+    @pyqtProperty(int, notify=downloadConcurrencyChanged)
+    def downloadConcurrency(self) -> int:
+        return self._published_download_concurrency
 
     @pyqtProperty(str, notify=ytDlpUpdateStatusChanged)
     def ytDlpUpdateStatus(self) -> str:
@@ -947,7 +977,7 @@ class AppBackend(QObject):
 
     @pyqtSlot(str, str, str)
     def editMediaMetadataByPath(self, path: str, title: str, artist: str) -> None:
-        value = path.strip()
+        value = _resolve_metadata_path(path)
         if not value or self._is_all_musics_virtual(value):
             return
         set_metadata(
@@ -967,10 +997,10 @@ class AppBackend(QObject):
 
     @pyqtSlot(str)
     def pickMediaCoverByPath(self, path: str) -> None:
-        value = path.strip()
+        value = _resolve_metadata_path(path)
         if not value or self._is_all_musics_virtual(value):
             return
-        QTimer.singleShot(0, lambda: self._apply_picked_cover_path(value))
+        QTimer.singleShot(0, lambda p=value: self._apply_picked_cover_path(p))
 
     def _apply_picked_cover_path(self, path: str) -> None:
         item_path = path.strip()
@@ -995,43 +1025,24 @@ class AppBackend(QObject):
     def set_main_window(self, window: QWindow | None) -> None:
         self._main_window = window
 
-    def _dialog_parent(self) -> QWindow | None:
-        if self._main_window is not None:
-            return self._main_window
-        active = QApplication.activeWindow()
-        return active if isinstance(active, QWindow) else None
-
     def _pick_image_file(self, title: str, start_dir: str = "") -> str:
-        dialog = QFileDialog(self._dialog_parent())
-        dialog.setWindowTitle(title)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilter(
-            "Image files (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)"
-        )
         initial = start_dir or str(Path.home())
-        if Path(initial).exists():
-            dialog.setDirectory(initial)
-        if dialog.exec():
-            files = dialog.selectedFiles()
-            if files:
-                return files[0]
-        return ""
+        if not Path(initial).exists():
+            initial = str(Path.home())
+        chosen, _ = QFileDialog.getOpenFileName(
+            None,
+            title,
+            initial,
+            "Image files (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)",
+        )
+        return chosen or ""
 
     def _pick_directory(self, title: str, start_dir: str = "") -> str:
-        dialog = QFileDialog(self._dialog_parent())
-        dialog.setWindowTitle(title)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
         initial = start_dir or str(Path.home())
-        if Path(initial).exists():
-            dialog.setDirectory(initial)
-        if dialog.exec():
-            files = dialog.selectedFiles()
-            if files:
-                return files[0]
-        return ""
+        if not Path(initial).exists():
+            initial = str(Path.home())
+        chosen = QFileDialog.getExistingDirectory(None, title, initial)
+        return chosen or ""
 
     @pyqtSlot(str)
     def copyToClipboard(self, text: str) -> None:
@@ -1133,6 +1144,41 @@ class AppBackend(QObject):
         subdir = output_subdir.strip()
         self._enqueue_download(_DownloadJob(value, media_type, subdir))
 
+    @pyqtSlot(str, str)
+    def queueLink(self, url: str, media_type: str) -> None:
+        """Resolve a link in the background and enqueue all items (video or playlist)."""
+        asyncio.create_task(self._queue_link(url, media_type))
+
+    async def _queue_link(self, url: str, media_type: str) -> None:
+        value = url.strip()
+        if not value:
+            self.linkQueueError.emit(value, "URL hoặc video ID không hợp lệ.")
+            return
+        try:
+            resolved = await asyncio.wait_for(
+                self.downloader.resolve_link(value, media_type),
+                timeout=30,
+            )
+        except TimeoutError:
+            self.linkQueueError.emit(value, "Đọc link quá thời gian chờ (30 giây).")
+            return
+        except DownloadFailed as exc:
+            logger.exception("Link queue resolve failed for %r", value)
+            self.linkQueueError.emit(value, str(exc))
+            return
+        items = self._annotate_search_results(list(resolved.get("items") or []), media_type)
+        folder = str(resolved.get("playlist_folder") or "").strip()
+        downloadable = [item for item in items if not item.get("in_library")]
+        if not downloadable:
+            self.linkQueueError.emit(value, "Tất cả mục trong link đã có trong thư viện.")
+            return
+        kind = "music" if media_type == "music" else "video"
+        for item in downloadable:
+            item_url = str(item.get("url") or item.get("id") or "").strip()
+            if item_url:
+                self._enqueue_download(_DownloadJob(item_url, kind, folder))
+        self.playlistQueued.emit(folder, media_type, downloadable)
+
     def _ensure_download_worker(self) -> asyncio.Queue[_DownloadJob]:
         if self._download_queue is None:
             self._download_queue = asyncio.Queue()
@@ -1145,54 +1191,124 @@ class AppBackend(QObject):
         queue = self._ensure_download_worker()
         queue.put_nowait(job)
         self._start_library_hotload_timer()
+        self._refresh_download_concurrency()
+
+    def _download_backlog_size(self) -> int:
+        queue = self._download_queue
+        pending = queue.qsize() if queue else 0
+        return pending + self._download_jobs_in_progress
+
+    def _network_is_good(self) -> bool:
+        return self._download_speed_ema >= _GOOD_NETWORK_BPS
+
+    def _download_concurrency_limit(self) -> int:
+        if self._download_backlog_size() <= _LARGE_BATCH_THRESHOLD:
+            return 1
+        if not self._network_is_good():
+            return 1
+        return _MAX_CONCURRENT_DOWNLOADS
+
+    def _refresh_download_concurrency(self) -> None:
+        limit = self._download_concurrency_limit()
+        if limit != self._published_download_concurrency:
+            self._published_download_concurrency = limit
+            self.downloadConcurrencyChanged.emit()
+
+    def _record_download_speed(self, speed_bps: float) -> None:
+        if speed_bps <= 0:
+            return
+        if self._download_speed_ema <= 0:
+            self._download_speed_ema = speed_bps
+        else:
+            self._download_speed_ema = 0.8 * self._download_speed_ema + 0.2 * speed_bps
+        self._refresh_download_concurrency()
+
+    async def _run_download_job(self, job: _DownloadJob) -> None:
+        self._download_jobs_in_progress += 1
+        self._refresh_download_concurrency()
+        self._start_library_hotload_timer()
+        try:
+            self.downloadJobStarted.emit(job.url)
+            try:
+                video_id, file_path = await self._execute_download(
+                    job.url,
+                    job.media_type,
+                    job.output_subdir,
+                )
+            except Download403Failed as exc:
+                if job.retry_403:
+                    logger.exception("Media download failed on 403 retry for %r", job.url)
+                    self.downloadError.emit(job.url, str(exc))
+                else:
+                    logger.warning("HTTP 403 for %r, deferring until batch end", job.url)
+                    self._deferred_403_jobs.append(job)
+                    self.downloadJobRequeued.emit(job.url)
+                return
+            except DownloadFailed as exc:
+                logger.exception("Media download failed for %r", job.url)
+                self.downloadError.emit(job.url, str(exc))
+                return
+
+            self.downloadFinished.emit(video_id, file_path)
+            set_metadata(file_path, source_id=video_id)
+            if job.media_type == "music":
+                self._music_source_ids.add(video_id)
+            else:
+                self._video_source_ids.add(video_id)
+            self._hotload_after_download(job, file_path)
+        finally:
+            self._download_jobs_in_progress -= 1
+            self._refresh_download_concurrency()
 
     async def _download_worker(self) -> None:
         queue = self._ensure_download_worker()
-        while True:
-            job = await queue.get()
-            self._download_job_in_progress = True
-            self._start_library_hotload_timer()
-            try:
-                self.downloadJobStarted.emit(job.url)
-                try:
-                    video_id, file_path = await self._execute_download(
-                        job.url,
-                        job.media_type,
-                        job.output_subdir,
-                    )
-                except Download403Failed as exc:
-                    if job.retry_403:
-                        logger.exception("Media download failed on 403 retry for %r", job.url)
-                        self.downloadError.emit(job.url, str(exc))
-                    else:
-                        logger.warning("HTTP 403 for %r, deferring until batch end", job.url)
-                        self._deferred_403_jobs.append(job)
-                        self.downloadJobRequeued.emit(job.url)
-                    continue
-                except DownloadFailed as exc:
-                    logger.exception("Media download failed for %r", job.url)
-                    self.downloadError.emit(job.url, str(exc))
-                    continue
+        in_flight: set[asyncio.Task[None]] = set()
 
-                self.downloadFinished.emit(video_id, file_path)
-                set_metadata(file_path, source_id=video_id)
-                if job.media_type == "music":
-                    self._music_source_ids.add(video_id)
-                else:
-                    self._video_source_ids.add(video_id)
-                self._hotload_after_download(job, file_path)
-            finally:
-                self._download_job_in_progress = False
+        async def reap_one() -> None:
+            if not in_flight:
+                return
+            done, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                in_flight.discard(task)
+                try:
+                    await task
+                except Exception:
+                    logger.exception("Download task failed unexpectedly")
+
+        async def wait_for_slot() -> None:
+            while len(in_flight) >= self._download_concurrency_limit():
+                await reap_one()
+
+        while True:
+            await wait_for_slot()
+
+            if queue.empty():
+                if in_flight:
+                    await reap_one()
+                    continue
+                if self._deferred_403_jobs:
+                    pending = self._deferred_403_jobs
+                    self._deferred_403_jobs = []
+                    for deferred in pending:
+                        queue.put_nowait(replace(deferred, retry_403=True))
+                    self._refresh_download_concurrency()
+                    continue
+                self._download_speed_ema = 0.0
+                self._refresh_download_concurrency()
+                self._stop_library_hotload_timer()
+                self.rescanLibrary()
+                job = await queue.get()
+            else:
+                job = await queue.get()
+
+            task = asyncio.create_task(self._run_download_job(job))
+            in_flight.add(task)
+
+            def _on_task_done(t: asyncio.Task[None]) -> None:
+                in_flight.discard(t)
                 queue.task_done()
-                if queue.empty():
-                    if self._deferred_403_jobs:
-                        pending = self._deferred_403_jobs
-                        self._deferred_403_jobs = []
-                        for deferred in pending:
-                            queue.put_nowait(replace(deferred, retry_403=True))
-                    else:
-                        self._stop_library_hotload_timer()
-                        self.rescanLibrary()
+
+            task.add_done_callback(_on_task_done)
 
     async def _execute_download(
         self,
@@ -1212,6 +1328,9 @@ class AppBackend(QObject):
             total = float(data.get("total_bytes") or data.get("total_bytes_estimate") or 0)
             percent = min(100.0, downloaded / total * 100.0) if total else 0.0
             self.downloadProgress.emit(active_id, percent)
+            speed = float(data.get("speed") or 0)
+            if speed > 0:
+                self._record_download_speed(speed)
 
         if media_type not in {"music", "video"}:
             raise DownloadFailed("Loại media không được hỗ trợ.")
@@ -1678,7 +1797,7 @@ class AppBackend(QObject):
         self.libraryNavigationChanged.emit()
 
     def _downloads_active(self) -> bool:
-        if self._download_job_in_progress:
+        if self._download_jobs_in_progress > 0:
             return True
         if self._deferred_403_jobs:
             return True

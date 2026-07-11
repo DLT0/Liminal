@@ -23,6 +23,138 @@ Item {
     property string directDownloadError: ""
     property bool linkFromResolve: false
     property string playlistFolder: ""
+    property bool queuePanelOpen: false
+    property int selectedCount: 0
+
+    function recalcSelectedCount() {
+        var count = 0
+        for (var i = 0; i < results.count; ++i) {
+            if (results.get(i).selected)
+                count++
+        }
+        selectedCount = count
+    }
+
+    function findQueueIndex(value) {
+        for (var i = 0; i < downloadQueue.count; ++i) {
+            var row = downloadQueue.get(i)
+            if (row.id === value || row.url === value)
+                return i
+        }
+        return -1
+    }
+
+    function queueStats() {
+        var total = downloadQueue.count
+        var done = 0
+        var active = 0
+        var pending = 0
+        for (var i = 0; i < total; ++i) {
+            var state = downloadQueue.get(i).state
+            if (state === "done")
+                done++
+            else if (state === "downloading")
+                active++
+            else if (state === "queued")
+                pending++
+        }
+        return { total: total, done: done, active: active, pending: pending }
+    }
+
+    function addToDownloadQueue(items, folder) {
+        queuePanelOpen = true
+        for (var i = 0; i < items.length; ++i) {
+            var item = items[i]
+            if (item.in_library || item.inLibrary)
+                continue
+            var itemUrl = item.url || item.id || ""
+            if (!itemUrl)
+                continue
+            if (findQueueIndex(itemUrl) >= 0)
+                continue
+            downloadQueue.append({
+                id: item.id || "",
+                title: item.title || "Không có tiêu đề",
+                url: itemUrl,
+                batchLabel: folder || "",
+                outputFolder: folder || "",
+                state: "queued",
+                progress: 0,
+                error: ""
+            })
+        }
+    }
+
+    function enqueueItems(items, folder) {
+        var kind = mediaType === "music" ? "audio" : "video"
+        addToDownloadQueue(items, folder)
+        for (var i = 0; i < items.length; ++i) {
+            var item = items[i]
+            if (item.in_library || item.inLibrary)
+                continue
+            var itemUrl = (item.url || item.id || "").trim()
+            if (!itemUrl)
+                continue
+            markDownloadQueued(itemUrl, item.title || "", folder || "")
+            backend.downloadMedia(itemUrl, kind, folder || "")
+        }
+    }
+
+    function queueLinkInput(url) {
+        var trimmed = url.trim()
+        if (!trimmed.match(/^https?:\/\/.+/)) {
+            errorStatus = "Link không hợp lệ. Hãy dán URL đầy đủ bắt đầu bằng http:// hoặc https://."
+            return
+        }
+        errorStatus = ""
+        queuePanelOpen = true
+        backend.queueLink(trimmed, mediaType)
+    }
+
+    function clearFinishedQueue() {
+        for (var i = downloadQueue.count - 1; i >= 0; --i) {
+            var state = downloadQueue.get(i).state
+            if (state === "done" || state === "error")
+                downloadQueue.remove(i)
+        }
+    }
+
+    function toggleSelection(index) {
+        var row = results.get(index)
+        results.setProperty(index, "selected", !row.selected)
+        recalcSelectedCount()
+    }
+
+    function selectAllResults(select) {
+        for (var i = 0; i < results.count; ++i) {
+            var row = results.get(i)
+            if (row.downloadState === "library" || row.downloadState === "done")
+                continue
+            results.setProperty(i, "selected", select)
+        }
+        recalcSelectedCount()
+    }
+
+    function downloadSelected() {
+        var selected = []
+        for (var i = 0; i < results.count; ++i) {
+            var row = results.get(i)
+            if (!row.selected)
+                continue
+            if (row.downloadState !== "idle" && row.downloadState !== "error")
+                continue
+            selected.push({
+                id: row.id,
+                title: row.title,
+                url: row.url,
+                inLibrary: row.inLibrary
+            })
+        }
+        if (selected.length === 0)
+            return
+        enqueueItems(selected, playlistFolder)
+        selectAllResults(false)
+    }
 
     function formatDuration(value) {
         var seconds = Number(value || 0)
@@ -41,21 +173,34 @@ Item {
         return -1
     }
 
-    function markDownloadQueued(url) {
+    function markDownloadQueued(url, title, folder) {
         activeDownloadUrl = url
         var idx = findResultIndex(url)
-        if (idx < 0) {
+        if (idx >= 0) {
+            activeDownloadId = results.get(idx).id
+            results.setProperty(idx, "downloadState", "queued")
+            results.setProperty(idx, "downloadProgress", 0)
+            results.setProperty(idx, "downloadError", "")
+            title = title || results.get(idx).title
+        } else {
             directDownloadActive = true
             directDownloadProgress = 0
             directDownloadState = "queued"
             directDownloadError = ""
-            return
         }
-
-        activeDownloadId = results.get(idx).id
-        results.setProperty(idx, "downloadState", "queued")
-        results.setProperty(idx, "downloadProgress", 0)
-        results.setProperty(idx, "downloadError", "")
+        if (findQueueIndex(url) < 0) {
+            queuePanelOpen = true
+            downloadQueue.append({
+                id: idx >= 0 ? results.get(idx).id : "",
+                title: title || "Đang tải…",
+                url: url,
+                batchLabel: folder || playlistFolder || "",
+                outputFolder: folder || playlistFolder || "",
+                state: "queued",
+                progress: 0,
+                error: ""
+            })
+        }
     }
 
     function markDownloadActive(url) {
@@ -99,11 +244,13 @@ Item {
                 thumbnail: item.thumbnail_url || "",
                 url: item.url || "",
                 inLibrary: inLibrary,
+                selected: false,
                 downloadState: inLibrary ? "library" : "idle",
                 downloadProgress: 0,
                 downloadError: ""
             })
         }
+        selectedCount = 0
         searchStatus = results.count > 0 ? "results" : "empty"
     }
 
@@ -118,7 +265,7 @@ Item {
         errorStatus = ""
 
         if (kind === "music") {
-            markDownloadQueued(trimmed)
+            markDownloadQueued(trimmed, "", playlistFolder)
             backend.downloadMedia(trimmed, "audio", playlistFolder)
         } else {
             videoQualityPopup.targetUrl = trimmed
@@ -141,17 +288,40 @@ Item {
         backend.resolveLink(trimmed, mediaType)
     }
 
+    function queueCurrentResults() {
+        var batch = []
+        for (var i = 0; i < results.count; ++i) {
+            var row = results.get(i)
+            if (row.inLibrary)
+                continue
+            if (row.downloadState !== "idle" && row.downloadState !== "error")
+                continue
+            batch.push({
+                id: row.id,
+                title: row.title,
+                url: row.url,
+                inLibrary: row.inLibrary
+            })
+        }
+        if (batch.length === 0)
+            return
+        enqueueItems(batch, playlistFolder)
+    }
+
     function downloadAllFromList() {
-        var kind = mediaType === "music" ? "audio" : "video"
+        var batch = []
         for (var i = 0; i < results.count; ++i) {
             var row = results.get(i)
             if (row.downloadState !== "idle" && row.downloadState !== "error")
                 continue
-            results.setProperty(i, "downloadState", "queued")
-            results.setProperty(i, "downloadProgress", 0)
-            results.setProperty(i, "downloadError", "")
-            backend.downloadMedia(row.url, kind, playlistFolder)
+            batch.push({
+                id: row.id,
+                title: row.title,
+                url: row.url,
+                inLibrary: row.inLibrary
+            })
         }
+        enqueueItems(batch, playlistFolder)
     }
 
     function runSearch(text) {
@@ -166,6 +336,7 @@ Item {
     }
 
     ListModel { id: results }
+    ListModel { id: downloadQueue }
 
     Timer {
         id: errorTimer
@@ -179,14 +350,6 @@ Item {
 
         function onSearchResults(items) {
             root.errorStatus = ""
-            if (root.intakeMode === "link" && items.length === 1) {
-                root.searchStatus = "idle"
-                root.linkFromResolve = false
-                root.playlistFolder = ""
-                root.startDownload(items[0].url || items[0].id)
-                return
-            }
-
             root.populateResults(items)
             root.linkFromResolve = root.intakeMode === "link" && results.count > 0
         }
@@ -196,6 +359,22 @@ Item {
             root.playlistFolder = folder || ""
             root.linkFromResolve = true
             root.populateResults(items)
+        }
+
+        function onPlaylistQueued(folder, mediaType, items) {
+            root.errorStatus = ""
+            root.addToDownloadQueue(items, folder || "")
+            for (var i = 0; i < items.length; ++i) {
+                var item = items[i]
+                if (item.in_library || item.inLibrary)
+                    continue
+                root.markDownloadQueued(item.url || item.id || "")
+            }
+        }
+
+        function onLinkQueueError(url, message) {
+            root.errorStatus = message || "Không thể thêm link vào hàng đợi."
+            errorTimer.restart()
         }
 
         function onSearchError(message) {
@@ -210,10 +389,16 @@ Item {
 
         function onDownloadJobStarted(url) {
             root.markDownloadActive(url)
+            var qIdx = root.findQueueIndex(url)
+            if (qIdx >= 0)
+                downloadQueue.setProperty(qIdx, "state", "downloading")
         }
 
         function onDownloadJobRequeued(url) {
             root.markDownloadQueued(url)
+            var qIdx = root.findQueueIndex(url)
+            if (qIdx >= 0)
+                downloadQueue.setProperty(qIdx, "state", "queued")
         }
 
         function onDownloadProgress(videoId, percent) {
@@ -223,6 +408,9 @@ Item {
                 results.setProperty(idx, "downloadProgress", value)
             else if (root.directDownloadActive && root.directDownloadState === "downloading")
                 root.directDownloadProgress = value
+            var qIdx = root.findQueueIndex(videoId)
+            if (qIdx >= 0)
+                downloadQueue.setProperty(qIdx, "progress", value)
         }
 
         function onDownloadFinished(videoId, filePath) {
@@ -235,6 +423,11 @@ Item {
             if (root.directDownloadActive && root.directDownloadState === "downloading") {
                 root.directDownloadProgress = 100
                 root.directDownloadState = "done"
+            }
+            var qIdx = root.findQueueIndex(videoId)
+            if (qIdx >= 0) {
+                downloadQueue.setProperty(qIdx, "state", "done")
+                downloadQueue.setProperty(qIdx, "progress", 100)
             }
             root.activeDownloadUrl = ""
             root.activeDownloadId = ""
@@ -250,6 +443,11 @@ Item {
             if (root.directDownloadActive && root.directDownloadState === "downloading") {
                 root.directDownloadState = "error"
                 root.directDownloadError = root.errorStatus
+            }
+            var qIdx = root.findQueueIndex(videoId || root.activeDownloadUrl)
+            if (qIdx >= 0) {
+                downloadQueue.setProperty(qIdx, "state", "error")
+                downloadQueue.setProperty(qIdx, "error", root.errorStatus)
             }
             root.activeDownloadUrl = ""
             root.activeDownloadId = ""
@@ -577,7 +775,10 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            root.markDownloadQueued(videoQualityPopup.targetUrl)
+                            root.markDownloadQueued(
+                                videoQualityPopup.targetUrl,
+                                "",
+                                videoQualityPopup.outputFolder)
                             backend.downloadMedia(
                                 videoQualityPopup.targetUrl,
                                 "video",
@@ -595,6 +796,197 @@ Item {
         anchors.margins: Theme.contentPadding
         anchors.topMargin: 0
         spacing: 16
+
+        Rectangle {
+            id: queuePanel
+            Layout.fillWidth: true
+            visible: downloadQueue.count > 0 || root.queuePanelOpen
+            implicitHeight: queueColumn.implicitHeight + 20
+            radius: Theme.cardRadius
+            color: Theme.glassFill
+            border.color: Theme.cardBorder
+            border.width: 1
+
+            ColumnLayout {
+                id: queueColumn
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    AppIcon {
+                        name: "queue_music"
+                        color: Theme.accentStart
+                        font.pixelSize: 18
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: {
+                            var stats = root.queueStats()
+                            if (stats.total === 0)
+                                return "Hàng đợi tải xuống"
+                            var parts = [stats.done + "/" + stats.total + " hoàn tất"]
+                            if (stats.active > 0) {
+                                var activeText = stats.active + " đang tải"
+                                if (backend.downloadConcurrency > 1)
+                                    activeText += " (song song)"
+                                parts.push(activeText)
+                            }
+                            if (stats.pending > 0)
+                                parts.push(stats.pending + " chờ")
+                            return "Hàng đợi · " + parts.join(" · ")
+                        }
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.bodySize
+                        font.weight: Font.DemiBold
+                        color: Theme.textPrimary
+                        elide: Text.ElideRight
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: queueToggleLabel.implicitWidth + 16
+                        Layout.preferredHeight: 28
+                        radius: 6
+                        visible: downloadQueue.count > 0
+                        color: queueToggleHover.containsMouse ? Theme.glassStrong : "transparent"
+
+                        Text {
+                            id: queueToggleLabel
+                            anchors.centerIn: parent
+                            text: root.queuePanelOpen ? "Thu gọn" : "Mở rộng"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.captionSize
+                            color: Theme.textSecondary
+                        }
+
+                        MouseArea {
+                            id: queueToggleHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.queuePanelOpen = !root.queuePanelOpen
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: clearQueueLabel.implicitWidth + 16
+                        Layout.preferredHeight: 28
+                        radius: 6
+                        visible: downloadQueue.count > 0
+                        color: clearQueueHover.containsMouse ? Theme.glassStrong : "transparent"
+
+                        Text {
+                            id: clearQueueLabel
+                            anchors.centerIn: parent
+                            text: "Xóa xong"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.captionSize
+                            color: Theme.textMuted
+                        }
+
+                        MouseArea {
+                            id: clearQueueHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.clearFinishedQueue()
+                        }
+                    }
+                }
+
+                ListView {
+                    id: queueList
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(220, count > 0 ? contentHeight : 0)
+                    visible: root.queuePanelOpen && downloadQueue.count > 0
+                    spacing: 6
+                    clip: true
+                    model: downloadQueue
+
+                    delegate: Rectangle {
+                        id: queueRow
+                        width: queueList.width
+                        height: queueRowContent.implicitHeight + 12
+                        radius: 8
+                        color: Theme.bgTop
+                        border.color: Theme.cardBorder
+                        border.width: 1
+
+                        required property string id
+                        required property string title
+                        required property string url
+                        required property string batchLabel
+                        required property string state
+                        required property real progress
+                        required property string error
+
+                        ColumnLayout {
+                            id: queueRowContent
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 4
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: title
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.captionSize
+                                    font.weight: Font.Medium
+                                    color: Theme.textPrimary
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    visible: batchLabel.length > 0
+                                    text: batchLabel
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 10
+                                    color: Theme.textMuted
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    Layout.maximumWidth: 120
+                                }
+
+                                AppIcon {
+                                    name: state === "done" ? "check"
+                                         : state === "downloading" ? "progress_activity"
+                                         : state === "error" ? "error"
+                                         : "schedule"
+                                    color: state === "done" ? "#34D399"
+                                           : state === "error" ? "#F87171"
+                                           : state === "downloading" ? Theme.accentStart
+                                           : Theme.textMuted
+                                    font.pixelSize: 14
+
+                                    RotationAnimation on rotation {
+                                        running: state === "downloading"
+                                        from: 0
+                                        to: 360
+                                        duration: 900
+                                        loops: Animation.Infinite
+                                    }
+                                }
+                            }
+
+                            WaveformProgress {
+                                Layout.fillWidth: true
+                                visible: state === "downloading" || state === "queued"
+                                progress: progress
+                                state: state
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // In link mode the intake card stays centered. Collapsing this spacer
         // moves it to the top when Search is selected, leaving room for results.
@@ -760,7 +1152,7 @@ Item {
                             anchors.rightMargin: queryField.text.length > 0 ? 36 : 12
                             placeholderText: root.intakeMode === "search"
                                 ? "Tìm tên " + (root.mediaType === "music" ? "bài hát" : "video") + " trên YouTube…"
-                                : "Dán link YouTube (video hoặc playlist)…"
+                                : "Dán link YouTube — có thể thêm nhiều playlist vào hàng đợi…"
                             font.family: Theme.fontFamily
                             color: Theme.textPrimary
                             placeholderTextColor: Theme.textMuted
@@ -770,7 +1162,7 @@ Item {
                                 if (root.intakeMode === "search")
                                     root.runSearch(text)
                                 else
-                                    root.submitLink(text)
+                                    root.queueLinkInput(text)
                             }
                         }
 
@@ -789,6 +1181,7 @@ Item {
                         Layout.preferredWidth: actionLabel.implicitWidth + 40
                         Layout.preferredHeight: 42
                         radius: 8
+                        visible: root.intakeMode === "search"
                         gradient: Gradient {
                             orientation: Gradient.Horizontal
                             GradientStop { position: 0; color: Theme.accentStart }
@@ -798,7 +1191,7 @@ Item {
                         Text {
                             id: actionLabel
                             anchors.centerIn: parent
-                            text: root.intakeMode === "search" ? "Tìm kiếm" : "Tải xuống"
+                            text: "Tìm kiếm"
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.bodySize
                             font.weight: Font.DemiBold
@@ -808,12 +1201,66 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
+                            onClicked: root.runSearch(queryField.text)
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: queueActionLabel.implicitWidth + 28
+                        Layout.preferredHeight: 42
+                        radius: 8
+                        visible: root.intakeMode === "link"
+                        color: queueActionHover.containsMouse ? Theme.glassStrong : Theme.bgTop
+                        border.color: Theme.cardBorder
+                        border.width: 1
+
+                        Text {
+                            id: queueActionLabel
+                            anchors.centerIn: parent
+                            text: "Hàng đợi"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.bodySize
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                        }
+
+                        MouseArea {
+                            id: queueActionHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                                if (root.intakeMode === "search")
-                                    root.runSearch(queryField.text)
-                                else
-                                    root.submitLink(queryField.text)
+                                root.queueLinkInput(queryField.text)
+                                queryField.text = ""
                             }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: linkActionLabel.implicitWidth + 28
+                        Layout.preferredHeight: 42
+                        radius: 8
+                        visible: root.intakeMode === "link"
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0; color: Theme.accentStart }
+                            GradientStop { position: 1; color: Theme.accentEnd }
+                        }
+
+                        Text {
+                            id: linkActionLabel
+                            anchors.centerIn: parent
+                            text: "Xem trước"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.bodySize
+                            font.weight: Font.DemiBold
+                            color: Theme.textOnAccent
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.submitLink(queryField.text)
                         }
                     }
                 }
@@ -877,6 +1324,80 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
+            visible: root.searchStatus === "results" && root.intakeMode === "search" && results.count > 0
+            spacing: 12
+
+            Text {
+                Layout.fillWidth: true
+                text: root.selectedCount > 0
+                    ? root.selectedCount + " mục đã chọn"
+                    : results.count + " kết quả"
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.bodySize
+                font.weight: Font.DemiBold
+                color: Theme.textSecondary
+            }
+
+            Rectangle {
+                Layout.preferredWidth: selectAllLabel.implicitWidth + 20
+                Layout.preferredHeight: 32
+                radius: 8
+                color: selectAllHover.containsMouse ? Theme.glassStrong : Theme.bgTop
+                border.color: Theme.cardBorder
+                border.width: 1
+
+                Text {
+                    id: selectAllLabel
+                    anchors.centerIn: parent
+                    text: root.selectedCount > 0 ? "Bỏ chọn" : "Chọn tất cả"
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.captionSize
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                }
+
+                MouseArea {
+                    id: selectAllHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.selectAllResults(root.selectedCount === 0)
+                }
+            }
+
+            Rectangle {
+                Layout.preferredWidth: downloadSelectedLabel.implicitWidth + 24
+                Layout.preferredHeight: 32
+                radius: 8
+                visible: root.selectedCount > 0
+                opacity: downloadSelectedHover.enabled ? 1 : 0.45
+                color: downloadSelectedHover.containsMouse ? Theme.glassStrong : Theme.bgTop
+                border.color: Theme.cardBorder
+                border.width: 1
+
+                Text {
+                    id: downloadSelectedLabel
+                    anchors.centerIn: parent
+                    text: "Tải đã chọn (" + root.selectedCount + ")"
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.captionSize
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                }
+
+                MouseArea {
+                    id: downloadSelectedHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    enabled: root.selectedCount > 0
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: root.downloadSelected()
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
             visible: root.intakeMode === "link" && root.searchStatus === "results" && results.count > 1
             spacing: 12
 
@@ -887,14 +1408,45 @@ Item {
                     var base = root.playlistFolder.length > 0
                         ? "Playlist · " + results.count + " mục → " + root.playlistFolder
                         : "Playlist · " + results.count + " mục"
-                    if (stats.active > 0)
-                        return base + " · " + stats.done + "/" + stats.total + " · tải lần lượt"
+                    if (stats.active > 0) {
+                        var mode = (results.count > 30 || stats.total > 30) && backend.downloadConcurrency > 1
+                            ? "tải song song x2"
+                            : "tải lần lượt"
+                        return base + " · " + stats.done + "/" + stats.total + " · " + mode
+                    }
                     return base
                 }
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.bodySize
                 font.weight: Font.DemiBold
                 color: Theme.textSecondary
+            }
+
+            Rectangle {
+                Layout.preferredWidth: queueAllLabel.implicitWidth + 24
+                Layout.preferredHeight: 32
+                radius: 8
+                color: queueAllHover.containsMouse ? Theme.glassStrong : Theme.bgTop
+                border.color: Theme.cardBorder
+                border.width: 1
+
+                Text {
+                    id: queueAllLabel
+                    anchors.centerIn: parent
+                    text: "Hàng đợi"
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.captionSize
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                }
+
+                MouseArea {
+                    id: queueAllHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.queueCurrentResults()
+                }
             }
 
             Rectangle {
@@ -923,8 +1475,7 @@ Item {
                     id: downloadAllHover
                     anchors.fill: parent
                     hoverEnabled: true
-                    enabled: root.playlistDownloadStats().active === 0
-                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    cursorShape: Qt.PointingHandCursor
                     onClicked: root.downloadAllFromList()
                 }
             }
@@ -954,6 +1505,8 @@ Item {
                 border.color: rowHover.containsMouse ? Theme.glassStrongBorder : Theme.cardBorder
                 border.width: 1
 
+                required property int index
+                required property bool selected
                 required property string title
                 required property string artist
                 required property string duration
@@ -974,6 +1527,34 @@ Item {
                     anchors.fill: parent
                     anchors.margins: 12
                     spacing: 12
+
+                    Rectangle {
+                        Layout.preferredWidth: 28
+                        Layout.preferredHeight: 28
+                        Layout.alignment: Qt.AlignVCenter
+                        visible: root.intakeMode === "search"
+                               && downloadState !== "library"
+                               && downloadState !== "done"
+                        radius: 6
+                        color: selected ? Qt.rgba(Theme.accentStart.r, Theme.accentStart.g, Theme.accentStart.b, 0.18)
+                                         : Theme.glassStrong
+                        border.color: selected ? Theme.accentStart : Theme.cardBorder
+                        border.width: 1
+
+                        AppIcon {
+                            anchors.centerIn: parent
+                            visible: selected
+                            name: "check"
+                            color: Theme.accentStart
+                            font.pixelSize: 14
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSelection(index)
+                        }
+                    }
 
                     Rectangle {
                         Layout.preferredWidth: 48
