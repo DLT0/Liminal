@@ -11,10 +11,12 @@ Item {
     property string videoDir: ""
     property int themeIndex: 0
     property string ytDlpUpdateStatus: ""
+    property bool showVisualizer: true
 
     signal pickMediaRoot()
     signal themeSelected(int index)
     signal updateYtDlpRequested()
+    signal showVisualizerToggled(bool value)
 
     ScrollView {
         anchors.fill: parent
@@ -155,6 +157,69 @@ Item {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.themeSelected(index)
+                        }
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "Hiệu ứng & Hiển thị: Bật/tắt sóng nhạc động."
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.bodySize
+                color: Theme.textMuted
+                wrapMode: Text.WordWrap
+                Layout.topMargin: 10
+            }
+
+            GlassPanel {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 56
+                radius: Theme.cardRadius
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 16
+                    anchors.rightMargin: 16
+
+                    Text {
+                        text: "Hiển thị sóng nhạc (Equalizer)"
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.bodySize
+                        font.weight: Font.Bold
+                        color: Theme.textPrimary
+                        Layout.fillWidth: true
+                    }
+
+                    // Custom Switch
+                    Rectangle {
+                        id: switchContainer
+                        width: 44
+                        height: 24
+                        radius: 12
+                        color: root.showVisualizer ? Theme.accentStart : Theme.sliderTrack
+                        border.color: root.showVisualizer ? Theme.accentEnd : Theme.glassBorder
+                        border.width: 1
+
+                        Behavior on color { ColorAnimation { duration: 150 } }
+
+                        Rectangle {
+                            id: switchHandle
+                            width: 20
+                            height: 20
+                            radius: 10
+                            color: Theme.textPrimary
+                            x: root.showVisualizer ? 22 : 2
+
+                            Behavior on x {
+                                NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.showVisualizerToggled(!root.showVisualizer)
                         }
                     }
                 }

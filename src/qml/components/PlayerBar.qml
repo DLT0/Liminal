@@ -27,7 +27,7 @@ GlassPanel {
     property real position: 0
     property real duration: 0
     property bool shuffleOn: false
-    property bool loopOn: false
+    property int loopMode: 0  // 0=off, 1=repeat all, 2=repeat one
 
     property bool seeking: false
     property bool volumeAdjusting: false
@@ -55,6 +55,9 @@ GlassPanel {
         return m + ":" + (s < 10 ? "0" : "") + s
     }
 
+    readonly property string loopIcon: loopMode === 2 ? "repeat_one" : "repeat"
+    readonly property bool loopActive: loopMode > 0
+
     readonly property string volumeIcon: {
         if (muted)
             return "volume_off"
@@ -73,10 +76,12 @@ GlassPanel {
         anchors.bottomMargin: 8
         spacing: 4
 
+        // ── Row 1: Thumbnail · Controls · Volume ─────────────────────────
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 52
 
+            // Left: thumbnail + track info
             RowLayout {
                 anchors.left: parent.left
                 anchors.top: parent.top
@@ -141,6 +146,7 @@ GlassPanel {
                 }
             }
 
+            // Centre: playback controls
             RowLayout {
                 anchors.centerIn: parent
                 height: parent.height
@@ -207,17 +213,18 @@ GlassPanel {
                 }
 
                 IconButton {
-                    icon: root.loopOn ? "repeat_one" : "repeat"
+                    icon: root.loopIcon
                     iconSize: 22
                     width: 32
                     height: 32
-                    active: root.loopOn
+                    active: root.loopActive
                     opacity: root.hasMedia ? 1 : 0.45
                     enabled: root.hasMedia
                     onClicked: root.loopClicked()
                 }
             }
 
+            // Right: volume
             RowLayout {
                 anchors.right: parent.right
                 anchors.top: parent.top
@@ -245,7 +252,6 @@ GlassPanel {
                     padding: 10
 
                     onPressedChanged: root.volumeAdjusting = pressed
-
                     onMoved: root.volumeAdjusted(value)
 
                     background: Rectangle {
@@ -290,30 +296,47 @@ GlassPanel {
             }
         }
 
+        // ── Row 2: Time · Progress slider / Waveform · Duration ──────────────────────
         RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 28
-            spacing: 10
+            Layout.preferredHeight: (typeof backend !== "undefined" && backend.showVisualizer) ? 38 : 26
+            spacing: 8
 
             Text {
                 text: root.formatTime(root.position)
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted
-                Layout.preferredWidth: 42
+                Layout.preferredWidth: 38
                 horizontalAlignment: Text.AlignRight
+            }
+
+            SoundCloudWaveform {
+                id: waveSeek
+                Layout.fillWidth: true
+                Layout.preferredHeight: 32
+                visible: typeof backend !== "undefined" && backend.showVisualizer
+                waveform: (typeof backend !== "undefined") ? backend.waveform : []
+                position: root.position
+                duration: root.duration
+                isPlaying: root.isPlaying
+                hasMedia: root.hasMedia
+                onSeekRequested: function(pos) {
+                    root.seekRequested(pos)
+                }
             }
 
             Slider {
                 id: progressSlider
                 Layout.fillWidth: true
-                Layout.preferredHeight: 28
+                Layout.preferredHeight: 26
+                visible: typeof backend === "undefined" || !backend.showVisualizer
                 from: 0
                 to: root.duration > 0 ? root.duration : 1
                 enabled: root.hasMedia && root.duration > 0
                 opacity: enabled ? 1 : 0.45
                 live: true
-                padding: 10
+                padding: 8
 
                 onPressedChanged: {
                     root.seeking = pressed
@@ -333,7 +356,11 @@ GlassPanel {
                         width: progressSlider.visualPosition * parent.width
                         height: parent.height
                         radius: 2
-                        color: Theme.accentStart
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0; color: Theme.accentStart }
+                            GradientStop { position: 1; color: Theme.accentCyan }
+                        }
                     }
                 }
 
@@ -353,7 +380,7 @@ GlassPanel {
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted
-                Layout.preferredWidth: 42
+                Layout.preferredWidth: 38
             }
         }
     }

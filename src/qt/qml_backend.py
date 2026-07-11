@@ -288,10 +288,13 @@ class AppBackend(QObject):
     positionChanged = pyqtSignal()
     durationChanged = pyqtSignal()
     shuffleChanged = pyqtSignal()
-    loopChanged = pyqtSignal()
+    loopModeChanged = pyqtSignal()
     mutedChanged = pyqtSignal()
     hasMediaChanged = pyqtSignal()
     playerBarVisibleChanged = pyqtSignal()
+    showVisualizerChanged = pyqtSignal()
+    waveformChanged = pyqtSignal()
+    _waveformLoaded = pyqtSignal(str, "QVariantList")
     discoverResultsReady = pyqtSignal(object)
     mediaRootChanged = pyqtSignal()
     musicDirChanged = pyqtSignal()
@@ -352,6 +355,7 @@ class AppBackend(QObject):
         self._download_quality: str = str(raw.get("download_quality", "1080"))
         self._volume = max(0, min(100, int(raw.get("volume", 100))))
         self._muted = bool(raw.get("muted", False))
+        self._show_visualizer = bool(raw.get("show_visualizer", True))
         self._yt_dlp_update_status: str = ""
         self._volume_save_timer = QTimer(self)
         self._volume_save_timer.setSingleShot(True)
@@ -366,11 +370,39 @@ class AppBackend(QObject):
         self._current_path = ""
         self._current_audio_only = True
         self._shuffle_on = False
-        self._loop_on = False
+        self._loop_mode = 0  # 0=off, 1=repeat all, 2=repeat one
         self._position = 0.0
         self._duration = 0.0
         self._has_media = False
-        self._player_bar_visible = False
+
+        self._waveform = [0.0] * 150
+        self._waveformLoaded.connect(self._on_waveform_loaded)
+
+        # ── Session restore ────────────────────────────────────────────────────────────
+        # has_played_before: False on fresh install, True after first ever play.
+        # When True, the PlayerBar is always shown (never hidden by idle timer).
+        self._has_played_before: bool = bool(raw.get("has_played_before", False))
+        last_title = str(raw.get("last_track_title", ""))
+        last_artist = str(raw.get("last_track_artist", ""))
+        last_thumbnail = str(raw.get("last_track_thumbnail", ""))
+        last_path = str(raw.get("last_track_path", ""))
+        last_audio_only = bool(raw.get("last_track_audio_only", True))
+        self._last_track_position = float(raw.get("last_track_position", 0.0))
+
+        if self._has_played_before and last_title and last_path:
+            self._track_title = last_title
+            self._track_artist = last_artist
+            self._track_thumbnail = last_thumbnail
+            self._set_current_path(last_path)
+            self._current_audio_only = last_audio_only
+            self._has_media = True
+            # Also set the initial position slider to the last saved position
+            self._position = self._last_track_position
+
+        # Show bar immediately if a previous session exists
+        self._player_bar_visible = self._has_played_before
+        # ── End session restore ─────────────────────────────────────────────────────────
+
         self._player_bar_idle_timer = QTimer(self)
         self._player_bar_idle_timer.setSingleShot(True)
         self._player_bar_idle_timer.setInterval(_PLAYER_BAR_IDLE_MS)
@@ -500,9 +532,9 @@ class AppBackend(QObject):
     def shuffleOn(self) -> bool:
         return self._shuffle_on
 
-    @pyqtProperty(bool, notify=loopChanged)
-    def loopOn(self) -> bool:
-        return self._loop_on
+    @pyqtProperty(int, notify=loopModeChanged)
+    def loopMode(self) -> int:
+        return self._loop_mode
 
     @pyqtProperty(bool, notify=mutedChanged)
     def muted(self) -> bool:
@@ -512,9 +544,25 @@ class AppBackend(QObject):
     def hasMedia(self) -> bool:
         return self._has_media
 
+    @pyqtProperty("QVariantList", notify=waveformChanged)
+    def waveform(self) -> list[float]:
+        return self._waveform
+
     @pyqtProperty(bool, notify=playerBarVisibleChanged)
     def playerBarVisible(self) -> bool:
         return self._player_bar_visible
+
+    @pyqtProperty(bool, notify=showVisualizerChanged)
+    def showVisualizer(self) -> bool:
+        return self._show_visualizer
+
+    @showVisualizer.setter
+    def showVisualizer(self, value: bool) -> None:
+        if self._show_visualizer != value:
+            self._show_visualizer = value
+            save_raw_settings({"show_visualizer": value})
+            self.showVisualizerChanged.emit()
+
 
     @pyqtProperty(str, notify=mediaRootChanged)
     def mediaRoot(self) -> str:
@@ -686,6 +734,13 @@ class AppBackend(QObject):
             return
         if self.inCollectionView:
             self._set_playback_queue(self._collection_media_items())
+        else:
+            all_items = [
+                it for i in range(model.rowCount())
+                if (it := model.item_at(i)) is not None and not it.get("is_collection")
+            ]
+            if all_items:
+                self._set_playback_queue(all_items)
         self._play_item(item)
 
     @pyqtSlot(int)
@@ -1442,7 +1497,21 @@ class AppBackend(QObject):
     @pyqtSlot()
     def togglePause(self) -> None:
         self._touch_player_bar()
-        self._player.toggle_pause()
+        if self._player.state.status == PlaybackStatus.STOPPED and self._current_path:
+            artist = self._track_artist
+            if artist.startswith("•  "):
+                artist = artist[3:]
+            start_pos = self._last_track_position
+            self._last_track_position = 0.0
+            self._start_playback(
+                self._current_path,
+                audio_only=self._current_audio_only,
+                title=self._track_title if self._track_title != "LIMINAL" else "",
+                artist=artist if artist != "Offline Media Player" else "",
+                start_pos=start_pos,
+            )
+        else:
+            self._player.toggle_pause()
 
     @pyqtSlot()
     def previous(self) -> None:
@@ -1502,8 +1571,8 @@ class AppBackend(QObject):
 
     @pyqtSlot()
     def toggleLoop(self) -> None:
-        self._loop_on = not self._loop_on
-        self.loopChanged.emit()
+        self._loop_mode = (self._loop_mode + 1) % 3
+        self.loopModeChanged.emit()
 
     @pyqtSlot(float)
     def seekTo(self, position: float) -> None:
@@ -1522,10 +1591,10 @@ class AppBackend(QObject):
         """Model backing the in-folder list view (album / collection detail)."""
         page = self._current_page
         if page == 2:
-            return self._music_albums_model if self._music_section == "albums" else self._music_singles_model
+            return self._music_model
         if page == 3:
             return self._video_model
-        return self._music_singles_model
+        return self._music_model
 
     def _folder_stack_for_page(self, page: int) -> list[Path]:
         return {
@@ -1697,8 +1766,31 @@ class AppBackend(QObject):
         root = Path(self._music_dir)
         root_items = self._library_infos_to_items(scan_library_folder(root))
         music_tracks = self._scan_all_music_tracks(refresh=True)
-        self._music_paths = [info.path for info in music_tracks]
-        self._all_music_singles = [item for item in root_items if not item.get("is_collection")]
+        # Only seed _music_paths as a default queue when nothing is playing.
+        # Otherwise a library hot-reload (e.g. during downloads) would
+        # overwrite the active album/playlist queue and break auto-advance.
+        if not self._music_paths:
+            self._music_paths = [info.path for info in music_tracks]
+
+        # Collect canonical paths of tracks that live inside album subdirectories.
+        # A track that belongs to any album must not appear in "Đĩa đơn".
+        in_album: set[str] = set()
+        for child in root.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            for f in child.rglob("*"):
+                if not f.is_file() or f.suffix.lower() not in AUDIO_EXTS:
+                    continue
+                try:
+                    in_album.add(str(f.resolve()))
+                except OSError:
+                    in_album.add(str(f))
+
+        self._all_music_singles = [
+            item for item in root_items
+            if not item.get("is_collection")
+            and (item.get("canonical_path") or item.get("path") or "") not in in_album
+        ]
         self._all_music_albums = self._music_albums_for_root(
             [item for item in root_items if item.get("is_collection")],
             tracks=music_tracks,
@@ -1868,7 +1960,8 @@ class AppBackend(QObject):
             return
 
         music_infos = self._scan_all_music_tracks(refresh=True)
-        self._music_paths = [info.path for info in music_infos]
+        if not self._music_paths:
+            self._music_paths = [info.path for info in music_infos]
         self._reload_library_view(2)
 
         preview_limit = 12
@@ -2038,6 +2131,9 @@ class AppBackend(QObject):
         if self._track_thumbnail != image:
             self._track_thumbnail = image
             self.trackThumbnailChanged.emit()
+            # Persist for next-launch restore if we already have a playing session
+            if self._has_played_before and self._is_playing:
+                save_raw_settings({"last_track_thumbnail": image})
 
     def _image_for_path(self, path: str, *, audio_only: bool) -> str:
         if not path or _is_remote(path):
@@ -2081,6 +2177,7 @@ class AppBackend(QObject):
         audio_only: bool,
         title: str = "",
         artist: str = "",
+        start_pos: float = 0.0,
     ) -> None:
         self._player.play(
             path,
@@ -2089,6 +2186,7 @@ class AppBackend(QObject):
             artist=artist,
             volume=self._volume,
             muted=self._muted,
+            start_pos=start_pos,
         )
 
     def _play_item(self, item: dict) -> None:
@@ -2108,14 +2206,14 @@ class AppBackend(QObject):
         if _is_remote(path):
             if not self._is_online:
                 return
-            self._current_path = path
+            self._set_current_path(path)
             self._current_audio_only = audio_only
             self._start_playback(
                 path, audio_only=audio_only, title=title, artist=artist
             )
             return
 
-        self._current_path = path
+        self._set_current_path(path)
         self._current_audio_only = audio_only
         self._start_playback(path, audio_only=audio_only, title=title, artist=artist)
 
@@ -2125,10 +2223,17 @@ class AppBackend(QObject):
         try:
             return self._music_paths.index(self._current_path)
         except ValueError:
+            pass
+
+        try:
+            curr_resolved = str(Path(self._current_path).resolve())
+            resolved_paths = [str(Path(p).resolve()) if not _is_remote(p) else p for p in self._music_paths]
+            return resolved_paths.index(curr_resolved)
+        except Exception:
             return -1
 
     def _play_path(self, path: str) -> None:
-        self._current_path = path
+        self._set_current_path(path)
         self._current_audio_only = True
         queued = self._playback_items.get(path)
         thumbnail = ""
@@ -2145,23 +2250,32 @@ class AppBackend(QObject):
 
         idx = self._music_index()
         if idx < 0:
-            idx = 0
+            if delta > 0:
+                idx = 0
+            else:
+                idx = len(self._music_paths) - 1
         elif delta > 0:
             next_idx = idx + 1
             if next_idx >= len(self._music_paths):
-                if self._loop_on:
+                if self._loop_mode == 1:
                     next_idx = 0
                 else:
                     return
             idx = next_idx
         else:
-            idx = (idx - 1) % len(self._music_paths)
+            if idx == 0:
+                if self._loop_mode == 1:
+                    idx = len(self._music_paths) - 1
+                else:
+                    return
+            else:
+                idx = idx - 1
 
         self._play_path(self._music_paths[idx])
 
     def _play_random_other(self) -> None:
         if len(self._music_paths) <= 1:
-            if self._loop_on and self._music_paths:
+            if self._loop_mode >= 1 and self._music_paths:
                 self._play_path(self._music_paths[0])
             return
 
@@ -2174,7 +2288,9 @@ class AppBackend(QObject):
             return
         if _is_remote(self._current_path):
             return
-        if self._shuffle_on:
+        if self._loop_mode == 2:
+            self._play_path(self._current_path)
+        elif self._shuffle_on:
             self._play_random_other()
         else:
             self._play_adjacent(1)
@@ -2196,6 +2312,10 @@ class AppBackend(QObject):
             self._schedule_player_bar_hide()
 
     def _on_player_bar_idle_timeout(self) -> None:
+        # Only hide the bar if the user has never played anything in any session.
+        # Once has_played_before is True the bar stays visible forever.
+        if self._has_played_before:
+            return
         if self._is_playing:
             return
         if self._player_bar_visible:
@@ -2203,10 +2323,15 @@ class AppBackend(QObject):
             self.playerBarVisibleChanged.emit()
 
     def _on_state_changed(self, state) -> None:
-        if state.path:
-            self._current_path = state.path
+        # When STOPPED, state.path still holds the just-ended track.
+        # Don't let it overwrite _current_path which _play_path already
+        # updated to the new track during auto-advance.
+        if state.path and state.status != PlaybackStatus.STOPPED:
+            self._set_current_path(state.path)
+            path_lower = state.path.lower()
             self._current_audio_only = (
-                state.path in self._music_paths or _is_remote(state.path)
+                any(path_lower.endswith(ext) for ext in AUDIO_EXTS)
+                or _is_remote(state.path)
             )
 
         if state.title and state.title != "Nothing playing":
@@ -2214,7 +2339,7 @@ class AppBackend(QObject):
             self._track_artist = (
                 f"•  {state.artist}" if state.artist != "—" else "Offline Media Player"
             )
-        else:
+        elif not self._current_path:
             self._track_title = "LIMINAL"
             self._track_artist = "Offline Media Player"
             self._set_track_thumbnail("")
@@ -2227,10 +2352,32 @@ class AppBackend(QObject):
         if playing:
             self._cancel_player_bar_hide()
             self._show_player_bar()
+            # Mark first-ever play and persist session info
+            if not self._has_played_before:
+                self._has_played_before = True
+                save_raw_settings({"has_played_before": True})
+            # Persist current track for next-launch restore
+            save_raw_settings({
+                "last_track_title":      self._track_title,
+                "last_track_artist":     self._track_artist,
+                "last_track_thumbnail":  self._track_thumbnail,
+                "last_track_path":       self._current_path,
+                "last_track_audio_only": self._current_audio_only,
+                "last_track_position":   self._position,
+            })
         else:
-            self._schedule_player_bar_hide()
+            # Only arm the hide-timer before the user has ever played anything
+            if not self._has_played_before:
+                self._schedule_player_bar_hide()
+            else:
+                self._cancel_player_bar_hide()
+            # When paused or stopped, save position
+            if self._has_played_before and self._current_path:
+                save_raw_settings({
+                    "last_track_position":   self._position,
+                })
 
-        has_media = state.status != PlaybackStatus.STOPPED
+        has_media = (state.status != PlaybackStatus.STOPPED) or bool(self._current_path)
         if self._has_media != has_media:
             self._has_media = has_media
             self.hasMediaChanged.emit()
@@ -2255,4 +2402,36 @@ class AppBackend(QObject):
             self.durationChanged.emit()
 
     def cleanup(self) -> None:
+        if self._has_played_before and self._current_path:
+            save_raw_settings({
+                "last_track_position": self._position
+            })
         self._player.cleanup_sync()
+
+    def _set_current_path(self, path: str) -> None:
+        if self._current_path != path:
+            self._current_path = path
+            self._trigger_waveform_load(path)
+
+    def _trigger_waveform_load(self, path: str) -> None:
+        if not path or path.startswith(("http://", "https://")):
+            self._waveform = [0.0] * 150
+            self.waveformChanged.emit()
+            return
+
+        def worker():
+            from src.waveform_analyzer import get_waveform
+            try:
+                peaks = get_waveform(path, n_bins=150)
+                self._waveformLoaded.emit(path, peaks)
+            except Exception as e:
+                logger.error("AppBackend: failed to generate waveform: %s", e)
+                self._waveformLoaded.emit(path, [0.0] * 150)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @pyqtSlot(str, list)
+    def _on_waveform_loaded(self, path: str, peaks: list) -> None:
+        if self._current_path == path:
+            self._waveform = peaks
+            self.waveformChanged.emit()

@@ -133,6 +133,7 @@ ApplicationWindow {
                         clip: true
                         contentWidth: width
                         contentHeight: musicContent.height
+                        interactive: musicContent.height > musicPage.height
 
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
@@ -308,10 +309,12 @@ ApplicationWindow {
                         videoDir: backend.videoDir
                         themeIndex: backend.themeIndex
                         ytDlpUpdateStatus: backend.ytDlpUpdateStatus
+                        showVisualizer: backend.showVisualizer
 
                         onPickMediaRoot: backend.pickMediaRoot()
                         onThemeSelected: function(index) { backend.setThemeIndex(index) }
                         onUpdateYtDlpRequested: backend.updateYtDlp()
+                        onShowVisualizerToggled: function(value) { backend.showVisualizer = value }
                     }
                 }
             }
@@ -330,7 +333,7 @@ ApplicationWindow {
             position: backend.position
             duration: backend.duration
             shuffleOn: backend.shuffleOn
-            loopOn: backend.loopOn
+            loopMode: backend.loopMode
 
             onPreviousClicked: backend.previous()
             onPlayClicked: backend.togglePause()

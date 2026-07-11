@@ -60,6 +60,7 @@ class LiminalPlayer:
         *,
         volume: int | None = None,
         muted: bool = False,
+        start_pos: float = 0.0,
     ) -> None:
         """Start playing a media file or stream URL.
 
@@ -70,6 +71,7 @@ class LiminalPlayer:
             artist: Optional display artist (used for remote streams).
             volume: Optional output volume (0-100) for this session.
             muted: Whether mpv should start muted while keeping volume level.
+            start_pos: Start playback at this position in seconds.
         """
         if not self._mpv_available:
             self.state.title = "mpv not installed — install with: sudo pacman -S mpv"
@@ -95,7 +97,7 @@ class LiminalPlayer:
         cmd = [
             "mpv",
             f"--input-ipc-server={IPC_SOCKET}",
-            "--keep-open=yes",
+            "--keep-open=no",
             window_flag,
             "--no-terminal",
             "--msg-level=all=no",
@@ -103,8 +105,11 @@ class LiminalPlayer:
             "--demuxer-readahead-secs=20",
             f"--volume={saved_volume}",
             f"--force-media-title={media_title}",
-            path,
         ]
+        if start_pos > 0.0:
+            cmd.append(f"--start={start_pos}")
+        cmd.append(path)
+
         if not audio_only:
             cmd.insert(-1, "--hwdec=auto-safe")
         self._process = subprocess.Popen(
@@ -271,6 +276,11 @@ class LiminalPlayer:
         finally:
             self._writer = None
             self._reader = None
+            if self._process:
+                try:
+                    self._process.poll()
+                except Exception:
+                    pass
 
     async def _dispatch(self, msg: dict) -> None:
         rid = msg.get("request_id")
@@ -280,6 +290,8 @@ class LiminalPlayer:
                 fut.set_result(msg)
         if "event" in msg:
             ev = msg["event"]
+            if ev != "property-change" or msg.get("name") != "time-pos":
+                print(f"[DEBUG _dispatch] event={ev}, name={msg.get('name')}, data={msg.get('data')}", flush=True)
             if ev == "end-file":
                 self.state.status = PlaybackStatus.STOPPED
                 self.state.time_pos = 0.0
@@ -355,6 +367,7 @@ class PlayerBridge(QObject):
         *,
         volume: int | None = None,
         muted: bool = False,
+        start_pos: float = 0.0,
     ) -> None:
         asyncio.ensure_future(
             self._player.play(
@@ -364,6 +377,7 @@ class PlayerBridge(QObject):
                 artist=artist,
                 volume=volume,
                 muted=muted,
+                start_pos=start_pos,
             )
         )
 
@@ -413,6 +427,7 @@ class PlayerBridge(QObject):
         )
 
     def _on_track_end(self) -> None:
+        print("[DEBUG _on_track_end] emitting track_ended signal", flush=True)
         self.track_ended.emit()
 
     @staticmethod

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QIcon, QWindow
 from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
 from PyQt6.QtWidgets import QApplication
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication
 from src.player import PlayerBridge
 from src.mpris_service import MprisService
 from src.qt.qml_backend import AppBackend
+from src.audio_visualizer import AudioVisualizer
 
 QML_DIR = Path(__file__).resolve().parents[1] / "qml"
 THEME_QML = (QML_DIR / "Liminal" / "Theme.qml").resolve()
@@ -59,6 +60,24 @@ def run_qml_app(
         mpris.set_transport_handlers(backend.next, backend.previous)
     _engine.rootContext().setContextProperty("backend", backend)
 
+    # ── Audio visualizer ──────────────────────────────────────────────────
+    visualizer = AudioVisualizer()
+    visualizer.setParent(_engine)
+    _engine.rootContext().setContextProperty("audioVisualizer", visualizer)
+
+    # Wire visualizer start/stop to react to both player state and showVisualizer settings
+    def sync_visualizer_state():
+        from src.models import PlaybackStatus
+        is_playing = player.state.status == PlaybackStatus.PLAYING and not player.state.paused
+        if backend.showVisualizer and is_playing:
+            visualizer.start()
+        else:
+            visualizer.stop()
+
+    player.state_changed.connect(sync_visualizer_state)
+    backend.showVisualizerChanged.connect(sync_visualizer_state)
+    # ── End audio visualizer ──────────────────────────────────────────────
+
     _engine.load(QUrl.fromLocalFile(str((QML_DIR / "main.qml").resolve())))
 
     if not _engine.rootObjects():
@@ -72,3 +91,4 @@ def run_qml_app(
     QTimer.singleShot(0, backend.load_initial_page)
 
     app.aboutToQuit.connect(backend.cleanup)
+    app.aboutToQuit.connect(visualizer.stop)

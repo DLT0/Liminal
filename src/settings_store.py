@@ -9,7 +9,7 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "liminal"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 
 YOUTUBE_DEFAULTS: dict[str, str] = {
     "youtube_auth_mode": "oauth",
@@ -112,6 +112,16 @@ def load_raw_settings() -> dict:
         "download_quality": "1080",
         "volume": 100,
         "muted": False,
+        # ── Session / last-played restore ──────────────────────────────────
+        "has_played_before":   False,
+        "last_track_title":    "",
+        "last_track_artist":   "",
+        "last_track_thumbnail": "",
+        "last_track_path":     "",
+        "last_track_audio_only": True,
+        "last_track_position":   0.0,
+        # ──────────────────────────────────────────────────────────────────
+        "show_visualizer":     True,
         **YOUTUBE_DEFAULTS,
     }
     merged.update({k: v for k, v in data.items() if k in merged or k == "media_root"})

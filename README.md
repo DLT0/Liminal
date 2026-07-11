@@ -106,3 +106,48 @@ Cấu hình lưu tại `~/.config/liminal/settings.json`. Chọn thư mục gố
 - **Music** — chứa file nhạc và album (thư mục con)
 - **Videos** — chứa file video và playlist (thư mục con)
 - **Playlist** — thư mục playlist chung
+
+## Audio Visualizer (Equalizer bars)
+
+Liminal hiển thị thanh equalizer thời gian thực đồng bộ với audio đang phát qua loa, sử dụng dữ liệu FFT thực từ PipeWire.
+
+### Cách hoạt động
+
+`src/audio_visualizer.py` (`AudioVisualizer`) chạy một thread riêng:
+1. Tự động phát hiện **monitor source** của sink mặc định (thiết bị đầu ra âm thanh) thông qua `pactl`.
+2. Capture audio bằng **sounddevice** (đọc loopback từ PipeWire).
+3. Tính **FFT** trên 1024 mẫu, chia thành **24 band** theo thang log-frequency (20 Hz → 20 kHz).
+4. Áp dụng **exponential moving average** để bar mượt mà.
+5. Phát signal `levelsChanged` mỗi ~40 ms → QML component `EqualizerVisualizer.qml` vẽ lại Canvas.
+
+### Phụ thuộc bổ sung
+
+```bash
+pip install sounddevice numpy
+# hoặc:
+pip install -r requirements.txt
+```
+
+`sounddevice` yêu cầu **libportaudio**:
+```bash
+# Fedora
+sudo dnf install portaudio portaudio-devel
+
+# Ubuntu/Debian
+sudo apt install portaudio19-dev
+```
+
+### Graceful fallback
+
+Nếu không tìm được monitor source (ví dụ PipeWire config không chuẩn, `pactl` thiếu, hoặc `sounddevice` chưa cài):
+- `AudioVisualizer.available` = `False`
+- Không có thread capture nào được khởi tạo
+- Log cảnh báo: `WARNING: AudioVisualizer: no PipeWire/PulseAudio monitor source found`
+- QML: thanh equalizer bị ẩn, thanh tiến trình (progress slider) hiện bình thường
+- **App không crash**, tính năng tự tắt hoàn toàn im lặng
+
+Để debug, chạy với log level DEBUG:
+```bash
+PYTHONPATH=. python3 -c "import logging; logging.basicConfig(level=logging.DEBUG); from src.audio_visualizer import AudioVisualizer; AudioVisualizer()"
+```
+
