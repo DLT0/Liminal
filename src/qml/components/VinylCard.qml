@@ -118,11 +118,7 @@ Item {
                 Rectangle {
                     anchors.fill: parent
                     visible: root.imageSource === ""
-                    gradient: Gradient {
-                        orientation: Gradient.Vertical
-                        GradientStop { position: 0; color: Qt.lighter(root.accentColor, 1.2) }
-                        GradientStop { position: 1; color: Qt.darker(root.accentColor, 1.5) }
-                    }
+                    color: Theme.bgElevated
 
                     Text {
                         anchors.centerIn: parent

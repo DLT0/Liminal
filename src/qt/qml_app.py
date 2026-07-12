@@ -12,8 +12,10 @@ from PyQt6.QtWidgets import QApplication
 
 from src.player import PlayerBridge
 from src.mpris_service import MprisService
+from src.qt.discover_bridge import DiscoverBridge
+from src.qt.share_bridge import ShareBridge
 from src.qt.qml_backend import AppBackend
-from src.audio_visualizer import AudioVisualizer
+from src.ui_config import UiConfigBridge, load_ui_config
 
 QML_DIR = Path(__file__).resolve().parents[1] / "qml"
 THEME_QML = (QML_DIR / "Liminal" / "Theme.qml").resolve()
@@ -51,32 +53,34 @@ def run_qml_app(
 
     _register_theme()
 
+    # Prevent app from closing when window is hidden
+    app.setQuitOnLastWindowClosed(False)
+
     _engine = QQmlApplicationEngine()
     _engine.addImportPath(str(QML_DIR.resolve()))
 
-    backend = AppBackend(player)
+    ui_config = load_ui_config()
+    ui_bridge = UiConfigBridge(ui_config)
+    ui_bridge.setParent(_engine)
+
+    backend = AppBackend(player, ui_config=ui_config)
+    backend.set_engine(_engine)
     backend.setParent(_engine)
+
+    discover_bridge = DiscoverBridge()
+    discover_bridge.set_backend(backend)
+    discover_bridge.setParent(_engine)
+
+    share_bridge = ShareBridge()
+    share_bridge.set_backend(backend)
+    share_bridge.setParent(_engine)
+
     if mpris is not None:
         mpris.set_transport_handlers(backend.next, backend.previous)
     _engine.rootContext().setContextProperty("backend", backend)
-
-    # ── Audio visualizer ──────────────────────────────────────────────────
-    visualizer = AudioVisualizer()
-    visualizer.setParent(_engine)
-    _engine.rootContext().setContextProperty("audioVisualizer", visualizer)
-
-    # Wire visualizer start/stop to react to both player state and showVisualizer settings
-    def sync_visualizer_state():
-        from src.models import PlaybackStatus
-        is_playing = player.state.status == PlaybackStatus.PLAYING and not player.state.paused
-        if backend.showVisualizer and is_playing:
-            visualizer.start()
-        else:
-            visualizer.stop()
-
-    player.state_changed.connect(sync_visualizer_state)
-    backend.showVisualizerChanged.connect(sync_visualizer_state)
-    # ── End audio visualizer ──────────────────────────────────────────────
+    _engine.rootContext().setContextProperty("discoverBridge", discover_bridge)
+    _engine.rootContext().setContextProperty("shareBridge", share_bridge)
+    _engine.rootContext().setContextProperty("uiConfig", ui_bridge)
 
     _engine.load(QUrl.fromLocalFile(str((QML_DIR / "main.qml").resolve())))
 
@@ -88,7 +92,51 @@ def run_qml_app(
     if isinstance(root, QWindow):
         backend.set_main_window(root)
 
-    QTimer.singleShot(0, backend.load_initial_page)
+    # Initialize System Tray
+    from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
+    from PyQt6.QtGui import QAction
 
-    app.aboutToQuit.connect(backend.cleanup)
-    app.aboutToQuit.connect(visualizer.stop)
+    tray_icon = QSystemTrayIcon(QIcon(str(ICON_PATH)), app)
+    tray_icon.setToolTip("Liminal Media Player")
+    
+    tray_menu = QMenu()
+    show_action = QAction("Hiện ứng dụng", app)
+    quit_action = QAction("Thoát", app)
+    
+    tray_menu.addAction(show_action)
+    tray_menu.addSeparator()
+    tray_menu.addAction(quit_action)
+    
+    tray_icon.setContextMenu(tray_menu)
+    tray_icon.show()
+
+    def restore_window():
+        if backend._main_window:
+            backend._main_window.show()
+            backend._main_window.raise_()
+            backend._main_window.requestActivate()
+
+    show_action.triggered.connect(restore_window)
+    
+    def quit_from_tray():
+        tray_icon.hide()
+        backend.quitApp()
+        
+    quit_action.triggered.connect(quit_from_tray)
+    
+    def on_tray_activated(reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            restore_window()
+            
+    tray_icon.activated.connect(on_tray_activated)
+
+    QTimer.singleShot(0, backend.load_initial_page)
+    QTimer.singleShot(0, discover_bridge.emit_cached_feed)
+    QTimer.singleShot(0, share_bridge.emit_cached_shared)
+    QTimer.singleShot(0, share_bridge.refreshShared)
+
+    # Ensure mpv is always killed when the Qt app exits
+    import atexit
+    atexit.register(backend._player.cleanup_sync)
+
+    return backend

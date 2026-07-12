@@ -9,7 +9,7 @@ Item {
     property string searchText: ""
     property string pageTitle: "Discover"
     property int currentPage: 0
-    property string searchPlaceholder: "Tìm nhạc trên YouTube…"
+    property string searchPlaceholder: uiConfig.searchPlaceholder
 
     signal searchChanged(string text)
     signal searchSubmitted(string text)
@@ -33,9 +33,9 @@ Item {
         Item { Layout.fillWidth: true }
 
         Item {
-            Layout.preferredWidth: root.currentPage === 4 ? 0 : 340
+            Layout.preferredWidth: root.currentPage === 4 ? 0 : uiConfig.searchWidth
             Layout.preferredHeight: 44
-            visible: root.currentPage !== 4 && root.currentPage !== 6 && root.currentPage !== 7
+            visible: root.currentPage !== 4 && root.currentPage !== 5 && root.currentPage !== 6 && root.currentPage !== 7
             clip: false
 
             Rectangle {
@@ -107,6 +107,6 @@ Item {
     }
 
     function updateForPage(page) {
-        searchPlaceholder = "Tìm trong thư viện…"
+        searchPlaceholder = uiConfig.searchPlaceholder
     }
 }

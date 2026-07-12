@@ -9,6 +9,7 @@ GlassPanel {
     width: Theme.sidebarWidth
     radius: 0
     strong: false
+    border.width: 0
 
     property int currentPage: 2
     property string searchText: ""

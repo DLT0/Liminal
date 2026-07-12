@@ -3,5 +3,3 @@ qasync>=0.24
 textual>=0.40
 yt-dlp>=2024.12.23
 mutagen>=1.47.0
-sounddevice>=0.4.6
-numpy>=1.24

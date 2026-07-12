@@ -9,14 +9,12 @@ Item {
     property string mediaRoot: ""
     property string musicDir: ""
     property string videoDir: ""
-    property int themeIndex: 0
+    property string uiConfigPath: ""
     property string ytDlpUpdateStatus: ""
-    property bool showVisualizer: true
 
     signal pickMediaRoot()
-    signal themeSelected(int index)
+    signal openUiConfigDir()
     signal updateYtDlpRequested()
-    signal showVisualizerToggled(bool value)
 
     ScrollView {
         anchors.fill: parent
@@ -39,7 +37,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                text: "Thư mục lưu trữ: Chọn một thư mục gốc, Liminal sẽ tự tạo Music và Videos bên trong."
+                text: "Vị trí lưu trữ: Chọn thư mục gốc cho thư viện của bạn. Liminal sẽ tự động quản lý và phân loại các tệp âm nhạc và video bên trong."
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.bodySize
                 color: Theme.textMuted
@@ -59,7 +57,7 @@ Item {
 
                     Text {
                         Layout.fillWidth: true
-                        text: "Mặc định: ~/Media/Liminal (Linux) hoặc C:\\Users\\<bạn>\\Media\\Liminal (Windows)"
+                        text: "Đường dẫn mặc định: ~/Media/Liminal (Linux) hoặc C:\\Users\\<tên_người_dùng>\\Media\\Liminal (Windows)"
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.captionSize
                         color: Theme.textMuted
@@ -103,68 +101,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                text: "Giao diện: Chọn bộ màu phù hợp với sở thích của bạn."
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.bodySize
-                color: Theme.textMuted
-                wrapMode: Text.WordWrap
-                Layout.topMargin: 10
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-
-                Repeater {
-                    model: Theme.themeNames
-
-                    delegate: Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 72
-                        radius: Theme.cardRadius
-                        color: root.themeIndex === index ? Theme.accentStart : Theme.glassFill
-                        border.color: root.themeIndex === index ? Theme.accentEnd : Theme.glassBorder
-                        border.width: root.themeIndex === index ? 2 : 1
-
-                        Behavior on color { ColorAnimation { duration: Theme.colorDuration } }
-                        Behavior on border.color { ColorAnimation { duration: Theme.colorDuration } }
-
-                        ColumnLayout {
-                            anchors.centerIn: parent
-                            spacing: 4
-
-                            Rectangle {
-                                Layout.alignment: Qt.AlignHCenter
-                                width: 24; height: 24; radius: 12
-                                gradient: Gradient {
-                                    orientation: Gradient.Horizontal
-                                    GradientStop { position: 0; color: Theme.palettes[index].accentStart }
-                                    GradientStop { position: 1; color: Theme.palettes[index].accentEnd }
-                                }
-                            }
-
-                            Text {
-                                Layout.alignment: Qt.AlignHCenter
-                                text: modelData
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.captionSize
-                                font.weight: root.themeIndex === index ? Font.Bold : Font.Normal
-                                color: root.themeIndex === index ? Theme.textOnAccent : Theme.textSecondary
-                            }
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.themeSelected(index)
-                        }
-                    }
-                }
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: "Hiệu ứng & Hiển thị: Bật/tắt sóng nhạc động."
+                text: "Cấu hình giao diện: Thực hiện tùy chỉnh thông qua tệp settings.json. Các thay đổi sẽ có hiệu lực sau khi khởi động lại ứng dụng."
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.bodySize
                 color: Theme.textMuted
@@ -174,52 +111,78 @@ Item {
 
             GlassPanel {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 56
+                Layout.preferredHeight: uiPanel.implicitHeight + 24
                 radius: Theme.cardRadius
 
-                RowLayout {
+                ColumnLayout {
+                    id: uiPanel
                     anchors.fill: parent
-                    anchors.leftMargin: 16
-                    anchors.rightMargin: 16
+                    anchors.margins: 16
+                    spacing: 10
 
                     Text {
-                        text: "Hiển thị sóng nhạc (Equalizer)"
+                        Layout.fillWidth: true
+                        text: "Tệp cấu hình hệ thống"
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.bodySize
                         font.weight: Font.Bold
                         color: Theme.textPrimary
-                        Layout.fillWidth: true
                     }
 
-                    // Custom Switch
-                    Rectangle {
-                        id: switchContainer
-                        width: 44
-                        height: 24
-                        radius: 12
-                        color: root.showVisualizer ? Theme.accentStart : Theme.sliderTrack
-                        border.color: root.showVisualizer ? Theme.accentEnd : Theme.glassBorder
-                        border.width: 1
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Vui lòng tham khảo tệp settings.json.example để xem chi tiết các tham số cấu hình được hỗ trợ (ví dụ: liminal.colorCustomizations.accent, liminal.sidebar.width)."
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.captionSize
+                        color: Theme.textMuted
+                        wrapMode: Text.WordWrap
+                    }
 
-                        Behavior on color { ColorAnimation { duration: 150 } }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
 
                         Rectangle {
-                            id: switchHandle
-                            width: 20
-                            height: 20
-                            radius: 10
-                            color: Theme.textPrimary
-                            x: root.showVisualizer ? 22 : 2
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 40
+                            radius: 8
+                            color: Theme.inputBg
+                            border.color: Theme.inputBorder
 
-                            Behavior on x {
-                                NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                            Text {
+                                anchors.fill: parent
+                                anchors.margins: 10
+                                text: root.uiConfigPath || "~/.config/liminal/settings.json"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.bodySize
+                                color: Theme.textSecondary
+                                elide: Text.ElideMiddle
+                                verticalAlignment: Text.AlignVCenter
                             }
                         }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.showVisualizerToggled(!root.showVisualizer)
+                        Rectangle {
+                            Layout.preferredWidth: 160
+                            Layout.preferredHeight: 40
+                            radius: 8
+                            color: Theme.glassFill
+                            border.color: Theme.glassBorder
+                            border.width: 1
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Mở thư mục"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.bodySize
+                                font.weight: Font.Bold
+                                color: Theme.textSecondary
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.openUiConfigDir()
+                            }
                         }
                     }
                 }
@@ -237,7 +200,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                text: "Cập nhật yt-dlp để sửa các lỗi tải xuống khi các nền tảng (như YouTube) thay đổi thuật toán."
+                text: "Cập nhật module yt-dlp: Đảm bảo khả năng tương thích và khắc phục các sự cố tải xuống khi các nền tảng trực tuyến cập nhật thuật toán."
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.bodySize
                 color: Theme.textMuted

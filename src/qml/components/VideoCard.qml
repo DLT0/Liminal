@@ -68,13 +68,7 @@ Item {
                 Rectangle {
                     anchors.fill: parent
                     visible: root.imageSource === "" || thumb.status !== Image.Ready
-                    color: Theme.cardBg
-
-                    gradient: Gradient {
-                        orientation: Gradient.Vertical
-                        GradientStop { position: 0; color: Qt.lighter(root.accentColor, 1.3) }
-                        GradientStop { position: 1; color: Qt.darker(root.accentColor, 1.4) }
-                    }
+                    color: Theme.bgElevated
 
                     AppIcon {
                         anchors.centerIn: parent

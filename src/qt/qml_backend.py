@@ -6,7 +6,6 @@ import logging
 import random
 import asyncio
 import shutil
-import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from PyQt6.QtCore import (
     pyqtProperty,
     pyqtSignal,
     pyqtSlot,
+    QSettings,
 )
 from PyQt6.QtGui import QDesktopServices, QGuiApplication, QWindow
 from PyQt6.QtWidgets import QApplication, QFileDialog
@@ -36,10 +36,12 @@ from src.media_links import (
 )
 from src.metadata_store import (
     delete_metadata,
+    get_metadata,
     read_embedded_metadata,
     read_video_thumbnail,
     resolve_display,
     resolve_source_id,
+    resolve_source_url,
     set_cover_image,
     set_metadata,
 )
@@ -52,6 +54,8 @@ from src.scanner import (
     scan_library_folder,
 )
 from src.settings_store import load_raw_settings, load_settings, save_raw_settings, save_settings
+from src.state_store import load_raw_state, save_raw_state
+from src.ui_config import load_ui_config, open_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -292,22 +296,21 @@ class AppBackend(QObject):
     mutedChanged = pyqtSignal()
     hasMediaChanged = pyqtSignal()
     playerBarVisibleChanged = pyqtSignal()
-    showVisualizerChanged = pyqtSignal()
-    waveformChanged = pyqtSignal()
-    _waveformLoaded = pyqtSignal(str, "QVariantList")
-    discoverResultsReady = pyqtSignal(object)
     mediaRootChanged = pyqtSignal()
     musicDirChanged = pyqtSignal()
     videoDirChanged = pyqtSignal()
     settingsSavedChanged = pyqtSignal()
-    themeIndexChanged = pyqtSignal()
     pageTitleChanged = pyqtSignal()
     downloadQualityChanged = pyqtSignal()
     downloadConcurrencyChanged = pyqtSignal()
     ytDlpUpdateStatusChanged = pyqtSignal()
     libraryNavigationChanged = pyqtSignal()
     musicSearchChanged = pyqtSignal()
+    videoSearchChanged = pyqtSignal()
+    searchQueryChanged = pyqtSignal()
     playlistOrderUndoChanged = pyqtSignal()
+    rememberCloseActionChanged = pyqtSignal(bool)
+    closeActionTrayChanged = pyqtSignal(bool)
     searchResults = pyqtSignal(list)
     searchError = pyqtSignal(str)
     playlistLinkReady = pyqtSignal(str, list)
@@ -319,9 +322,16 @@ class AppBackend(QObject):
     downloadJobStarted = pyqtSignal(str)
     downloadJobRequeued = pyqtSignal(str)
 
-    def __init__(self, player: PlayerBridge, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        player: PlayerBridge,
+        *,
+        ui_config: dict | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._player = player
+        self._ui_config = ui_config or load_ui_config()
         self._track_title = "LIMINAL"
         self._track_artist = "Offline Media Player"
         self._track_thumbnail = ""
@@ -332,6 +342,10 @@ class AppBackend(QObject):
         self._filter = ""
         self._app_icon_url = QUrl.fromLocalFile(str(APP_ICON_PATH.resolve())).toString()
         self._main_window: QWindow | None = None
+        self._settings = QSettings("Liminal", "MediaApp")
+        self._remember_close_action = self._settings.value("remember_close_action", False, type=bool)
+        self._close_action_tray = self._settings.value("close_action_tray", True, type=bool)
+        self._engine = None
 
         settings = load_settings()
         self._media_root = settings["media_root"]
@@ -351,11 +365,13 @@ class AppBackend(QObject):
         )
 
         raw = load_raw_settings()
-        self._theme_index: int = int(raw.get("theme_index", 0))
+        state = load_raw_state()
         self._download_quality: str = str(raw.get("download_quality", "1080"))
         self._volume = max(0, min(100, int(raw.get("volume", 100))))
         self._muted = bool(raw.get("muted", False))
-        self._show_visualizer = bool(raw.get("show_visualizer", True))
+        self._player_bar_always_visible = bool(
+            self._ui_config.get("player_bar", {}).get("always_visible", False)
+        )
         self._yt_dlp_update_status: str = ""
         self._volume_save_timer = QTimer(self)
         self._volume_save_timer.setSingleShot(True)
@@ -375,19 +391,16 @@ class AppBackend(QObject):
         self._duration = 0.0
         self._has_media = False
 
-        self._waveform = [0.0] * 150
-        self._waveformLoaded.connect(self._on_waveform_loaded)
-
         # ── Session restore ────────────────────────────────────────────────────────────
         # has_played_before: False on fresh install, True after first ever play.
         # When True, the PlayerBar is always shown (never hidden by idle timer).
-        self._has_played_before: bool = bool(raw.get("has_played_before", False))
-        last_title = str(raw.get("last_track_title", ""))
-        last_artist = str(raw.get("last_track_artist", ""))
-        last_thumbnail = str(raw.get("last_track_thumbnail", ""))
-        last_path = str(raw.get("last_track_path", ""))
-        last_audio_only = bool(raw.get("last_track_audio_only", True))
-        self._last_track_position = float(raw.get("last_track_position", 0.0))
+        self._has_played_before: bool = bool(state.get("has_played_before", False))
+        last_title = str(state.get("last_track_title", ""))
+        last_artist = str(state.get("last_track_artist", ""))
+        last_thumbnail = str(state.get("last_track_thumbnail", ""))
+        last_path = str(state.get("last_track_path", ""))
+        last_audio_only = bool(state.get("last_track_audio_only", True))
+        self._last_track_position = float(state.get("last_track_position", 0.0))
 
         if self._has_played_before and last_title and last_path:
             self._track_title = last_title
@@ -400,7 +413,7 @@ class AppBackend(QObject):
             self._position = self._last_track_position
 
         # Show bar immediately if a previous session exists
-        self._player_bar_visible = self._has_played_before
+        self._player_bar_visible = self._has_played_before or self._player_bar_always_visible
         # ── End session restore ─────────────────────────────────────────────────────────
 
         self._player_bar_idle_timer = QTimer(self)
@@ -415,6 +428,11 @@ class AppBackend(QObject):
         self._all_music_albums: list[dict] = []
         self._all_music_tracks: list[dict] = []
         self._all_video_items: list[dict] = []
+        self._all_video_series: list[dict] = []
+        self._all_video_movies: list[dict] = []
+        self._all_video_my_movies: list[dict] = []
+        self._all_video_shared: list[dict] = []
+        self._all_video_tracks: list[dict] = []
         self._music_track_infos: list[MediaInfo] | None = None
         self._video_track_infos: list[MediaInfo] | None = None
         self._music_library_loaded = False
@@ -433,12 +451,23 @@ class AppBackend(QObject):
         self._music_search_model = MediaListModel(self)
         self._music_section = "singles"
         self._video_model = MediaListModel(self)
+        self._video_series_model = MediaListModel(self)
+        self._video_movies_model = MediaListModel(self)
+        self._video_my_movies_model = MediaListModel(self)
+        self._video_shared_model = MediaListModel(self)
+        self._video_search_model = MediaListModel(self)
+        self._video_section = "movies"
         self._media_music_model = MediaListModel(self)
         self._media_video_model = MediaListModel(self)
 
         self._player.state_changed.connect(self._on_state_changed)
         self._player.position_changed.connect(self._on_position_changed)
         self._player.track_ended.connect(self._on_track_ended)
+
+        self.downloadProgress.connect(self._on_shared_download_progress)
+        self.downloadFinished.connect(self._on_shared_download_finished)
+        self.downloadError.connect(self._on_shared_download_error)
+        self.downloadJobStarted.connect(self._on_shared_download_started)
 
     def load_initial_page(self) -> None:
         """Load the startup tab's library once QML is ready."""
@@ -483,6 +512,30 @@ class AppBackend(QObject):
     @pyqtProperty(QObject, constant=True)
     def videoModel(self) -> MediaListModel:
         return self._video_model
+
+    @pyqtProperty(QObject, constant=True)
+    def videoSeriesModel(self) -> MediaListModel:
+        return self._video_series_model
+
+    @pyqtProperty(QObject, constant=True)
+    def videoMoviesModel(self) -> MediaListModel:
+        return self._video_movies_model
+
+    @pyqtProperty(QObject, constant=True)
+    def videoMyMoviesModel(self) -> MediaListModel:
+        return self._video_my_movies_model
+
+    @pyqtProperty(QObject, constant=True)
+    def videoSharedModel(self) -> MediaListModel:
+        return self._video_shared_model
+
+    @pyqtProperty(QObject, constant=True)
+    def videoSearchModel(self) -> MediaListModel:
+        return self._video_search_model
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def videoSearchActive(self) -> bool:
+        return bool(self._filter) and self._current_page == 3 and not self.inCollectionView
 
     @pyqtProperty(QObject, constant=True)
     def mediaMusicModel(self) -> MediaListModel:
@@ -544,25 +597,9 @@ class AppBackend(QObject):
     def hasMedia(self) -> bool:
         return self._has_media
 
-    @pyqtProperty("QVariantList", notify=waveformChanged)
-    def waveform(self) -> list[float]:
-        return self._waveform
-
     @pyqtProperty(bool, notify=playerBarVisibleChanged)
     def playerBarVisible(self) -> bool:
         return self._player_bar_visible
-
-    @pyqtProperty(bool, notify=showVisualizerChanged)
-    def showVisualizer(self) -> bool:
-        return self._show_visualizer
-
-    @showVisualizer.setter
-    def showVisualizer(self, value: bool) -> None:
-        if self._show_visualizer != value:
-            self._show_visualizer = value
-            save_raw_settings({"show_visualizer": value})
-            self.showVisualizerChanged.emit()
-
 
     @pyqtProperty(str, notify=mediaRootChanged)
     def mediaRoot(self) -> str:
@@ -579,10 +616,6 @@ class AppBackend(QObject):
     @pyqtProperty(bool, notify=settingsSavedChanged)
     def settingsSaved(self) -> bool:
         return self._settings_saved
-
-    @pyqtProperty(int, notify=themeIndexChanged)
-    def themeIndex(self) -> int:
-        return self._theme_index
 
     @pyqtProperty(str, notify=downloadQualityChanged)
     def downloadQuality(self) -> str:
@@ -659,6 +692,55 @@ class AppBackend(QObject):
         key = self._playlist_order_folder_key()
         return key is not None and key in self._playlist_order_undo
 
+    def set_engine(self, engine) -> None:
+        self._engine = engine
+
+    @pyqtProperty(bool, notify=rememberCloseActionChanged)
+    def rememberCloseAction(self) -> bool:
+        return self._remember_close_action
+
+    @rememberCloseAction.setter
+    def rememberCloseAction(self, val: bool) -> None:
+        if self._remember_close_action != val:
+            self._remember_close_action = val
+            self._settings.setValue("remember_close_action", val)
+            self.rememberCloseActionChanged.emit(val)
+
+    @pyqtProperty(bool, notify=closeActionTrayChanged)
+    def closeActionTray(self) -> bool:
+        return self._close_action_tray
+
+    @closeActionTray.setter
+    def closeActionTray(self, val: bool) -> None:
+        if self._close_action_tray != val:
+            self._close_action_tray = val
+            self._settings.setValue("close_action_tray", val)
+            self.closeActionTrayChanged.emit(val)
+
+    @pyqtSlot()
+    def minimizeToTray(self) -> None:
+        if self._main_window is not None:
+            self._main_window.hide()
+            self.optimizeMemory()
+
+    @pyqtSlot()
+    def optimizeMemory(self) -> None:
+        """Optimizes memory when running in background (Linux malloc_trim & garbage collection)."""
+        import gc
+        if self._engine is not None:
+            try:
+                self._engine.trimComponentCache()
+            except Exception as e:
+                logger.warning("Failed to trim component cache: %s", e)
+        gc.collect()
+        try:
+            import ctypes
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
+            logger.info("Memory optimization completed successfully via malloc_trim.")
+        except Exception as e:
+            logger.warning("Failed to call malloc_trim: %s", e)
+
     # ── Slots ──
 
     @pyqtSlot(int)
@@ -686,6 +768,7 @@ class AppBackend(QObject):
             prev_page = self._current_page
             self._current_page = page
             titles = {
+                1: "Discover",
                 2: "Music",
                 3: "Videos",
                 4: "Tải xuống",
@@ -699,6 +782,8 @@ class AppBackend(QObject):
             self.libraryNavigationChanged.emit()
             if prev_page == 2 or page == 2:
                 self.musicSearchChanged.emit()
+            if prev_page == 3 or page == 3:
+                self.videoSearchChanged.emit()
 
     @pyqtSlot(str)
     def setSearchFilter(self, text: str) -> None:
@@ -712,7 +797,11 @@ class AppBackend(QObject):
                 self._sync_music_root_view()
         elif self._current_page == 3:
             self._ensure_video_library_loaded()
-            self._apply_library_filter(self._all_video_items, self.videoModel)
+            if self.inCollectionView:
+                active = self._video_series_model if self._video_section == "series" else self._video_movies_model
+                self._apply_library_filter(self._all_video_items, active)
+            else:
+                self._sync_video_root_view()
 
     @pyqtSlot(int)
     def playMusicSearch(self, index: int) -> None:
@@ -722,6 +811,17 @@ class AppBackend(QObject):
             return
         self._music_section = "singles"
         self._music_model.set_items(items)
+        self._set_playback_queue(items)
+        self._play_item(item)
+
+    @pyqtSlot(int)
+    def playVideoSearch(self, index: int) -> None:
+        items = list(self._video_search_model._items)
+        item = self._video_search_model.item_at(index)
+        if item is None:
+            return
+        self._video_section = "movies"
+        self._video_model.set_items(items)
         self._set_playback_queue(items)
         self._play_item(item)
 
@@ -755,6 +855,244 @@ class AppBackend(QObject):
     def openMusicAlbum(self, index: int) -> None:
         self._music_section = "albums"
         self.openCollection(index)
+
+    @pyqtSlot(int)
+    def playVideoMovie(self, index: int) -> None:
+        self._video_section = "movies"
+        self._video_model.set_items(self._video_movies_model._items)
+        item = self._video_movies_model.item_at(index)
+        if item is not None:
+            self._set_playback_queue([item])
+            self._play_item(item)
+
+    @pyqtSlot(int)
+    def playVideoMyMovie(self, index: int) -> None:
+        self._video_section = "movies"
+        self._video_model.set_items(self._video_my_movies_model._items)
+        item = self._video_my_movies_model.item_at(index)
+        if item is not None:
+            self._set_playback_queue([item])
+            self._play_item(item)
+
+    @pyqtSlot(int)
+    def openVideoSeries(self, index: int) -> None:
+        self._video_section = "series"
+        self.openCollection(index)
+
+    def library_share_info(self, path: str) -> dict | None:
+        """Build share payload from a library file (title, author, source URL, thumbnail)."""
+        resolved = _resolve_metadata_path(path)
+        if not resolved or resolved.startswith("__liminal__:"):
+            return None
+
+        file_path = Path(resolved)
+        if not file_path.is_file():
+            return None
+
+        meta_path = str(file_path.resolve())
+        thumb = read_video_thumbnail(file_path)
+        display = resolve_display(
+            meta_path,
+            default_title=file_path.stem,
+            default_image=thumb,
+        )
+        source_url = resolve_source_url(meta_path)
+        thumbnail_url = ""
+        yt_id = extract_youtube_id(source_url) or extract_youtube_id(resolve_source_id(meta_path))
+        if yt_id:
+            thumbnail_url = f"https://i.ytimg.com/vi/{yt_id}/hqdefault.jpg"
+        else:
+            stored_thumb = str(get_metadata(meta_path).get("thumbnail_url") or "").strip()
+            if stored_thumb.startswith(("http://", "https://")):
+                thumbnail_url = stored_thumb
+
+        return {
+            "title": display["title"],
+            "author": display["artist"],
+            "source_url": source_url,
+            "thumbnail_url": thumbnail_url,
+        }
+
+    @pyqtSlot(int)
+    def playVideoShared(self, index: int) -> None:
+        item = self._video_shared_model.item_at(index)
+        if item is None:
+            return
+        if item.get("download_status") != "done" and not self._shared_item_in_library(item):
+            return
+
+        play_item = dict(item)
+        track_id = str(item.get("track_id") or "")
+        local_path = self._find_video_path_by_source_id(track_id)
+        if local_path:
+            play_item["path"] = local_path
+            play_item["is_remote"] = False
+
+        self._video_section = "shared"
+        self._video_model.set_items(self._video_shared_model._items)
+        self._set_playback_queue([play_item])
+        self._play_item(play_item)
+
+    def _find_video_path_by_source_id(self, source_id: str) -> str:
+        needle = (source_id or "").strip()
+        if not needle:
+            return ""
+        self._ensure_video_library_loaded()
+        if self._video_track_infos is not None:
+            for info in self._video_track_infos:
+                if resolve_source_id(info.path) == needle:
+                    return info.path
+        for item in self._all_video_tracks:
+            path = str(item.get("path") or "")
+            if path and resolve_source_id(path) == needle:
+                return path
+        return ""
+
+    @pyqtSlot(int)
+    def downloadSharedItem(self, index: int) -> None:
+        item = self._video_shared_model.item_at(index)
+        if item is None:
+            return
+        if self._shared_item_in_library(item):
+            return
+        source_url = str(item.get("url") or "").strip()
+        if not source_url:
+            self.downloadError.emit("", "Mục chia sẻ thiếu link tải.")
+            return
+        self._mark_shared_downloading(item, percent=0.0)
+        self.downloadMedia(source_url, "video", "")
+
+    def apply_shared_items(self, items: list[dict]) -> None:
+        """Convert API/cache rows into the shared videos model."""
+        self._ensure_source_ids("video")
+        model_items = [
+            self._shared_item_to_model(item, index)
+            for index, item in enumerate(items)
+        ]
+        self._all_video_shared = model_items
+        if self._current_page == 3 and not self.inCollectionView:
+            self._apply_library_filter(self._all_video_shared, self._video_shared_model)
+
+    def _shared_item_in_library(self, item: dict) -> bool:
+        track_id = str(item.get("track_id") or "").strip()
+        if not track_id:
+            track_id = extract_youtube_id(str(item.get("url") or ""))
+        self._ensure_source_ids("video")
+        return bool(track_id and track_id in self._video_source_ids)
+
+    def _shared_item_to_model(self, item: dict, index: int) -> dict:
+        source_url = str(item.get("source_url") or item.get("url") or "").strip()
+        video_id = str(item.get("video_id") or "").strip()
+        if not video_id:
+            video_id = extract_youtube_id(source_url) or str(item.get("id") or "")
+
+        in_library = self._shared_item_in_library({
+            "track_id": video_id,
+            "url": source_url,
+        })
+        thumb = str(item.get("thumbnail_path") or item.get("thumbnail_url") or "").strip()
+
+        if in_library:
+            download_status = "done"
+            download_percent = 100.0
+            is_downloading = False
+        else:
+            download_status = str(item.get("download_status") or "pending")
+            download_percent = float(item.get("download_percent") or 0.0)
+            is_downloading = bool(item.get("is_downloading"))
+
+        return {
+            "title": str(item.get("title") or "Không có tên"),
+            "subtitle": str(item.get("author") or "Chia sẻ"),
+            "image": thumb,
+            "path": f"__liminal__:share:{item.get('id')}",
+            "url": source_url,
+            "track_id": video_id,
+            "share_id": str(item.get("id") or ""),
+            "share_code": str(item.get("code") or ""),
+            "audio_only": False,
+            "is_remote": True,
+            "is_collection": False,
+            "duration": "",
+            "accent": ACCENT_COLORS[index % len(ACCENT_COLORS)],
+            "download_percent": download_percent,
+            "download_status": download_status,
+            "is_downloading": is_downloading,
+            "in_library": in_library,
+        }
+
+    def _find_shared_item(self, key: str) -> dict | None:
+        needle = (key or "").strip()
+        if not needle:
+            return None
+        for item in self._all_video_shared:
+            if item.get("track_id") == needle or item.get("url") == needle:
+                return item
+        return None
+
+    def _mark_shared_downloading(self, item: dict, *, percent: float) -> None:
+        item["is_downloading"] = True
+        item["download_status"] = "downloading"
+        item["download_percent"] = percent
+        self._emit_shared_item_changed(item)
+
+    def _emit_shared_item_changed(self, item: dict) -> None:
+        track_id = str(item.get("track_id") or "")
+        url = str(item.get("url") or "")
+        self._video_shared_model.update_download_state(
+            track_id,
+            percent=item.get("download_percent"),
+            status=item.get("download_status"),
+            is_downloading=item.get("is_downloading"),
+        )
+        if url and url != track_id:
+            self._video_shared_model.update_download_state(
+                url,
+                percent=item.get("download_percent"),
+                status=item.get("download_status"),
+                is_downloading=item.get("is_downloading"),
+            )
+
+    def _on_shared_download_started(self, key: str) -> None:
+        item = self._find_shared_item(key)
+        if item is None:
+            return
+        self._mark_shared_downloading(item, percent=float(item.get("download_percent") or 0.0))
+
+    def _on_shared_download_progress(self, key: str, percent: float) -> None:
+        item = self._find_shared_item(key)
+        if item is None:
+            return
+        item["download_percent"] = percent
+        item["download_status"] = "downloading"
+        item["is_downloading"] = True
+        self._emit_shared_item_changed(item)
+
+    def _on_shared_download_finished(self, video_id: str, file_path: str) -> None:
+        item = self._find_shared_item(video_id)
+        if item is None:
+            return
+        item["download_percent"] = 100.0
+        item["download_status"] = "done"
+        item["is_downloading"] = False
+        item["in_library"] = True
+        if file_path:
+            item["path"] = file_path
+            item["is_remote"] = False
+        else:
+            local_path = self._find_video_path_by_source_id(video_id)
+            if local_path:
+                item["path"] = local_path
+                item["is_remote"] = False
+        self._emit_shared_item_changed(item)
+
+    def _on_shared_download_error(self, key: str, _message: str) -> None:
+        item = self._find_shared_item(key)
+        if item is None:
+            return
+        item["is_downloading"] = False
+        item["download_status"] = "pending"
+        self._emit_shared_item_changed(item)
 
     @pyqtSlot()
     def playCollection(self) -> None:
@@ -1001,9 +1339,15 @@ class AppBackend(QObject):
 
     @pyqtSlot()
     def quitApp(self) -> None:
+        import os
+        try:
+            self.cleanup()
+        except Exception as e:
+            logger.error("Error during quit cleanup: %s", e)
         app = QApplication.instance()
         if app is not None:
             app.quit()
+        os._exit(0)
 
     @pyqtSlot(str)
     def deleteMediaByPath(self, path: str) -> None:
@@ -1342,7 +1686,11 @@ class AppBackend(QObject):
                 return
 
             self.downloadFinished.emit(video_id, file_path)
-            set_metadata(file_path, source_id=video_id)
+            set_metadata(
+                file_path,
+                source_id=video_id,
+                source_url=job.url.strip(),
+            )
             if job.media_type == "music":
                 self._music_source_ids.add(video_id)
             else:
@@ -1433,12 +1781,9 @@ class AppBackend(QObject):
             output_subdir=output_subdir or None,
         )
 
-    @pyqtSlot(int)
-    def setThemeIndex(self, index: int) -> None:
-        if self._theme_index != index:
-            self._theme_index = index
-            self.themeIndexChanged.emit()
-            save_raw_settings({"theme_index": index})
+    @pyqtSlot()
+    def openUiConfigDir(self) -> None:
+        open_config_dir()
 
     @pyqtSlot(str)
     def setDownloadQuality(self, quality: str) -> None:
@@ -1836,6 +2181,79 @@ class AppBackend(QObject):
         if push_to_models:
             self._sync_music_root_view()
 
+    def _scan_all_video_tracks(self, *, refresh: bool = False) -> list[MediaInfo]:
+        if not refresh and self._video_track_infos is not None:
+            return self._video_track_infos
+
+        seen: set[str] = set()
+        tracks: list[MediaInfo] = []
+        for info in scan_directory(Path(self._video_dir), VIDEO_EXTS):
+            key = info.canonical_path or info.path
+            if key in seen:
+                continue
+            seen.add(key)
+            tracks.append(info)
+        for i, track in enumerate(tracks, start=1):
+            track.index = i
+        self._video_track_infos = tracks
+        return tracks
+
+    def _rebuild_video_root_catalog(self, *, push_to_models: bool = False) -> None:
+        root = Path(self._video_dir)
+        root_items = self._library_infos_to_items(scan_library_folder(root))
+        video_tracks = self._scan_all_video_tracks(refresh=True)
+        if not self._music_paths:
+            self._music_paths = [info.path for info in video_tracks]
+
+        in_series: set[str] = set()
+        for child in root.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            for f in child.rglob("*"):
+                if not f.is_file() or f.suffix.lower() not in VIDEO_EXTS:
+                    continue
+                try:
+                    in_series.add(str(f.resolve()))
+                except OSError:
+                    in_series.add(str(f))
+
+        self._all_video_my_movies = [
+            item for item in root_items
+            if not item.get("is_collection")
+            and (item.get("canonical_path") or item.get("path") or "") not in in_series
+        ]
+        self._all_video_movies = []  # Phim lẻ (currently empty, ready for custom logic)
+        self._all_video_series = [item for item in root_items if item.get("is_collection")]
+        self._all_video_tracks = self._library_infos_to_items(video_tracks)
+        
+        if push_to_models:
+            self._sync_video_root_view()
+
+    def _sync_video_root_view(self) -> None:
+        if self._filter:
+            self._apply_video_search()
+        else:
+            self._video_search_model.set_items([])
+            self._apply_library_filter(self._all_video_shared, self._video_shared_model)
+            self._apply_library_filter(self._all_video_movies, self._video_movies_model)
+            self._apply_library_filter(self._all_video_my_movies, self._video_my_movies_model)
+            self._apply_library_filter(
+                self._all_video_series,
+                self._video_series_model,
+                pin_first=False,
+            )
+        self.videoSearchChanged.emit()
+
+    def _apply_video_search(self) -> None:
+        q = self._filter
+        if not q:
+            self._video_search_model.set_items([])
+            return
+        filtered = [
+            item for item in self._all_video_tracks if self._item_matches_search(item, q)
+        ]
+        self._video_search_model.set_items(filtered)
+
     def _reload_library_view(self, page: int) -> None:
         stack = self._folder_stack_for_page(page)
         if page == 2 and stack and self._is_all_musics_virtual(stack[-1]):
@@ -1863,9 +2281,17 @@ class AppBackend(QObject):
                     self._music_model.set_items(self._music_singles_model._items)
             elif page == 3:
                 self._all_video_items = items
-                self._apply_library_filter(self._all_video_items, self.videoModel)
+                if stack:
+                    self._apply_library_filter(self._all_video_items, self.videoModel)
+                else:
+                    self._rebuild_video_root_catalog(push_to_models=self._current_page == 3 and not self.inCollectionView)
+                    active = self._video_series_model if self._video_section == "series" else self._video_movies_model
+                    self._apply_library_filter(self._all_video_items, active)
+                    self._video_model.set_items(active._items)
         if page == 2:
             self.musicSearchChanged.emit()
+        if page == 3:
+            self.videoSearchChanged.emit()
         self.libraryNavigationChanged.emit()
         self.playlistOrderUndoChanged.emit()
 
@@ -2072,6 +2498,27 @@ class AppBackend(QObject):
             annotated.append(row)
         return annotated
 
+    def annotate_discover_items(self, items: list[dict]) -> list[dict]:
+        """Mark discover feed rows with ``in_library`` for QML badges."""
+        annotated: list[dict] = []
+        for item in items:
+            row = dict(item)
+            media_type = str(item.get("media_type") or "video").strip().lower()
+            if media_type not in {"music", "video"}:
+                media_type = "video"
+            row["media_type"] = media_type
+
+            video_id = str(item.get("video_id") or item.get("id") or "").strip()
+            if not video_id:
+                source = str(item.get("source_url") or item.get("url") or "")
+                video_id = extract_youtube_id(source)
+
+            self._ensure_source_ids(media_type)
+            pool = self._music_source_ids if media_type == "music" else self._video_source_ids
+            row["in_library"] = bool(video_id and video_id in pool)
+            annotated.append(row)
+        return annotated
+
     def _item_matches_search(self, item: dict, q: str) -> bool:
         if q in item["title"].lower() or q in item["subtitle"].lower():
             return True
@@ -2151,8 +2598,6 @@ class AppBackend(QObject):
         self._playback_items = {}
         seen_canonical: set[str] = set()
         for item in items:
-            if not item.get("audio_only"):
-                continue
             path = item.get("path") or item.get("url") or ""
             if not path:
                 continue
@@ -2170,7 +2615,7 @@ class AppBackend(QObject):
             self.trackThumbnailChanged.emit()
             # Persist for next-launch restore if we already have a playing session
             if self._has_played_before and self._is_playing:
-                save_raw_settings({"last_track_thumbnail": image})
+                save_raw_state({"last_track_thumbnail": image})
 
     def _image_for_path(self, path: str, *, audio_only: bool) -> str:
         if not path or _is_remote(path):
@@ -2321,9 +2766,7 @@ class AppBackend(QObject):
             self._play_path(random.choice(candidates))
 
     def _on_track_ended(self) -> None:
-        if not self._current_audio_only or not self._current_path:
-            return
-        if _is_remote(self._current_path):
+        if not self._current_path:
             return
         if self._loop_mode == 2:
             self._play_path(self._current_path)
@@ -2338,6 +2781,8 @@ class AppBackend(QObject):
             self.playerBarVisibleChanged.emit()
 
     def _schedule_player_bar_hide(self) -> None:
+        if self._player_bar_always_visible or self._has_played_before:
+            return
         self._player_bar_idle_timer.start()
 
     def _cancel_player_bar_hide(self) -> None:
@@ -2350,8 +2795,7 @@ class AppBackend(QObject):
 
     def _on_player_bar_idle_timeout(self) -> None:
         # Only hide the bar if the user has never played anything in any session.
-        # Once has_played_before is True the bar stays visible forever.
-        if self._has_played_before:
+        if self._has_played_before or self._player_bar_always_visible:
             return
         if self._is_playing:
             return
@@ -2392,9 +2836,8 @@ class AppBackend(QObject):
             # Mark first-ever play and persist session info
             if not self._has_played_before:
                 self._has_played_before = True
-                save_raw_settings({"has_played_before": True})
-            # Persist current track for next-launch restore
-            save_raw_settings({
+                save_raw_state({"has_played_before": True})
+            save_raw_state({
                 "last_track_title":      self._track_title,
                 "last_track_artist":     self._track_artist,
                 "last_track_thumbnail":  self._track_thumbnail,
@@ -2410,7 +2853,7 @@ class AppBackend(QObject):
                 self._cancel_player_bar_hide()
             # When paused or stopped, save position
             if self._has_played_before and self._current_path:
-                save_raw_settings({
+                save_raw_state({
                     "last_track_position":   self._position,
                 })
 
@@ -2439,36 +2882,19 @@ class AppBackend(QObject):
             self.durationChanged.emit()
 
     def cleanup(self) -> None:
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
         if self._has_played_before and self._current_path:
-            save_raw_settings({
-                "last_track_position": self._position
-            })
+            try:
+                save_raw_state({
+                    "last_track_position": self._position
+                })
+            except Exception as e:
+                logger.warning("Failed to save last track position: %s", e)
         self._player.cleanup_sync()
 
     def _set_current_path(self, path: str) -> None:
         if self._current_path != path:
             self._current_path = path
-            self._trigger_waveform_load(path)
 
-    def _trigger_waveform_load(self, path: str) -> None:
-        if not path or path.startswith(("http://", "https://")):
-            self._waveform = [0.0] * 150
-            self.waveformChanged.emit()
-            return
-
-        def worker():
-            from src.waveform_analyzer import get_waveform
-            try:
-                peaks = get_waveform(path, n_bins=150)
-                self._waveformLoaded.emit(path, peaks)
-            except Exception as e:
-                logger.error("AppBackend: failed to generate waveform: %s", e)
-                self._waveformLoaded.emit(path, [0.0] * 150)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    @pyqtSlot(str, list)
-    def _on_waveform_loaded(self, path: str, peaks: list) -> None:
-        if self._current_path == path:
-            self._waveform = peaks
-            self.waveformChanged.emit()
