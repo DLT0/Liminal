@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import QApplication
 
 from src.player import PlayerBridge
 from src.mpris_service import MprisService
-from src.qt.discover_bridge import DiscoverBridge
 from src.qt.share_bridge import ShareBridge
 from src.qt.qml_backend import AppBackend
 from src.ui_config import UiConfigBridge, load_ui_config
@@ -67,10 +66,6 @@ def run_qml_app(
     backend.set_engine(_engine)
     backend.setParent(_engine)
 
-    discover_bridge = DiscoverBridge()
-    discover_bridge.set_backend(backend)
-    discover_bridge.setParent(_engine)
-
     share_bridge = ShareBridge()
     share_bridge.set_backend(backend)
     share_bridge.setParent(_engine)
@@ -78,7 +73,6 @@ def run_qml_app(
     if mpris is not None:
         mpris.set_transport_handlers(backend.next, backend.previous)
     _engine.rootContext().setContextProperty("backend", backend)
-    _engine.rootContext().setContextProperty("discoverBridge", discover_bridge)
     _engine.rootContext().setContextProperty("shareBridge", share_bridge)
     _engine.rootContext().setContextProperty("uiConfig", ui_bridge)
 
@@ -131,7 +125,6 @@ def run_qml_app(
     tray_icon.activated.connect(on_tray_activated)
 
     QTimer.singleShot(0, backend.load_initial_page)
-    QTimer.singleShot(0, discover_bridge.emit_cached_feed)
     QTimer.singleShot(0, share_bridge.emit_cached_shared)
     QTimer.singleShot(0, share_bridge.refreshShared)
 

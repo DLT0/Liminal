@@ -19,10 +19,11 @@ from src.settings_store import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
-SHARE_API_BASE = "https://hoangminhduong.top"
+SHARE_API_BASE = "https://www.hoangminhduong.top"
 _USER_AGENT = "Liminal/1.0"
 _FETCH_TIMEOUT = 30
 _THUMB_TIMEOUT = 15
+_MAX_REDIRECTS = 5
 
 SHARED_ITEMS_FILE = CONFIG_DIR / "shared_items.json"
 SHARED_THUMB_DIR = Path(
@@ -70,19 +71,42 @@ def _request_json(
     body: dict | None = None,
 ) -> object:
     url = _api_url(path)
-    data = None
+    payload = None
     headers = {
         "User-Agent": _USER_AGENT,
         "Accept": "application/json",
     }
     if body is not None:
-        data = json.dumps(body).encode("utf-8")
+        payload = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        raw = response.read().decode(charset, errors="replace")
-    return json.loads(raw)
+
+    current_method = method
+    current_payload = payload
+
+    for _ in range(_MAX_REDIRECTS):
+        request = urllib.request.Request(
+            url,
+            data=current_payload,
+            headers=headers,
+            method=current_method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                raw = response.read().decode(charset, errors="replace")
+            return json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                location = exc.headers.get("Location")
+                if not location:
+                    raise
+                url = urllib.parse.urljoin(url, location)
+                if exc.code in (301, 302, 303):
+                    current_method = "GET"
+                    current_payload = None
+                continue
+            raise
+    raise ValueError("Quá nhiều lần chuyển hướng từ máy chủ chia sẻ.")
 
 
 def _guess_thumb_extension(content_type: str, url: str) -> str:
@@ -167,6 +191,21 @@ async def _cache_thumbnails(items: list[dict]) -> list[dict]:
     return cached
 
 
+def _remove_item_from_cache(share_id: str) -> list[dict]:
+    """Drop one share from local cache by server id."""
+    needle = (share_id or "").strip()
+    if not needle:
+        return get_cached_items()
+    items = [item for item in get_cached_items() if str(item.get("id") or "") != needle]
+    data = _read_local_file()
+    _write_local_file({
+        "device_id": data.get("device_id") or get_device_id(),
+        "fetched_at": time.time(),
+        "items": items,
+    })
+    return items
+
+
 def _merge_items(remote: list[dict], local: list[dict]) -> list[dict]:
     by_id: dict[str, dict] = {}
     for item in local:
@@ -240,6 +279,8 @@ async def redeem_share_code(code: str) -> dict:
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise ValueError("Mã chia sẻ không tồn tại.") from exc
+        if exc.code == 410:
+            raise ValueError("Mã đã hết hạn (15 phút).") from exc
         raise ValueError(f"Không thể nhập mã (HTTP {exc.code}).") from exc
     except urllib.error.URLError as exc:
         raise ValueError("Không thể kết nối máy chủ chia sẻ.") from exc
@@ -306,3 +347,32 @@ async def create_share(
         raise ValueError("Máy chủ không trả về mã chia sẻ.")
 
     return {"code": code, "id": str(payload.get("id") or "")}
+
+
+async def dismiss_share(share_id: str) -> list[dict]:
+    """Remove a redeemed share from server and local cache."""
+    needle = (share_id or "").strip()
+    if not needle:
+        return get_cached_items()
+
+    device_id = get_device_id()
+    loop = asyncio.get_running_loop()
+
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: _request_json(
+                "POST",
+                "/api/media-share/dismiss",
+                body={"deviceId": device_id, "shareId": needle},
+            ),
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (404, 410):
+            raise ValueError(f"Không thể xóa mục chia sẻ (HTTP {exc.code}).") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError("Không thể kết nối máy chủ chia sẻ.") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("Phản hồi máy chủ không hợp lệ.") from exc
+
+    return _remove_item_from_cache(needle)

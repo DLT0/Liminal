@@ -16,6 +16,7 @@ Item {
 
     signal playRequested()
     signal downloadRequested()
+    signal contextMenuRequested(real x, real y)
 
     readonly property string resolvedImageSource: {
         if (!imageSource)
@@ -180,6 +181,10 @@ Item {
         id: hoverMa
         anchors.fill: parent
         hoverEnabled: true
-        acceptedButtons: Qt.NoButton
+        acceptedButtons: Qt.RightButton
+        onClicked: function(mouse) {
+            if (mouse.button === Qt.RightButton)
+                root.contextMenuRequested(mouse.x, mouse.y)
+        }
     }
 }

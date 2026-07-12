@@ -5,7 +5,9 @@ import Liminal 1.0
 Dialog {
     id: root
 
-    title: "Tạo playlist mới"
+    property bool isVideo: false
+
+    title: isVideo ? "Tạo thư mục mới" : "Tạo playlist mới"
     modal: true
     anchors.centerIn: parent
     standardButtons: Dialog.Ok | Dialog.Cancel
@@ -20,8 +22,9 @@ Dialog {
 
     onAccepted: backend.createFolder(nameField.text)
 
-    function openDialog() {
-        nameField.text = "Playlist mới"
+    function openDialog(isVideoContext) {
+        isVideo = isVideoContext || false
+        nameField.text = isVideo ? "Thư mục mới" : "Playlist mới"
         open()
     }
 
@@ -31,7 +34,7 @@ Dialog {
 
         Text {
             width: parent.width
-            text: "Tên playlist"
+            text: root.isVideo ? "Tên thư mục" : "Tên playlist"
             font.family: Theme.fontFamily
             font.pixelSize: Theme.captionSize
             font.weight: Font.DemiBold
@@ -41,7 +44,7 @@ Dialog {
         TextField {
             id: nameField
             width: parent.width
-            placeholderText: "Nhập tên playlist"
+            placeholderText: root.isVideo ? "Nhập tên thư mục" : "Nhập tên playlist"
             font.family: Theme.fontFamily
             color: Theme.textPrimary
             placeholderTextColor: Theme.textMuted

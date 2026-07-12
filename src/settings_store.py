@@ -15,7 +15,7 @@ def _config_dir() -> Path:
 
 CONFIG_DIR = _config_dir()
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-SETTINGS_VERSION = 6
+SETTINGS_VERSION = 7
 
 YOUTUBE_DEFAULTS: dict[str, str] = {
     "youtube_auth_mode": "oauth",
@@ -24,24 +24,17 @@ YOUTUBE_DEFAULTS: dict[str, str] = {
     "youtube_cookies_file": "",
 }
 
-DISCOVER_FEED_BASE_URL = "https://hoangminhduong.top"
-
-DISCOVER_DEFAULTS: dict = {
-    "discover_feed_url": "",
-    "discover_feed_base_url": DISCOVER_FEED_BASE_URL,
-    "discover_feed_slug": "",
-    "discover_feed_api_key": "",
-    "discover_cache_ttl_minutes": 30,
-    "discover_allowed_domains": [
-        "youtube.com",
-        "youtu.be",
-        "drive.google.com",
-        "i.ytimg.com",
-        "img.youtube.com",
-        "hoangminhduong.top",
-        "www.hoangminhduong.top",
-    ],
-}
+OBSOLETE_SETTING_KEYS = (
+    "discover_feed_url",
+    "discover_feed_base_url",
+    "discover_feed_slug",
+    "discover_feed_api_key",
+    "discover_cache_ttl_minutes",
+    "discover_allowed_domains",
+    "music_dir",
+    "video_dir",
+    "playlist_dir",
+)
 
 APP_DEFAULTS: dict = {
     "version": SETTINGS_VERSION,
@@ -49,7 +42,6 @@ APP_DEFAULTS: dict = {
     "volume": 100,
     "muted": False,
     **YOUTUBE_DEFAULTS,
-    **DISCOVER_DEFAULTS,
 }
 
 MUSIC_SUBDIR = "Music"
@@ -140,12 +132,19 @@ def _read_settings_file() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _strip_obsolete_settings(data: dict) -> dict:
+    cleaned = dict(data)
+    for key in OBSOLETE_SETTING_KEYS:
+        cleaned.pop(key, None)
+    return cleaned
+
+
 def load_raw_settings() -> dict:
     """Load settings with app defaults; preserve user customization keys."""
     from src.state_store import migrate_state_from_settings
 
     migrate_state_from_settings()
-    data = _read_settings_file()
+    data = _strip_obsolete_settings(_read_settings_file())
     merged = dict(data)
 
     for key, default in APP_DEFAULTS.items():
@@ -165,7 +164,7 @@ def save_raw_settings(data: dict) -> None:
     from src.state_store import SESSION_KEYS
 
     _ensure_config_dir()
-    current = _read_settings_file()
+    current = _strip_obsolete_settings(_read_settings_file())
     current.update(data)
     for key in SESSION_KEYS:
         current.pop(key, None)

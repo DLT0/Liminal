@@ -42,6 +42,8 @@ class LiminalPlayer:
         self.state: PlaybackState = PlaybackState()
         self._mpv_available: bool = self._check_mpv()
         self._on_end_file: Optional[Callable[[], None]] = None
+        self._audio_only_mode: bool | None = None
+        self._properties_observed: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -82,6 +84,29 @@ class LiminalPlayer:
             self.state.volume = max(0, min(100, volume))
 
         saved_volume = self.state.volume
+        is_remote = path.startswith(("http://", "https://"))
+        media_title = title or (
+            "Streaming" if is_remote else Path(path).stem
+        )
+
+        can_reuse = (
+            self._writer is not None
+            and self._process is not None
+            and self._process.poll() is None
+            and self._audio_only_mode == audio_only
+            and self._properties_observed
+        )
+        if can_reuse:
+            await self._play_via_loadfile(
+                path,
+                title=title,
+                artist=artist,
+                media_title=media_title,
+                muted=muted,
+                start_pos=start_pos,
+            )
+            return
+
         await self.stop()
         self.state.volume = saved_volume
 
@@ -90,9 +115,6 @@ class LiminalPlayer:
         stale.unlink(missing_ok=True)
 
         window_flag = "--no-video" if audio_only else "--force-window=yes"
-        media_title = title or (
-            "Streaming" if path.startswith(("http://", "https://")) else Path(path).stem
-        )
 
         cmd = [
             "mpv",
@@ -101,11 +123,13 @@ class LiminalPlayer:
             window_flag,
             "--no-terminal",
             "--msg-level=all=no",
-            "--cache=yes",
-            "--demuxer-readahead-secs=20",
             f"--volume={saved_volume}",
             f"--force-media-title={media_title}",
         ]
+        if is_remote:
+            cmd.extend(["--cache=yes", "--demuxer-readahead-secs=10"])
+        else:
+            cmd.extend(["--cache=no", "--demuxer-readahead-secs=1"])
         if start_pos > 0.0:
             cmd.append(f"--start={start_pos}")
         cmd.append(path)
@@ -117,6 +141,7 @@ class LiminalPlayer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        self._audio_only_mode = audio_only
 
         connected = await self._connect_ipc()
         if not connected:
@@ -128,6 +153,7 @@ class LiminalPlayer:
         await self._send_command(["observe_property", 2, "time-pos"])
         await self._send_command(["observe_property", 3, "duration"])
         await self._send_command(["observe_property", 4, "volume"])
+        self._properties_observed = True
         if muted:
             await self._send_command(["set_property", "mute", True])
         if artist or title:
@@ -139,6 +165,45 @@ class LiminalPlayer:
                 ]
             )
 
+        self._apply_play_state(path, title=title, artist=artist, media_title=media_title)
+
+    async def _play_via_loadfile(
+        self,
+        path: str,
+        *,
+        title: str,
+        artist: str,
+        media_title: str,
+        muted: bool,
+        start_pos: float,
+    ) -> None:
+        load_cmd: list = ["loadfile", path, "replace"]
+        if start_pos > 0.0:
+            load_cmd.extend(["0", str(start_pos)])
+        await self._send_command(load_cmd)
+        await self._send_command(["set_property", "pause", False])
+        if muted:
+            await self._send_command(["set_property", "mute", True])
+        else:
+            await self._send_command(["set_property", "mute", False])
+        if artist or title:
+            await self._send_command(
+                [
+                    "set_property",
+                    "metadata",
+                    {"Artist": artist or "—", "Title": media_title},
+                ]
+            )
+        self._apply_play_state(path, title=title, artist=artist, media_title=media_title)
+
+    def _apply_play_state(
+        self,
+        path: str,
+        *,
+        title: str,
+        artist: str,
+        media_title: str,
+    ) -> None:
         p = Path(path)
         self.state.path = path
         if title:
@@ -146,7 +211,7 @@ class LiminalPlayer:
         elif path.startswith(("http://", "https://")):
             self.state.title = "Streaming"
         else:
-            self.state.title = p.stem
+            self.state.title = p.stem if p.stem else media_title[:40]
         self.state.artist = artist if artist else "—"
         self.state.status = PlaybackStatus.PLAYING
         self.state.paused = False
@@ -206,6 +271,8 @@ class LiminalPlayer:
         stale.unlink(missing_ok=True)
         self.state = PlaybackState()
         self.state.volume = saved_volume
+        self._audio_only_mode = None
+        self._properties_observed = False
 
     def cleanup_sync(self) -> None:
         """Synchronous cleanup for app exit (called from non-async contexts)."""
@@ -239,7 +306,7 @@ class LiminalPlayer:
 
     async def _connect_ipc(self) -> bool:
         sock_path = Path(IPC_SOCKET)
-        for _ in range(20):  # Wait up to 2 s
+        for _ in range(30):  # Wait up to ~1.5 s
             if sock_path.exists():
                 try:
                     self._reader, self._writer = await asyncio.open_unix_connection(
@@ -248,9 +315,9 @@ class LiminalPlayer:
                     self._listener_task = asyncio.create_task(self._listen())
                     return True
                 except Exception:
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.05)
                     continue
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
         return False
 
     async def _listen(self) -> None:

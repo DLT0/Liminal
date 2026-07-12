@@ -147,3 +147,9 @@ class ShareBridge(QObject):
             self.shareError.emit("Không thể tạo mã chia sẻ.")
         finally:
             self._set_loading(False)
+
+    @pyqtSlot(int)
+    def dismissSharedItem(self, index: int) -> None:
+        if self._backend is None:
+            return
+        self._backend.dismissSharedItem(index)

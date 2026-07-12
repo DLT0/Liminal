@@ -14,6 +14,8 @@ Item {
     property bool showBackButton: false
     property string breadcrumb: ""
     property bool inCollectionView: false
+    property bool allowCreateCollection: true
+    property bool allowMoveToCollection: true
     property string bannerTitle: ""
     property string bannerSubtitle: ""
     property string bannerImage: ""
@@ -77,9 +79,10 @@ Item {
     StyledMenu {
         id: emptyContextMenu
         StyledMenuItem {
+            visible: root.allowCreateCollection
             iconName: "create_new_folder"
-            text: "Tạo playlist mới"
-            onTriggered: createFolderDialog.openDialog()
+            text: root.useVideoStyle ? "Tạo thư mục mới" : "Tạo playlist mới"
+            onTriggered: createFolderDialog.openDialog(root.useVideoStyle)
         }
     }
 
@@ -93,7 +96,8 @@ Item {
 
         StyledMenuItem {
             iconName: contextMenu.isCollection ? "folder_open" : "play_arrow"
-            text: contextMenu.isCollection ? "Mở playlist" : "Phát"
+            text: contextMenu.isCollection ? (root.useVideoStyle ? "Mở thư mục" : "Mở playlist") : "Phát"
+            font.weight: Font.Bold
             onTriggered: {
                 if (contextMenu.isCollection)
                     root.openCollectionRequested(contextMenu.itemIndex)
@@ -103,8 +107,8 @@ Item {
         }
         StyledMenu {
             id: moveToFolderMenu
-            title: "Thêm vào playlist khác"
-            enabled: !contextMenu.isCollection
+            title: root.useVideoStyle ? "Phân loại vào phim bộ" : "Thêm vào playlist khác"
+            visible: root.allowMoveToCollection && !contextMenu.isCollection
 
             Instantiator {
                 model: moveTargetsModel
@@ -121,7 +125,7 @@ Item {
             StyledMenuItem {
                 visible: moveTargetsModel.count === 0
                 enabled: false
-                text: "Không còn playlist khác"
+                text: root.useVideoStyle ? "Không có thư mục nào" : "Không còn playlist khác"
             }
         }
         StyledMenuItem {

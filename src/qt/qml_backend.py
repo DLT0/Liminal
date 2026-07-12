@@ -768,7 +768,6 @@ class AppBackend(QObject):
             prev_page = self._current_page
             self._current_page = page
             titles = {
-                1: "Discover",
                 2: "Music",
                 3: "Videos",
                 4: "Tải xuống",
@@ -963,13 +962,61 @@ class AppBackend(QObject):
     def apply_shared_items(self, items: list[dict]) -> None:
         """Convert API/cache rows into the shared videos model."""
         self._ensure_source_ids("video")
+        visible_items = [
+            item for item in items
+            if not self._shared_item_in_library({
+                "track_id": str(item.get("video_id") or ""),
+                "url": str(item.get("source_url") or item.get("url") or ""),
+            })
+        ]
         model_items = [
             self._shared_item_to_model(item, index)
-            for index, item in enumerate(items)
+            for index, item in enumerate(visible_items)
         ]
         self._all_video_shared = model_items
         if self._current_page == 3 and not self.inCollectionView:
             self._apply_library_filter(self._all_video_shared, self._video_shared_model)
+
+    @pyqtSlot(int)
+    def dismissSharedItem(self, index: int) -> None:
+        item = self._video_shared_model.item_at(index)
+        if item is None:
+            return
+        share_id = str(item.get("share_id") or "").strip()
+        if not share_id:
+            return
+        asyncio.create_task(self._dismiss_shared_item(share_id))
+
+    async def _dismiss_shared_item(self, share_id: str) -> None:
+        from src import share_manager
+
+        try:
+            items = await share_manager.dismiss_share(share_id)
+            self.apply_shared_items(items)
+        except ValueError as exc:
+            self.downloadError.emit("", str(exc))
+        except Exception:
+            logger.exception("Dismiss shared item failed")
+            self.downloadError.emit("", "Không thể xóa mục chia sẻ.")
+
+    def _remove_shared_item_by_id(self, share_id: str) -> None:
+        needle = (share_id or "").strip()
+        if not needle:
+            return
+        self._all_video_shared = [
+            item for item in self._all_video_shared
+            if str(item.get("share_id") or "") != needle
+        ]
+        if self._current_page == 3 and not self.inCollectionView:
+            self._apply_library_filter(self._all_video_shared, self._video_shared_model)
+
+    async def _dismiss_shared_after_download(self, share_id: str) -> None:
+        from src import share_manager
+
+        try:
+            await share_manager.dismiss_share(share_id)
+        except Exception:
+            logger.warning("Could not dismiss shared item %r after download", share_id, exc_info=True)
 
     def _shared_item_in_library(self, item: dict) -> bool:
         track_id = str(item.get("track_id") or "").strip()
@@ -1070,19 +1117,16 @@ class AppBackend(QObject):
         item = self._find_shared_item(video_id)
         if item is None:
             return
-        item["download_percent"] = 100.0
-        item["download_status"] = "done"
-        item["is_downloading"] = False
-        item["in_library"] = True
+        share_id = str(item.get("share_id") or "").strip()
+        self._remove_shared_item_by_id(share_id)
+        if share_id:
+            asyncio.create_task(self._dismiss_shared_after_download(share_id))
         if file_path:
-            item["path"] = file_path
-            item["is_remote"] = False
-        else:
-            local_path = self._find_video_path_by_source_id(video_id)
-            if local_path:
-                item["path"] = local_path
-                item["is_remote"] = False
-        self._emit_shared_item_changed(item)
+            set_metadata(
+                file_path,
+                source_id=video_id,
+                source_url=str(item.get("url") or "").strip(),
+            )
 
     def _on_shared_download_error(self, key: str, _message: str) -> None:
         item = self._find_shared_item(key)
@@ -1289,7 +1333,7 @@ class AppBackend(QObject):
 
     @pyqtSlot(int, int)
     def reorderCollectionItems(self, from_index: int, to_index: int) -> None:
-        if self._current_page not in {1, 2, 3}:
+        if self._current_page not in {2, 3}:
             return
         if from_index == to_index:
             return
@@ -2461,27 +2505,6 @@ class AppBackend(QObject):
             annotated.append(row)
         return annotated
 
-    def annotate_discover_items(self, items: list[dict]) -> list[dict]:
-        """Mark discover feed rows with ``in_library`` for QML badges."""
-        annotated: list[dict] = []
-        for item in items:
-            row = dict(item)
-            media_type = str(item.get("media_type") or "video").strip().lower()
-            if media_type not in {"music", "video"}:
-                media_type = "video"
-            row["media_type"] = media_type
-
-            video_id = str(item.get("video_id") or item.get("id") or "").strip()
-            if not video_id:
-                source = str(item.get("source_url") or item.get("url") or "")
-                video_id = extract_youtube_id(source)
-
-            self._ensure_source_ids(media_type)
-            pool = self._music_source_ids if media_type == "music" else self._video_source_ids
-            row["in_library"] = bool(video_id and video_id in pool)
-            annotated.append(row)
-        return annotated
-
     def _item_matches_search(self, item: dict, q: str) -> bool:
         if q in item["title"].lower() or q in item["subtitle"].lower():
             return True
@@ -2638,15 +2661,15 @@ class AppBackend(QObject):
         path = item.get("path") or item.get("url") or ""
         if not path:
             return
-        self._touch_player_bar()
         audio_only = item.get("audio_only", True)
         title = item.get("title", "")
         artist = item.get("subtitle", "")
 
+        self._sync_player_bar_for_media(audio_only)
+
         thumbnail = item.get("image") or item.get("thumbnail_url") or ""
-        if not thumbnail and not _is_remote(path):
-            thumbnail = self._image_for_path(path, audio_only=audio_only)
-        self._set_track_thumbnail(thumbnail)
+        if thumbnail:
+            self._set_track_thumbnail(thumbnail)
 
         if _is_remote(path):
             if not self._is_online:
@@ -2656,11 +2679,28 @@ class AppBackend(QObject):
             self._start_playback(
                 path, audio_only=audio_only, title=title, artist=artist
             )
+            if not thumbnail:
+                QTimer.singleShot(
+                    0,
+                    lambda p=path, ao=audio_only: self._deferred_thumbnail(p, ao),
+                )
             return
 
         self._set_current_path(path)
         self._current_audio_only = audio_only
         self._start_playback(path, audio_only=audio_only, title=title, artist=artist)
+        if not thumbnail:
+            QTimer.singleShot(
+                0,
+                lambda p=path, ao=audio_only: self._deferred_thumbnail(p, ao),
+            )
+
+    def _deferred_thumbnail(self, path: str, audio_only: bool) -> None:
+        if self._current_path != path:
+            return
+        thumbnail = self._image_for_path(path, audio_only=audio_only)
+        if thumbnail:
+            self._set_track_thumbnail(thumbnail)
 
     def _music_index(self) -> int:
         if not self._current_path:
@@ -2678,16 +2718,29 @@ class AppBackend(QObject):
             return -1
 
     def _play_path(self, path: str) -> None:
-        self._set_current_path(path)
-        self._current_audio_only = True
         queued = self._playback_items.get(path)
+        audio_only = bool(queued.get("audio_only", True)) if queued else True
+        title = (queued or {}).get("title", "")
+        artist = (queued or {}).get("subtitle", "")
+
+        self._set_current_path(path)
+        self._current_audio_only = audio_only
+        self._sync_player_bar_for_media(audio_only)
+
         thumbnail = ""
         if queued:
             thumbnail = queued.get("image") or queued.get("thumbnail_url") or ""
-        if not thumbnail:
-            thumbnail = self._image_for_path(path, audio_only=True)
-        self._set_track_thumbnail(thumbnail)
-        self._start_playback(path, audio_only=True)
+        if thumbnail:
+            self._set_track_thumbnail(thumbnail)
+
+        self._start_playback(
+            path, audio_only=audio_only, title=title, artist=artist
+        )
+        if not thumbnail and not _is_remote(path):
+            QTimer.singleShot(
+                0,
+                lambda p=path, ao=audio_only: self._deferred_thumbnail(p, ao),
+            )
 
     def _play_adjacent(self, delta: int) -> None:
         if not self._music_paths:
@@ -2743,6 +2796,20 @@ class AppBackend(QObject):
             self._player_bar_visible = True
             self.playerBarVisibleChanged.emit()
 
+    def _hide_player_bar(self) -> None:
+        if self._player_bar_visible:
+            self._player_bar_visible = False
+            self.playerBarVisibleChanged.emit()
+
+    def _sync_player_bar_for_media(self, audio_only: bool) -> None:
+        if self._player_bar_always_visible:
+            self._show_player_bar()
+            return
+        if audio_only:
+            self._show_player_bar()
+        else:
+            self._hide_player_bar()
+
     def _schedule_player_bar_hide(self) -> None:
         if self._player_bar_always_visible or self._has_played_before:
             return
@@ -2752,6 +2819,8 @@ class AppBackend(QObject):
         self._player_bar_idle_timer.stop()
 
     def _touch_player_bar(self) -> None:
+        if not self._current_audio_only and self._is_playing:
+            return
         self._show_player_bar()
         if not self._is_playing:
             self._schedule_player_bar_hide()
@@ -2795,7 +2864,10 @@ class AppBackend(QObject):
 
         if playing:
             self._cancel_player_bar_hide()
-            self._show_player_bar()
+            if self._current_audio_only or self._player_bar_always_visible:
+                self._show_player_bar()
+            else:
+                self._hide_player_bar()
             # Mark first-ever play and persist session info
             if not self._has_played_before:
                 self._has_played_before = True
@@ -2814,6 +2886,8 @@ class AppBackend(QObject):
                 self._schedule_player_bar_hide()
             else:
                 self._cancel_player_bar_hide()
+                if not self._player_bar_always_visible:
+                    self._show_player_bar()
             # When paused or stopped, save position
             if self._has_played_before and self._current_path:
                 save_raw_state({

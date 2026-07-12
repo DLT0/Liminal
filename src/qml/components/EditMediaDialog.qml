@@ -39,7 +39,7 @@ Dialog {
 
         Text {
             Layout.fillWidth: true
-            text: "Tên bài / playlist"
+            text: "Tiêu đề"
             font.family: Theme.fontFamily
             font.pixelSize: Theme.captionSize
             font.weight: Font.DemiBold
@@ -49,7 +49,7 @@ Dialog {
         TextField {
             id: titleField
             Layout.fillWidth: true
-            placeholderText: "Nhập tên bài hát hoặc playlist"
+            placeholderText: "Nhập tiêu đề cho mục này"
             font.family: Theme.fontFamily
             color: Theme.textPrimary
             placeholderTextColor: Theme.textMuted
