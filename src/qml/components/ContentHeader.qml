@@ -35,7 +35,7 @@ Item {
         Item {
             Layout.preferredWidth: root.currentPage === 4 ? 0 : 340
             Layout.preferredHeight: 44
-            visible: root.currentPage !== 4
+            visible: root.currentPage !== 4 && root.currentPage !== 6 && root.currentPage !== 7
             clip: false
 
             Rectangle {

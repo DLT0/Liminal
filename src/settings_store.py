@@ -20,8 +20,9 @@ YOUTUBE_DEFAULTS: dict[str, str] = {
 
 MUSIC_SUBDIR = "Music"
 VIDEOS_SUBDIR = "Videos"
+BOOKS_SUBDIR = "Books"
 
-MEDIA_SUBDIRS = (MUSIC_SUBDIR, VIDEOS_SUBDIR)
+MEDIA_SUBDIRS = (MUSIC_SUBDIR, VIDEOS_SUBDIR, BOOKS_SUBDIR)
 
 
 def _media_root_candidates(preferred: Path | None = None) -> list[Path]:
@@ -71,6 +72,7 @@ def media_layout(root: Path) -> dict[str, Path]:
         "media_root": root,
         "music_dir": root / MUSIC_SUBDIR,
         "video_dir": root / VIDEOS_SUBDIR,
+        "books_dir": root / BOOKS_SUBDIR,
     }
 
 
@@ -229,3 +231,7 @@ def get_music_dir() -> Path:
 
 def get_video_dir() -> Path:
     return Path(load_settings()["video_dir"])
+
+
+def get_books_dir() -> Path:
+    return Path(load_settings()["books_dir"])

@@ -19,6 +19,8 @@ GlassPanel {
     readonly property var menuItems: [
         { icon: "music_note", label: "Music", page: 2 },
         { icon: "movie", label: "Videos", page: 3 },
+        { icon: "podcasts", label: "Podcast", page: 6 },
+        { icon: "menu_book", label: "Book", page: 7 },
         { icon: "download", label: "Download", page: 4 },
         { icon: "settings", label: "Settings", page: 5 }
     ]

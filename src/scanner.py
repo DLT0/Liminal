@@ -13,7 +13,7 @@ from src.metadata_store import (
     read_video_thumbnail,
     resolve_display,
 )
-from src.settings_store import get_music_dir, get_video_dir
+from src.settings_store import get_books_dir, get_music_dir, get_video_dir
 from src.models import MediaInfo, MediaKind
 
 
@@ -81,6 +81,11 @@ def scan_music() -> list[MediaInfo]:
 def scan_video() -> list[MediaInfo]:
     """Scan configured video directory (one level at root)."""
     return scan_library_folder(get_video_dir())
+
+
+def scan_books() -> list[MediaInfo]:
+    """Scan configured books directory (one level at root)."""
+    return scan_library_folder(get_books_dir())
 
 
 def _count_media_in_tree(directory: Path, extensions: set[str]) -> int:

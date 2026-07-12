@@ -316,6 +316,78 @@ ApplicationWindow {
                         onUpdateYtDlpRequested: backend.updateYtDlp()
                         onShowVisualizerToggled: function(value) { backend.showVisualizer = value }
                     }
+
+                    Item {
+                        id: podcastPage
+                        anchors.fill: parent
+                        visible: backend.currentPage === 6
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 12
+
+                            AppIcon {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                name: "podcasts"
+                                font.pixelSize: 64
+                                color: Theme.textMuted
+                                opacity: 0.5
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Podcast"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.pageTitleSize
+                                font.weight: Font.Bold
+                                color: Theme.textPrimary
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Tính năng đang phát triển"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.bodySize
+                                color: Theme.textMuted
+                            }
+                        }
+                    }
+
+                    Item {
+                        id: bookPage
+                        anchors.fill: parent
+                        visible: backend.currentPage === 7
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 12
+
+                            AppIcon {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                name: "menu_book"
+                                font.pixelSize: 64
+                                color: Theme.textMuted
+                                opacity: 0.5
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Book"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.pageTitleSize
+                                font.weight: Font.Bold
+                                color: Theme.textPrimary
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Tính năng đang phát triển"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.bodySize
+                                color: Theme.textMuted
+                            }
+                        }
+                    }
                 }
             }
         }

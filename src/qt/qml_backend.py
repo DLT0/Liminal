@@ -690,6 +690,8 @@ class AppBackend(QObject):
                 3: "Videos",
                 4: "Tải xuống",
                 5: "Settings",
+                6: "Podcast",
+                7: "Book",
             }
             self._page_title = titles.get(page, "Liminal")
             self.pageTitleChanged.emit()
@@ -1184,6 +1186,41 @@ class AppBackend(QObject):
             self.playlistLinkReady.emit(folder, items)
         else:
             self.searchResults.emit(items)
+
+    @pyqtSlot(str)
+    def readLinksFromFile(self, media_type: str) -> None:
+        """Open a file dialog for .txt, read links, queue them for download."""
+        parent = QApplication.activeWindow()
+        path, _ = QFileDialog.getOpenFileName(
+            parent, "Chọn file danh sách link", "",
+            "Text files (*.txt);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except Exception as exc:
+            self.searchError.emit(f"Không thể đọc file: {exc}")
+            return
+        # Extract one URL per line (ignore comments and blanks)
+        urls = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+            urls.append(line)
+        if not urls:
+            self.searchError.emit("Không tìm thấy link nào trong file.")
+            return
+        # Queue all links for download
+        for url in urls:
+            self.downloadMedia(url, media_type, "")
+        self.searchResults.emit([
+            {"title": f"Đã thêm {len(urls)} link vào hàng đợi",
+             "artist": f"Từ file: {Path(path).name}",
+             "url": "", "id": "", "duration": "",
+             "in_library": False}
+        ])
 
     @pyqtSlot(str, str, str)
     def downloadMedia(self, url: str, kind: str, output_subdir: str = "") -> None:

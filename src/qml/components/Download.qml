@@ -1263,6 +1263,33 @@ Item {
                             onClicked: root.submitLink(queryField.text)
                         }
                     }
+
+                    Rectangle {
+                        Layout.preferredWidth: fileLabel.implicitWidth + 28
+                        Layout.preferredHeight: 42
+                        radius: 8
+                        visible: root.intakeMode === "link"
+                        color: fileHover.containsMouse ? Theme.glassStrong : Theme.bgTop
+                        border.color: Theme.cardBorder
+                        border.width: 1
+
+                        Text {
+                            id: fileLabel
+                            anchors.centerIn: parent
+                            text: "\U0001F4C4  File .txt"
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.bodySize
+                            color: Theme.textPrimary
+                        }
+
+                        MouseArea {
+                            id: fileHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: backend.readLinksFromFile(root.mediaType)
+                        }
+                    }
                 }
 
                 WaveformProgress {

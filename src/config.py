@@ -10,6 +10,7 @@ CSS_DIR = ROOT / "src" / "css"
 # --- Supported extensions ---
 AUDIO_EXTS = {".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus", ".aac"}
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".wmv"}
+BOOK_EXTS = {".pdf", ".epub", ".mobi", ".azw3", ".fb2", ".djvu", ".cbr", ".cbz"}
 
 # --- MPV IPC ---
 MPV_IPC_SOCKET = "/tmp/liminal-mpv.sock"
@@ -29,4 +30,8 @@ def __getattr__(name: str):
         from src.settings_store import get_video_dir
 
         return get_video_dir()
+    if name == "BOOKS_DIR":
+        from src.settings_store import get_books_dir
+
+        return get_books_dir()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

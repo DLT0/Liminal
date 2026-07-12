@@ -51,12 +51,12 @@ class _MprisObj(dbus.service.Object):
         player.position_changed.connect(self._on_pos)
 
         self._timer = QTimer()
-        self._timer.setInterval(100)
+        self._timer.setInterval(500)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
 
         # Iterate GLib to dispatch pending D-Bus registration/calls
-        for _ in range(20):
+        for _ in range(10):
             GLib.MainContext.default().iteration(False)
 
     def set_transport(self, nxt: Callable, prev: Callable) -> None:
@@ -126,15 +126,16 @@ class _MprisObj(dbus.service.Object):
         self._emit(c)
 
     def _on_pos(self, _t: float, _d: float) -> None:
-        self._tick()
+        self._check_pos()
+        # D-Bus dispatch handled by _tick timer
 
     def _tick(self) -> None:
         pos = int(max(0.0, self._player.state.time_pos) * 1_000_000)
         if abs(pos - self._last_pos) > 500_000:
             self._last_pos = pos
             self._emit({"Position": pos})
-        # Iterate GLib for D-Bus method call dispatch
-        for _ in range(10):
+        # Iterate GLib a few times for D-Bus method call dispatch
+        for _ in range(2):
             GLib.MainContext.default().iteration(False)
 
     # -- Properties --
