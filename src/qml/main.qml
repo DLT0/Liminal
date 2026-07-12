@@ -52,6 +52,12 @@ ApplicationWindow {
         parent: Overlay.overlay
     }
 
+    RedeemShareDialog {
+        id: redeemShareDialog
+        parent: Overlay.overlay
+        onAccepted: shareBridge.redeemCode(codeField.text)
+    }
+
     Popup {
         id: shareToast
         property string text: ""
@@ -86,6 +92,10 @@ ApplicationWindow {
         }
         function onShareError(message) {
             shareToast.text = message
+            shareToast.open()
+        }
+        function onRedeemSuccess() {
+            shareToast.text = "Đã thêm vào danh sách chia sẻ."
             shareToast.open()
         }
     }
@@ -166,6 +176,7 @@ ApplicationWindow {
                     onSearchSubmitted: function(text) {
                         // Discover search removed
                     }
+                    onRedeemShareClicked: redeemShareDialog.open()
                 }
 
                 Item {
@@ -336,7 +347,7 @@ ApplicationWindow {
                                 ? videoPage.height
                                 : backend.videoSearchActive
                                     ? videoSearchPage.y + videoSearchPage.height + Theme.contentPadding
-                                    : videoMyMoviesPage.y + videoMyMoviesPage.height + Theme.contentPadding
+                                    : videoSeriesPage.y + videoSeriesPage.height + Theme.contentPadding
 
                             readonly property int videoColumns: Theme.gridColumns
                             readonly property real videoCellWidth: Math.floor(
@@ -352,10 +363,6 @@ ApplicationWindow {
                                 180,
                                 Math.ceil((Number(backend.videoSeriesModel.count) || 0) / videoColumns) * videoCellHeight + 16
                             )
-                            readonly property real moviesHeight: Math.max(
-                                180,
-                                Math.ceil((Number(backend.videoMoviesModel.count) || 0) / videoColumns) * videoCellHeight + 16
-                            )
                             readonly property real myMoviesHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.videoMyMoviesModel.count) || 0) / videoColumns) * videoCellHeight + 16
@@ -364,6 +371,9 @@ ApplicationWindow {
                                 180,
                                 Math.ceil((Number(backend.videoSearchModel.count) || 0) / videoColumns) * videoCellHeight + 16
                             )
+
+
+                            readonly property bool showShared: backend.videoSharedModel.count > 0
 
                             Text {
                                 id: sharedTitle
@@ -375,7 +385,7 @@ ApplicationWindow {
                                 font.pixelSize: 24
                                 font.weight: Font.Bold
                                 color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
+                                visible: !backend.inCollectionView && !backend.videoSearchActive && videoContent.showShared
                             }
 
                             SharedVideosSection {
@@ -385,17 +395,58 @@ ApplicationWindow {
                                 y: backend.inCollectionView ? 0 : sharedTitle.y + sharedTitle.height + 4
                                 width: parent.width
                                 height: backend.inCollectionView ? parent.height : videoContent.sharedHeight
-                                visible: backend.inCollectionView || !backend.videoSearchActive
+                                visible: backend.inCollectionView || (!backend.videoSearchActive && videoContent.showShared)
                                 gridColumns: videoContent.videoColumns
                                 model: backend.videoSharedModel
                                 onPlayRequested: function(index) { backend.playVideoShared(index) }
                                 onDownloadRequested: function(index) { backend.downloadSharedItem(index) }
+                                onDismissRequested: function(index) { backend.dismissSharedItem(index) }
+                            }
+
+                            Text {
+                                id: myMoviesTitle
+                                x: Theme.contentPadding
+                                y: videoContent.showShared
+                                    ? videoSharedSection.y + videoSharedSection.height + 8
+                                    : Theme.contentPadding
+                                width: parent.width - 2 * Theme.contentPadding
+                                text: "Phim của tôi"
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 24
+                                font.weight: Font.Bold
+                                color: Theme.textPrimary
+                                visible: !backend.inCollectionView && !backend.videoSearchActive
+                            }
+
+                            LibraryPage {
+                                id: videoMyMoviesPage
+                                objectName: "videoMyMoviesPage"
+                                x: 0
+                                y: myMoviesTitle.y + myMoviesTitle.height + 4
+                                width: parent.width
+                                height: videoContent.myMoviesHeight
+                                visible: !backend.inCollectionView && !backend.videoSearchActive
+                                model: backend.videoMyMoviesModel
+                                useVideoStyle: true
+                                allowCreateCollection: false
+                                widescreenPosters: true
+                                showScrollBar: false
+                                scrollEnabled: false
+                                verticalContentMargin: 8
+                                gridColumns: videoContent.videoColumns
+                                showShareAction: true
+                                showBackButton: false
+                                inCollectionView: false
+                                isPlaying: backend.isPlaying
+                                emptyTitle: "Chưa có phim nào"
+                                emptyMessage: "Thêm phim vào thư mục Videos."
+                                onPlayRequested: function(index) { backend.playVideoMyMovie(index) }
                             }
 
                             Text {
                                 id: seriesTitle
                                 x: Theme.contentPadding
-                                y: videoSharedSection.y + videoSharedSection.height + 8
+                                y: videoMyMoviesPage.y + videoMyMoviesPage.height + 8
                                 width: parent.width - 2 * Theme.contentPadding
                                 text: "Phim bộ"
                                 font.family: Theme.fontFamily
@@ -427,80 +478,6 @@ ApplicationWindow {
                                 emptyMessage: "Tạo thư mục trong thư mục Videos để thêm phim bộ."
                                 onPlayRequested: function(index) { backend.playMedia(index) }
                                 onOpenCollectionRequested: function(index) { backend.openVideoSeries(index) }
-                            }
-
-                            Text {
-                                id: moviesTitle
-                                x: Theme.contentPadding
-                                y: videoSeriesPage.y + videoSeriesPage.height + 8
-                                width: parent.width - 2 * Theme.contentPadding
-                                text: "Phim lẻ"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 24
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
-                            }
-
-                            LibraryPage {
-                                id: videoMoviesPage
-                                objectName: "videoMoviesPage"
-                                x: 0
-                                y: moviesTitle.y + moviesTitle.height + 4
-                                width: parent.width
-                                height: videoContent.moviesHeight
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
-                                model: backend.videoMoviesModel
-                                useVideoStyle: true
-                                widescreenPosters: true
-                                showScrollBar: false
-                                scrollEnabled: false
-                                verticalContentMargin: 8
-                                gridColumns: videoContent.videoColumns
-                                showShareAction: true
-                                showBackButton: false
-                                inCollectionView: false
-                                isPlaying: backend.isPlaying
-                                emptyTitle: "Chưa có phim lẻ"
-                                emptyMessage: "Thêm phim vào thư mục Videos."
-                                onPlayRequested: function(index) { backend.playVideoMovie(index) }
-                            }
-
-                            Text {
-                                id: myMoviesTitle
-                                x: Theme.contentPadding
-                                y: videoMoviesPage.y + videoMoviesPage.height + 8
-                                width: parent.width - 2 * Theme.contentPadding
-                                text: "Phim của tôi"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 24
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
-                            }
-
-                            LibraryPage {
-                                id: videoMyMoviesPage
-                                objectName: "videoMyMoviesPage"
-                                x: 0
-                                y: myMoviesTitle.y + myMoviesTitle.height + 4
-                                width: parent.width
-                                height: videoContent.myMoviesHeight
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
-                                model: backend.videoMyMoviesModel
-                                useVideoStyle: true
-                                widescreenPosters: true
-                                showScrollBar: false
-                                scrollEnabled: false
-                                verticalContentMargin: 8
-                                gridColumns: videoContent.videoColumns
-                                showShareAction: true
-                                showBackButton: false
-                                inCollectionView: false
-                                isPlaying: backend.isPlaying
-                                emptyTitle: "Chưa có phim nào"
-                                emptyMessage: "Thêm phim vào thư mục Videos."
-                                onPlayRequested: function(index) { backend.playVideoMyMovie(index) }
                             }
 
                             LibraryPage {
@@ -625,30 +602,55 @@ ApplicationWindow {
             }
         }
 
-        PlayerBar {
+        Item {
+            id: playerBarSlot
             Layout.fillWidth: true
-            visible: backend.playerBarVisible
-            trackTitle: backend.trackTitle
-            trackArtist: backend.trackArtist
-            trackThumbnail: backend.trackThumbnail
-            isPlaying: backend.isPlaying
-            hasMedia: backend.hasMedia
-            volumeLevel: backend.volume
-            muted: backend.muted
-            position: backend.position
-            duration: backend.duration
-            shuffleOn: backend.shuffleOn
-            loopMode: backend.loopMode
+            Layout.preferredHeight: backend.playerBarVisible ? Theme.playerBarHeight : 0
+            clip: true
 
-            onPreviousClicked: backend.previous()
-            onPlayClicked: backend.togglePause()
-            onNextClicked: backend.next()
-            onShuffleClicked: backend.toggleShuffle()
-            onLoopClicked: backend.toggleLoop()
-            onMuteClicked: backend.toggleMute()
-            onVolumeAdjusted: function(v) { backend.setVolume(v) }
-            onSeekRequested: function(pos) { backend.seekTo(pos) }
-            onSettingsClicked: backend.setCurrentPage(5)
+            Behavior on Layout.preferredHeight {
+                NumberAnimation {
+                    duration: 300
+                    easing.type: Easing.InOutCubic
+                }
+            }
+
+            PlayerBar {
+                id: playerBar
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: Theme.playerBarHeight
+                y: backend.playerBarVisible ? 0 : height
+
+                Behavior on y {
+                    NumberAnimation {
+                        duration: 300
+                        easing.type: Easing.InOutCubic
+                    }
+                }
+
+                trackTitle: backend.trackTitle
+                trackArtist: backend.trackArtist
+                trackThumbnail: backend.trackThumbnail
+                isPlaying: backend.isPlaying
+                hasMedia: backend.hasMedia
+                volumeLevel: backend.volume
+                muted: backend.muted
+                position: backend.position
+                duration: backend.duration
+                shuffleOn: backend.shuffleOn
+                loopMode: backend.loopMode
+
+                onPreviousClicked: backend.previous()
+                onPlayClicked: backend.togglePause()
+                onNextClicked: backend.next()
+                onShuffleClicked: backend.toggleShuffle()
+                onLoopClicked: backend.toggleLoop()
+                onMuteClicked: backend.toggleMute()
+                onVolumeAdjusted: function(v) { backend.setVolume(v) }
+                onSeekRequested: function(pos) { backend.seekTo(pos) }
+                onSettingsClicked: backend.setCurrentPage(5)
+            }
         }
     }
 }

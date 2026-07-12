@@ -1,15 +1,14 @@
 {
-  "version": 6,
+  "version": 7,
   "media_root": "~/Media/Liminal",
   "volume": 100,
   "muted": false,
   "download_quality": "1080",
 
-  "discover_feed_url": "",
-  "discover_feed_base_url": "https://hoangminhduong.top",
-  "discover_feed_slug": "YOUR_FEED_SLUG",
-  "discover_feed_api_key": "",
-  "discover_cache_ttl_minutes": 30,
+  "youtube_auth_mode": "oauth",
+  "youtube_browser": "firefox",
+  "youtube_browser_profile": "",
+  "youtube_cookies_file": "",
 
   "liminal.sidebar.width": 220,
   "liminal.sidebar.visible": true,

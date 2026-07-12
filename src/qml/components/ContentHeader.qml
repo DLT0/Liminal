@@ -7,12 +7,13 @@ Item {
     id: root
 
     property string searchText: ""
-    property string pageTitle: "Discover"
+    property string pageTitle: "Music"
     property int currentPage: 0
     property string searchPlaceholder: uiConfig.searchPlaceholder
 
     signal searchChanged(string text)
     signal searchSubmitted(string text)
+    signal redeemShareClicked()
 
     RowLayout {
         anchors.fill: parent
@@ -22,12 +23,55 @@ Item {
         anchors.bottomMargin: 12
         spacing: 16
 
-        Text {
-            text: root.pageTitle
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.pageTitleSize
-            font.weight: Font.Bold
-            color: Theme.textPrimary
+        RowLayout {
+            spacing: 12
+
+            Text {
+                text: root.pageTitle
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.pageTitleSize
+                font.weight: Font.Bold
+                color: Theme.textPrimary
+            }
+
+            Rectangle {
+                visible: root.currentPage === 3
+                Layout.preferredHeight: 32
+                Layout.preferredWidth: redeemLabel.implicitWidth + 24
+                radius: 8
+                color: redeemMouse.containsMouse ? Theme.hoverOverlay : Theme.inputBg
+                border.color: Theme.inputBorder
+                border.width: 1
+
+                Row {
+                    id: redeemLabel
+                    anchors.centerIn: parent
+                    spacing: 6
+
+                    AppIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "redeem"
+                        font.pixelSize: 16
+                        color: Theme.textSecondary
+                    }
+
+                    Text {
+                        text: "Nhập mã"
+                        color: Theme.textPrimary
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.captionSize
+                        font.weight: Font.DemiBold
+                    }
+                }
+
+                MouseArea {
+                    id: redeemMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.redeemShareClicked()
+                }
+            }
         }
 
         Item { Layout.fillWidth: true }

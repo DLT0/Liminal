@@ -14,112 +14,35 @@ Item {
 
     signal playRequested(int index)
     signal downloadRequested(int index)
+    signal dismissRequested(int index)
 
     readonly property real cellWidth: Math.floor(
         (width - 2 * horizontalContentMargin - (gridColumns - 1) * Theme.cardGap) / gridColumns
     )
     readonly property real cellHeight: Math.ceil(cellWidth / Theme.videoPosterAspect + 82) + 8
 
-    RedeemShareDialog {
-        id: redeemDialog
-        parent: Overlay.overlay
-        onAccepted: shareBridge.redeemCode(codeField.text)
+    function openContextMenu(index, anchorItem, x, y) {
+        contextMenu.itemIndex = index
+        contextMenu.popup(anchorItem, x, y)
     }
 
-    Connections {
-        target: shareBridge
-        function onShareError(message) {
-            toast.text = message
-            toast.open()
-        }
-        function onRedeemSuccess() {
-            toast.text = "Đã thêm vào danh sách chia sẻ."
-            toast.open()
-        }
-    }
+    StyledMenu {
+        id: contextMenu
+        property int itemIndex: -1
 
-    Popup {
-        id: toast
-        property string text: ""
-        modal: false
-        focus: false
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        anchors.centerIn: Overlay.overlay
-        padding: 14
-        background: Rectangle {
-            radius: 10
-            color: Theme.glassStrong
-            border.color: Theme.glassStrongBorder
-        }
-        contentItem: Text {
-            text: toast.text
-            color: Theme.textPrimary
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.bodySize
-        }
-        Timer {
-            id: toastTimer
-            interval: 2800
-            onTriggered: toast.close()
-        }
-        onOpened: toastTimer.restart()
-    }
-
-    Row {
-        id: actionRow
-        anchors.top: parent.top
-        anchors.right: parent.right
-        anchors.rightMargin: horizontalContentMargin
-        anchors.topMargin: 4
-        spacing: 8
-
-        Rectangle {
-            height: 32
-            width: redeemLabel.implicitWidth + 24
-            radius: 8
-            color: redeemMouse.containsMouse ? Theme.hoverOverlay : Theme.inputBg
-            border.color: Theme.inputBorder
-
-            Row {
-                id: redeemLabel
-                anchors.centerIn: parent
-                spacing: 6
-
-                AppIcon {
-                    anchors.verticalCenter: parent.verticalCenter
-                    name: "redeem"
-                    font.pixelSize: 16
-                    color: Theme.textSecondary
-                }
-
-                Text {
-                    text: "Nhập mã"
-                    color: Theme.textPrimary
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.captionSize
-                    font.weight: Font.DemiBold
-                }
-            }
-
-            MouseArea {
-                id: redeemMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: redeemDialog.open()
-            }
+        StyledMenuItem {
+            iconName: "delete"
+            text: "Xóa khỏi danh sách chia sẻ"
+            onTriggered: root.dismissRequested(contextMenu.itemIndex)
         }
     }
 
     GridView {
         id: grid
-        anchors.top: actionRow.bottom
-        anchors.topMargin: 8
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
+        anchors.fill: parent
         anchors.leftMargin: horizontalContentMargin
         anchors.rightMargin: horizontalContentMargin
+        anchors.topMargin: verticalContentMargin
         anchors.bottomMargin: verticalContentMargin
         clip: true
         visible: count > 0
@@ -143,6 +66,9 @@ Item {
                 isDownloading: model.isDownloading
                 onPlayRequested: root.playRequested(index)
                 onDownloadRequested: root.downloadRequested(index)
+                onContextMenuRequested: function(x, y) {
+                    root.openContextMenu(index, parent, x, y)
+                }
             }
         }
     }
