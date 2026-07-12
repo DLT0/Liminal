@@ -1400,6 +1400,15 @@ class AppBackend(QObject):
             return
         target = Path(value)
         try:
+            video_root = Path(self._video_dir).resolve()
+            music_root = Path(self._music_dir).resolve()
+            resolved = target.resolve()
+            in_video = resolved == video_root or video_root in resolved.parents
+            in_music = resolved == music_root or music_root in resolved.parents
+        except OSError:
+            in_video = in_music = False
+
+        try:
             if target.is_dir():
                 shutil.rmtree(target)
             elif target.is_file():
@@ -1410,7 +1419,13 @@ class AppBackend(QObject):
             logger.error("Failed to delete %s: %s", target, exc)
             return
         delete_metadata(str(target))
-        self._reload_current_library(refresh=True)
+
+        if in_video:
+            self._load_video_library(refresh=True)
+        elif in_music:
+            self._load_music_library(refresh=True)
+        else:
+            self._reload_current_library(refresh=True)
 
     @pyqtSlot(int)
     def deleteMediaAt(self, index: int) -> None:
@@ -2163,7 +2178,12 @@ class AppBackend(QObject):
                 self._music_model.set_items(self._music_singles_model._items)
             self.musicSearchChanged.emit()
         elif page == 3:
-            self._apply_library_filter(self._all_video_items, self.videoModel)
+            stack = self._video_folder_stack
+            if stack:
+                self._apply_library_filter(self._all_video_items, self.videoModel)
+            else:
+                self._sync_video_root_view()
+            self.videoSearchChanged.emit()
         self.libraryNavigationChanged.emit()
 
     def _current_library_folder(self) -> Path:
@@ -2246,8 +2266,6 @@ class AppBackend(QObject):
         root = Path(self._video_dir)
         root_items = self._library_infos_to_items(scan_library_folder(root))
         video_tracks = self._scan_all_video_tracks(refresh=True)
-        if not self._music_paths:
-            self._music_paths = [info.path for info in video_tracks]
 
         in_series: set[str] = set()
         for child in root.iterdir():
@@ -2329,9 +2347,6 @@ class AppBackend(QObject):
                     self._apply_library_filter(self._all_video_items, self.videoModel)
                 else:
                     self._rebuild_video_root_catalog(push_to_models=self._current_page == 3 and not self.inCollectionView)
-                    active = self._video_series_model if self._video_section == "series" else self._video_movies_model
-                    self._apply_library_filter(self._all_video_items, active)
-                    self._video_model.set_items(active._items)
         if page == 2:
             self.musicSearchChanged.emit()
         if page == 3:
@@ -2390,9 +2405,15 @@ class AppBackend(QObject):
 
     def _refresh_video_catalog(self) -> None:
         if not self._video_library_loaded:
+            self._load_video_library(refresh=True)
             return
+
         self._video_track_infos = None
-        self._reload_library_view(3)
+        stack = self._folder_stack_for_page(3)
+        if stack:
+            self._reload_library_view(3)
+        else:
+            self._rebuild_video_root_catalog(push_to_models=True)
         self.libraryNavigationChanged.emit()
 
     def _downloads_active(self) -> bool:
