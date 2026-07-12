@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 # to pause, seek, mute, or change volume.
 IPC_SOCKET = f"/tmp/liminal-mpv-{os.getpid()}.sock"
 
+# mpv end-file reasons (see mpv manual: END_FILE_REASON_*)
+_END_FILE_EOF = 0
+_END_FILE_ERROR = 1
+_END_FILE_QUIT = 2
+_END_FILE_STOP = 4
+
 
 class LiminalPlayer:
     """Async controller for an mpv subprocess via JSON IPC."""
@@ -343,11 +349,24 @@ class LiminalPlayer:
         finally:
             self._writer = None
             self._reader = None
-            if self._process:
-                try:
-                    self._process.poll()
-                except Exception:
-                    pass
+            self._listener_task = None
+            self._on_mpv_disconnected()
+
+    def _on_mpv_disconnected(self) -> None:
+        """Sync state when mpv closes IPC (user closed window, crash, etc.)."""
+        if self._process is not None and self._process.poll() is not None:
+            self._process = None
+        self._audio_only_mode = None
+        self._properties_observed = False
+        if self.state.status != PlaybackStatus.STOPPED:
+            self.state.status = PlaybackStatus.STOPPED
+            self.state.time_pos = 0.0
+
+    def sync_process_state(self) -> None:
+        """Detect a dead mpv process missed by the IPC listener."""
+        if self._process is None or self._process.poll() is None:
+            return
+        self._on_mpv_disconnected()
 
     async def _dispatch(self, msg: dict) -> None:
         rid = msg.get("request_id")
@@ -358,10 +377,16 @@ class LiminalPlayer:
         if "event" in msg:
             ev = msg["event"]
             if ev == "end-file":
+                reason = msg.get("reason", _END_FILE_EOF)
                 self.state.status = PlaybackStatus.STOPPED
                 self.state.time_pos = 0.0
-                if self._on_end_file:
+                # Only auto-advance on natural EOF. User closing the mpv window
+                # sends reason=quit; that must not replay/advance or race stop().
+                if reason == _END_FILE_EOF and self._on_end_file:
                     self._on_end_file()
+            elif ev == "shutdown":
+                self.state.status = PlaybackStatus.STOPPED
+                self.state.time_pos = 0.0
             elif ev == "property-change":
                 name = msg.get("name")
                 data = msg.get("data")
@@ -470,6 +495,7 @@ class PlayerBridge(QObject):
 
     def _poll(self) -> None:
         """Emit signals if state has changed since last poll."""
+        self._player.sync_process_state()
         s = self._player.state
         prev = self._prev_state
 
@@ -492,7 +518,8 @@ class PlayerBridge(QObject):
         )
 
     def _on_track_end(self) -> None:
-        self.track_ended.emit()
+        # Defer so we never auto-advance/replay from inside the IPC listener task.
+        QTimer.singleShot(0, self.track_ended.emit)
 
     @staticmethod
     def _state_different(a: PlaybackState, b: PlaybackState) -> bool:

@@ -211,7 +211,6 @@ def scan_library_folder(folder: Path) -> list[MediaInfo]:
             display = resolve_display(
                 str(child.resolve()),
                 default_title=child.name,
-                default_artist=subtitle,
                 default_image=find_folder_preview_image(child),
             )
             preview_images = find_folder_track_thumbnails(child, 4)
@@ -219,11 +218,16 @@ def scan_library_folder(folder: Path) -> list[MediaInfo]:
             if not preview_images and folder_image:
                 preview_images = [folder_image]
 
+            artist = str(display.get("artist") or "").strip()
+            if artist.lower() in {"", "unknown artist", "video", "unknown", "music"}:
+                artist = ""
+
             items.append(
                 MediaInfo(
                     path=str(child.resolve()),
                     title=display["title"],
-                    artist=subtitle,
+                    artist=artist,
+                    subtitle=subtitle,
                     image=folder_image,
                     kind=kind,
                     child_count=child_count,

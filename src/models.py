@@ -27,6 +27,7 @@ class MediaInfo:
     path: str
     title: str
     artist: str = "Unknown Artist"
+    subtitle: str = ""
     duration: str = "--:--"
     num: str = "1"
     url: str = ""  # download URL (set for search results)

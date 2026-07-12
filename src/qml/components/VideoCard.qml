@@ -98,6 +98,23 @@ Item {
                         font.pixelSize: Theme.captionSize
                     }
                 }
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#66000000"
+                    opacity: hoverMa.containsMouse ? 1 : 0
+
+                    Behavior on opacity {
+                        NumberAnimation { duration: 150 }
+                    }
+
+                    AppIcon {
+                        anchors.centerIn: parent
+                        name: "play_arrow"
+                        filled: true
+                        font.pixelSize: 40
+                        color: "#ffffff"
+                    }
+                }
             }
 
             Rectangle {

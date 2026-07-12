@@ -12,7 +12,8 @@ Item {
     property real downloadPercent: 0
     property string downloadStatus: "pending"
     property bool isDownloading: false
-    property bool inLibrary: downloadStatus === "done"
+    property bool isSeries: false
+    property bool inLibrary: downloadStatus === "done" && !isSeries
 
     signal playRequested()
     signal downloadRequested()
@@ -25,7 +26,9 @@ Item {
             return imageSource
         return "file://" + imageSource
     }
-    readonly property real revealFraction: inLibrary ? 1 : Math.max(0, Math.min(1, downloadPercent / 100))
+    readonly property real revealFraction: (inLibrary || isSeries)
+        ? (isSeries ? Math.max(0, Math.min(1, downloadPercent / 100)) : 1)
+        : Math.max(0, Math.min(1, downloadPercent / 100))
     readonly property real cardScale: hoverMa.containsMouse ? Theme.hoverScale : 1.0
 
     width: implicitWidth
@@ -156,10 +159,21 @@ Item {
 
             Text {
                 width: parent.width
-                visible: !root.inLibrary
+                visible: !root.inLibrary && !root.isSeries
                 text: root.isDownloading
                     ? ("Đang tải " + Math.round(root.downloadPercent) + "%")
                     : "Nhấp đúp để tải"
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.captionSize
+                elide: Text.ElideRight
+            }
+            Text {
+                width: parent.width
+                visible: root.isSeries
+                text: root.isDownloading
+                    ? ("Đang tải " + Math.round(root.downloadPercent) + "%")
+                    : "Nhấp để chọn tập"
                 color: Theme.textMuted
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
@@ -171,10 +185,13 @@ Item {
     TapHandler {
         gesturePolicy: TapHandler.DragWithinBounds
         onTapped: {
-            if (root.inLibrary)
+            if (root.isSeries || root.inLibrary)
                 root.playRequested()
         }
-        onDoubleTapped: root.downloadRequested()
+        onDoubleTapped: {
+            if (!root.isSeries)
+                root.downloadRequested()
+        }
     }
 
     MouseArea {

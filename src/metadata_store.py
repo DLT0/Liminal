@@ -46,33 +46,100 @@ def _save_all(data: dict[str, dict]) -> None:
     )
 
 
+def _metadata_key(path: str | Path) -> str:
+    """Stable storage key for a library file path."""
+    if not path:
+        return ""
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        return str(Path(path).expanduser())
+
+
+def canonical_source_url(url: str, *, video_id: str = "") -> str:
+    """Normalize YouTube/Drive URLs for sharing and metadata lookup."""
+    raw = str(url or "").strip()
+    yt_id = extract_youtube_id(raw) or extract_youtube_id(str(video_id or ""))
+    if yt_id:
+        return f"https://www.youtube.com/watch?v={yt_id}"
+    if raw.startswith(("http://", "https://")):
+        return raw
+    return raw
+
+
 def get_metadata(path: str) -> dict:
     """Return stored overrides for *path* (may be empty)."""
-    return dict(_load_all().get(path, {}))
+    key = _metadata_key(path)
+    all_data = _load_all()
+    if key in all_data:
+        return dict(all_data[key])
+    # Legacy entries may have been saved without resolve().
+    return dict(all_data.get(str(path), {}))
 
 
 def set_metadata(path: str, **fields: str) -> dict:
     """Merge *fields* into metadata for *path* and persist."""
+    key = _metadata_key(path)
+    if not key:
+        return {}
     all_data = _load_all()
-    entry = dict(all_data.get(path, {}))
-    for key, value in fields.items():
+    legacy = all_data.pop(str(path), None) if str(path) != key else None
+    entry = dict(all_data.get(key, {}))
+    if legacy:
+        for legacy_key, legacy_value in legacy.items():
+            if legacy_key not in entry or not str(entry.get(legacy_key) or "").strip():
+                entry[legacy_key] = legacy_value
+    if "source_url" in fields and fields["source_url"] is not None:
+        fields = dict(fields)
+        fields["source_url"] = canonical_source_url(
+            str(fields["source_url"] or ""),
+            video_id=str(fields.get("source_id") or entry.get("source_id") or ""),
+        )
+    for field_key, value in fields.items():
         if value is None:
-            entry.pop(key, None)
+            entry.pop(field_key, None)
         else:
-            entry[key] = value
+            entry[field_key] = value
     if entry:
-        all_data[path] = entry
+        all_data[key] = entry
     else:
-        all_data.pop(path, None)
+        all_data.pop(key, None)
     _save_all(all_data)
     return entry
 
 
 def delete_metadata(path: str) -> None:
     all_data = _load_all()
-    if path in all_data:
-        del all_data[path]
+    key = _metadata_key(path)
+    changed = False
+    if key and key in all_data:
+        del all_data[key]
+        changed = True
+    if str(path) in all_data:
+        del all_data[str(path)]
+        changed = True
+    if changed:
         _save_all(all_data)
+
+
+def migrate_metadata(old_path: str, new_path: str) -> None:
+    """Move stored metadata when a library file is relocated on disk."""
+    old_key = _metadata_key(old_path)
+    new_key = _metadata_key(new_path)
+    if not old_key or not new_key or old_key == new_key:
+        return
+    all_data = _load_all()
+    entry = all_data.pop(old_key, None)
+    if entry is None and str(old_path) != old_key:
+        entry = all_data.pop(str(old_path), None)
+    if not entry:
+        return
+    existing = dict(all_data.get(new_key, {}))
+    for key, value in entry.items():
+        if key not in existing or not str(existing.get(key) or "").strip():
+            existing[key] = value
+    all_data[new_key] = existing
+    _save_all(all_data)
 
 
 def find_cover_image(directory: Path) -> str:
@@ -198,18 +265,57 @@ def resolve_source_id(path: str | Path, *, cache: bool = True) -> str:
     return embedded
 
 
+def read_sidecar_source_url(path: Path) -> str:
+    """Read original URL from a yt-dlp .info.json next to the media file."""
+    candidates = [
+        path.with_name(path.name + ".info.json"),
+        path.with_suffix(".info.json"),
+    ]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key in ("webpage_url", "original_url", "url"):
+            url = str(data.get(key) or "").strip()
+            if url.startswith(("http://", "https://")):
+                return url
+    return ""
+
+
 def resolve_source_url(path: str | Path, *, cache: bool = True) -> str:
     """Return the original download URL (YouTube/Drive) when available."""
-    resolved = str(Path(path).resolve())
+    resolved = _metadata_key(path)
+    if not resolved:
+        return ""
     meta = get_metadata(resolved)
-    stored = str(meta.get("source_url") or "").strip()
-    if stored:
+    stored = canonical_source_url(
+        str(meta.get("source_url") or ""),
+        video_id=str(meta.get("source_id") or ""),
+    )
+    if stored.startswith(("http://", "https://")):
+        if cache and stored != str(meta.get("source_url") or "").strip():
+            set_metadata(resolved, source_url=stored, source_id=str(meta.get("source_id") or ""))
         return stored
 
     source_id = resolve_source_id(resolved, cache=cache)
     video_id = extract_youtube_id(source_id)
     if video_id:
-        return f"https://www.youtube.com/watch?v={video_id}"
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        if cache:
+            set_metadata(resolved, source_url=url, source_id=video_id)
+        return url
+
+    sidecar = read_sidecar_source_url(Path(resolved))
+    if sidecar:
+        sidecar = canonical_source_url(sidecar)
+        if cache:
+            set_metadata(resolved, source_url=sidecar)
+        return sidecar
     return ""
 
 

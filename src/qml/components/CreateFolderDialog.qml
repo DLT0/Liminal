@@ -7,7 +7,7 @@ Dialog {
 
     property bool isVideo: false
 
-    title: isVideo ? "Tạo thư mục mới" : "Tạo playlist mới"
+    title: isVideo ? "Tạo phim bộ mới" : "Tạo playlist mới"
     modal: true
     anchors.centerIn: parent
     standardButtons: Dialog.Ok | Dialog.Cancel
@@ -20,11 +20,16 @@ Dialog {
         border.width: 1
     }
 
-    onAccepted: backend.createFolder(nameField.text)
+    signal folderCreated()
+
+    onAccepted: {
+        backend.createFolder(nameField.text)
+        folderCreated()
+    }
 
     function openDialog(isVideoContext) {
         isVideo = isVideoContext || false
-        nameField.text = isVideo ? "Thư mục mới" : "Playlist mới"
+        nameField.text = isVideo ? "Phim bộ mới" : "Playlist mới"
         open()
     }
 

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import Liminal 1.0
 
 MenuItem {
@@ -10,6 +11,8 @@ MenuItem {
 
     implicitWidth: 204
     implicitHeight: 40
+    height: visible ? implicitHeight : 0
+    clip: true
     leftPadding: 12
     rightPadding: 12
     spacing: 10
@@ -22,27 +25,42 @@ MenuItem {
     }
 
     indicator: Item {
-        implicitWidth: control.iconName === "" ? 0 : 20
-        implicitHeight: 20
-        AppIcon {
-            anchors.centerIn: parent
-            name: control.iconName
-            font.pixelSize: 18
-            color: control.destructive ? Theme.trafficRed : Theme.textSecondary
-        }
+        implicitWidth: 0
+        implicitHeight: 0
     }
 
-    contentItem: Text {
-        leftPadding: control.indicator.width > 0 ? control.spacing : 0
-        text: control.text
-        font.family: Theme.fontFamily
-        font.pixelSize: Theme.bodySize
-        font.weight: control.highlighted ? Font.DemiBold : Font.Normal
-        color: !control.enabled ? Theme.textMuted
-              : control.destructive ? Theme.trafficRed
-              : control.highlighted ? Theme.textPrimary : Theme.textSecondary
-        verticalAlignment: Text.AlignVCenter
-        elide: Text.ElideRight
+    contentItem: RowLayout {
+        spacing: control.spacing
+
+        Item {
+            visible: control.iconName !== ""
+            Layout.preferredWidth: visible ? 20 : 0
+            Layout.preferredHeight: 20
+            Layout.alignment: Qt.AlignVCenter
+
+            AppIcon {
+                anchors.centerIn: parent
+                name: control.iconName
+                font.pixelSize: 18
+                color: control.destructive ? Theme.trafficRed : Theme.textSecondary
+            }
+        }
+
+        Text {
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+            text: control.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.bodySize
+            font.weight: control.highlighted && control.font.weight === Font.Normal
+                        ? Font.DemiBold
+                        : control.font.weight
+            color: !control.enabled ? Theme.textMuted
+                  : control.destructive ? Theme.trafficRed
+                  : control.highlighted ? Theme.textPrimary : Theme.textSecondary
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
     }
 
     background: Rectangle {
