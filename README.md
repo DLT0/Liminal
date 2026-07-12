@@ -1,21 +1,34 @@
 # Liminal
 
-Trình phát đa phương tiện nội bộ (Local media player) dành cho Linux. Giao diện đồ họa hiện đại xây dựng bằng **PyQt6** và **QML**, sử dụng `mpv` làm engine phát nhạc/video.
+Trình phát đa phương tiện cục bộ (local media player) cho Linux. Giao diện desktop hiện đại xây dựng bằng **PyQt6** và **QML**, dùng **mpv** làm engine phát nhạc/video.
+
+## Tính năng
+
+- **Thư viện cục bộ** — Duyệt nhạc (album/đĩa đơn), video và playlist theo lưới trực quan
+- **Phát nhạc & video** — Hỗ trợ nhiều định dạng qua mpv (MP3, FLAC, OGG, MP4, MKV…)
+- **Tải từ YouTube** — Tìm kiếm hoặc dán link, xuất MP3 hoặc MP4 với tuỳ chọn chất lượng
+- **Waveform seek bar** — Thanh tiến trình dạng waveform (kiểu SoundCloud), click để seek
+- **Quản lý thư viện** — Tạo thư mục, sắp xếp, đổi ảnh bìa, chỉnh metadata
+- **Đa chủ đề** — Nhiều bảng màu trong Settings
+- **MPRIS** — Điều khiển phát nhạc qua phím media và desktop environment
 
 ## Yêu cầu hệ thống
 
-- **Python** 3.10+
-- **mpv** — engine phát nhạc và video
-- **ffmpeg** — cần thiết cho tính năng tải nhạc (chuyển đổi sang MP3)
+| Thành phần | Phiên bản / ghi chú |
+|---|---|
+| Python | 3.10+ |
+| mpv | Engine phát nhạc và video |
+| ffmpeg | Chuyển đổi audio, phân tích waveform, tải media |
+| PipeWire / PulseAudio | Khuyến nghị cho tích hợp desktop (MPRIS, audio) |
 
-Cài đặt trên Fedora:
+**Fedora:**
 ```bash
-sudo dnf install mpv ffmpeg
+sudo dnf install mpv ffmpeg portaudio
 ```
 
-Cài đặt trên Ubuntu/Debian:
+**Ubuntu / Debian:**
 ```bash
-sudo apt install mpv ffmpeg
+sudo apt install mpv ffmpeg portaudio19-dev
 ```
 
 ## Cài đặt
@@ -26,7 +39,8 @@ cd Liminal
 pip install -r requirements.txt
 ```
 
-Nếu cần, tạo môi trường ảo trước:
+Khuyến nghị dùng virtual environment:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -39,115 +53,108 @@ pip install -r requirements.txt
 python3 app_qt.py
 ```
 
-Giao diện desktop với sidebar điều hướng, thanh trình phát, hỗ trợ duyệt nhạc/video trong thư mục máy và tải từ YouTube.
+Hoặc qua launcher script (chỉ cho phép một instance mỗi session):
 
-### Tìm kiếm và tải từ YouTube
+```bash
+./scripts/run-liminal.sh
+```
 
-Trang **Download** dùng `yt-dlp` để tìm kiếm và tải media từ YouTube. Có hai chế độ:
+### Thêm shortcut trên desktop
 
-- **Tìm kiếm** — nhập từ khóa, chọn kết quả để tải
-- **Dán link** — dán trực tiếp URL YouTube cần tải
+File `liminal.desktop.in` là template — không chứa đường dẫn cố định. Sau khi clone, chạy:
 
-Người dùng chọn đầu ra **Nhạc** (MP3) hoặc **Video** (MP4). Với video, có thể chọn chất lượng (480p, 720p, 1080p, 2K, 4K, Max) trước khi tải.
+```bash
+./scripts/install-desktop.sh
+```
 
-File tải về được lưu vào thư mục Music hoặc Videos đã cấu hình trong Settings.
+Script sẽ tạo `~/.local/share/applications/liminal.desktop` với đường dẫn đúng theo vị trí clone trên máy bạn.
 
-Kiểm tra nhanh yt-dlp và ffmpeg:
+## Tải media từ YouTube
+
+Trang **Download** dùng `yt-dlp` với hai chế độ:
+
+- **Tìm kiếm** — Nhập từ khoá, chọn kết quả để tải
+- **Dán link** — Dán trực tiếp URL YouTube
+
+Tuỳ chọn đầu ra:
+
+- **Nhạc** — MP3
+- **Video** — MP4 (480p, 720p, 1080p, 2K, 4K, Max)
+
+File tải về lưu vào thư mục Music hoặc Videos đã cấu hình trong Settings.
+
+Kiểm tra nhanh:
 ```bash
 python3 -c "import yt_dlp; print(yt_dlp.version.__version__)"
 ffmpeg -version
 ```
 
-## Cấu trúc thư mục
+## Waveform seek bar
 
-```text
-Liminal/
-├── app_qt.py                 # File chạy chính (PyQt6 + QML)
-├── requirements.txt          # Thư viện phụ thuộc Python
-├── README.md
-└── src/
-    ├── config.py             # Cấu hình định dạng file hỗ trợ
-    ├── downloader.py         # Tải media từ YouTube (yt-dlp)
-    ├── models.py             # Model dữ liệu MediaInfo, PlaybackStatus
-    ├── player.py             # Lớp bọc MPV, giao tiếp JSON IPC
-    ├── scanner.py            # Quét file media trong thư mục
-    ├── settings_store.py     # Lưu/cài đặt cấu hình
-    ├── metadata_store.py     # Metadata và ảnh bìa tuỳ chỉnh
-    ├── mpris_service.py      # Tích hợp MPRIS (Linux desktop)
-    ├── folder_order.py       # Thứ tự hiển thị trong thư mục
-    ├── qml/                  # Giao diện QML
-    │   ├── main.qml          # Layout chính
-    │   ├── components/       # Các thành phần giao diện
-    │   └── Liminal/          # Theme
-    └── qt/                   # Backend Python ↔ QML
-        ├── qml_app.py        # Khởi tạo QML engine
-        ├── qml_backend.py    # AppBackend — cầu nối dữ liệu
-        └── intro_splash.py   # Màn hình giới thiệu
-```
+Khi bật **Show Visualizer** trong Settings, thanh tiến trình được thay bằng waveform tương tác (`SoundCloudWaveform`):
 
-## Tính năng chính
+1. Khi phát một bài nhạc, `waveform_analyzer.py` dùng **ffmpeg** decode file và tính ~150 bin amplitude
+2. Kết quả được cache tại `~/.config/liminal/waveforms/`
+3. QML vẽ waveform với màu theo vị trí phát và hỗ trợ hover/seek
 
-- **Duyệt thư viện** — Music (album/đĩa đơn), Videos, Playlist với giao diện lưới trực quan
-- **Phát nhạc/video** — Sử dụng mpv, hỗ trợ nhiều định dạng (MP3, FLAC, OGG, MP4, MKV...)
-- **Tải từ YouTube** — Tìm kiếm và tải nhạc/video trực tiếp trong ứng dụng
-- **Quản lý thư viện** — Tạo thư mục, sắp xếp, đổi ảnh bìa, chỉnh sửa metadata
-- **Đa chủ đề** — Nhiều bảng màu để lựa chọn trong Settings
-- **Tích hợp MPRIS** — Điều khiển phát nhạc qua phím media và desktop environment
-
-## Định dạng hỗ trợ
-
-**Âm thanh:** `.mp3`, `.flac`, `.ogg`, `.wav`, `.m4a`, `.opus`, `.aac`
-**Video:** `.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`, `.m4v`, `.ts`, `.wmv`
+Tắt visualizer sẽ quay lại slider tiến trình thông thường.
 
 ## Cấu hình
 
-Cấu hình lưu tại `~/.config/liminal/settings.json`. Chọn thư mục gốc trong Settings, Liminal sẽ tự tạo các thư mục con `Music/`, `Videos/`, `Playlist/`.
+Cấu hình lưu tại `~/.config/liminal/settings.json`.
 
-- **Music** — chứa file nhạc và album (thư mục con)
-- **Videos** — chứa file video và playlist (thư mục con)
-- **Playlist** — thư mục playlist chung
+Chọn **Media Root** trong Settings — Liminal tự tạo các thư mục con:
 
-## Audio Visualizer (Equalizer bars)
+| Thư mục | Nội dung |
+|---|---|
+| `Music/` | File nhạc và album (thư mục con) |
+| `Videos/` | File video và playlist (thư mục con) |
+| `Playlist/` | Playlist chung |
 
-Liminal hiển thị thanh equalizer thời gian thực đồng bộ với audio đang phát qua loa, sử dụng dữ liệu FFT thực từ PipeWire.
+## Định dạng hỗ trợ
 
-### Cách hoạt động
+**Âm thanh:** `.mp3` `.flac` `.ogg` `.wav` `.m4a` `.opus` `.aac`
 
-`src/audio_visualizer.py` (`AudioVisualizer`) chạy một thread riêng:
-1. Tự động phát hiện **monitor source** của sink mặc định (thiết bị đầu ra âm thanh) thông qua `pactl`.
-2. Capture audio bằng **sounddevice** (đọc loopback từ PipeWire).
-3. Tính **FFT** trên 1024 mẫu, chia thành **24 band** theo thang log-frequency (20 Hz → 20 kHz).
-4. Áp dụng **exponential moving average** để bar mượt mà.
-5. Phát signal `levelsChanged` mỗi ~40 ms → QML component `EqualizerVisualizer.qml` vẽ lại Canvas.
+**Video:** `.mp4` `.mkv` `.avi` `.mov` `.webm` `.m4v` `.ts` `.wmv`
 
-### Phụ thuộc bổ sung
+## Cấu trúc dự án
 
-```bash
-pip install sounddevice numpy
-# hoặc:
-pip install -r requirements.txt
+```text
+Liminal/
+├── app_qt.py                 # Entry point — PyQt6 + QML
+├── app.py                    # Entry point — Textual TUI (tuỳ chọn)
+├── requirements.txt
+├── liminal.desktop.in        # Template desktop entry
+├── scripts/
+│   ├── run-liminal.sh        # Launcher (single instance)
+│   └── install-desktop.sh    # Cài shortcut vào ~/.local/share/applications/
+└── src/
+    ├── player.py             # MPV wrapper, JSON IPC
+    ├── downloader.py         # Tải media từ YouTube (yt-dlp)
+    ├── scanner.py            # Quét file media
+    ├── waveform_analyzer.py  # Phân tích waveform offline (ffmpeg)
+    ├── audio_visualizer.py   # FFT realtime từ PipeWire monitor
+    ├── settings_store.py     # Cấu hình người dùng
+    ├── metadata_store.py     # Metadata và ảnh bìa tuỳ chỉnh
+    ├── mpris_service.py        # Tích hợp MPRIS
+    ├── qml/
+    │   ├── main.qml
+    │   ├── components/       # PlayerBar, Download, LibraryPage, SoundCloudWaveform…
+    │   └── Liminal/          # Theme singleton
+    └── qt/
+        ├── qml_app.py        # Khởi tạo QML engine
+        ├── qml_backend.py    # AppBackend — cầu nối Python ↔ QML
+        └── intro_splash.py   # Màn hình intro
 ```
 
-`sounddevice` yêu cầu **libportaudio**:
-```bash
-# Fedora
-sudo dnf install portaudio portaudio-devel
+## Giao diện TUI (tuỳ chọn)
 
-# Ubuntu/Debian
-sudo apt install portaudio19-dev
+Liminal còn có phiên bản terminal dùng Textual:
+
+```bash
+python3 app.py
 ```
 
-### Graceful fallback
+## Giấy phép
 
-Nếu không tìm được monitor source (ví dụ PipeWire config không chuẩn, `pactl` thiếu, hoặc `sounddevice` chưa cài):
-- `AudioVisualizer.available` = `False`
-- Không có thread capture nào được khởi tạo
-- Log cảnh báo: `WARNING: AudioVisualizer: no PipeWire/PulseAudio monitor source found`
-- QML: thanh equalizer bị ẩn, thanh tiến trình (progress slider) hiện bình thường
-- **App không crash**, tính năng tự tắt hoàn toàn im lặng
-
-Để debug, chạy với log level DEBUG:
-```bash
-PYTHONPATH=. python3 -c "import logging; logging.basicConfig(level=logging.DEBUG); from src.audio_visualizer import AudioVisualizer; AudioVisualizer()"
-```
-
+[MIT](LICENSE) — Copyright (c) 2026 Nguyễn Phước Lộc
