@@ -58,15 +58,11 @@ Item {
                 visible: root.imageSource !== ""
             }
 
-            // Placeholder gradient when no image
+            // Placeholder flat color when no image
             Rectangle {
                 anchors.fill: parent
                 visible: root.imageSource === ""
-                gradient: Gradient {
-                    orientation: Gradient.Vertical
-                    GradientStop { position: 0; color: Qt.lighter(root.accentColor, 1.3) }
-                    GradientStop { position: 1; color: Qt.darker(root.accentColor, 1.4) }
-                }
+                color: Theme.bgElevated
 
                 Text {
                     anchors.centerIn: parent

@@ -15,28 +15,8 @@ Rectangle {
     height: 40
     radius: 12
     color: "transparent"
-
-    Rectangle {
-        id: activeBg
-        anchors.fill: parent
-        radius: parent.radius
-        opacity: root.active ? 1 : 0
-
-        gradient: Gradient {
-            GradientStop { position: 0; color: Theme.accentStart }
-            GradientStop { position: 1; color: Theme.accentEnd }
-        }
-
-        border.color: "#26eab308"
-        border.width: 1
-
-        Behavior on opacity {
-            NumberAnimation {
-                duration: Theme.colorDuration
-                easing.type: Easing.OutCubic
-            }
-        }
-    }
+    border.width: root.active ? 1 : 0
+    border.color: root.active ? Theme.accent : "transparent"
 
     Row {
         anchors.fill: parent
@@ -48,14 +28,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             name: root.icon
             font.pixelSize: 20
-            color: root.active ? Theme.textOnAccent : Theme.textSecondary
-
-            Behavior on color {
-                ColorAnimation {
-                    duration: Theme.colorDuration
-                    easing.type: Easing.OutCubic
-                }
-            }
+            color: root.active ? Theme.accent : Theme.textPrimary
         }
 
         Text {
@@ -64,27 +37,8 @@ Rectangle {
             font.family: Theme.fontFamily
             font.pixelSize: Theme.bodySize
             font.weight: root.active ? Font.DemiBold : Font.Normal
-            color: root.active ? Theme.textOnAccent : Theme.textSecondary
-
-            Behavior on color {
-                ColorAnimation {
-                    duration: Theme.colorDuration
-                    easing.type: Easing.OutCubic
-                }
-            }
-        }
-    }
-
-    Rectangle {
-        anchors.fill: parent
-        radius: parent.radius
-        color: hoverMa.containsMouse && !root.active ? Theme.hoverOverlay : "transparent"
-
-        Behavior on color {
-            ColorAnimation {
-                duration: Theme.colorDuration
-                easing.type: Easing.OutCubic
-            }
+            color: root.active ? Theme.accent : Theme.textPrimary
+            elide: Text.ElideRight
         }
     }
 
@@ -95,9 +49,7 @@ Rectangle {
     }
 
     MouseArea {
-        id: hoverMa
         anchors.fill: parent
-        hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: singleClickDelay.restart()
         onDoubleClicked: {

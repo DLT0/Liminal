@@ -139,24 +139,14 @@ Item {
                 anchors.fill: parent
                 radius: Theme.libraryCardRadius
                 clip: true
-                color: Theme.cardBg
+                color: Theme.bgElevated
 
                 Image {
                     anchors.fill: parent
                     source: root.resolvedBannerImage
                     fillMode: Image.PreserveAspectCrop
                     visible: root.bannerImage !== ""
-                    opacity: 0.45
-                }
-
-                Rectangle {
-                    anchors.fill: parent
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0; color: Qt.rgba(Theme.accentStart.r, Theme.accentStart.g, Theme.accentStart.b, 0.55) }
-                        GradientStop { position: 0.5; color: Qt.rgba(Theme.bgMid.r, Theme.bgMid.g, Theme.bgMid.b, 0.85) }
-                        GradientStop { position: 1; color: Qt.rgba(Theme.bgMid.r, Theme.bgMid.g, Theme.bgMid.b, 0.95) }
-                    }
+                    opacity: 0.3
                 }
             }
 
@@ -249,21 +239,15 @@ Item {
                 width: 56
                 height: 56
                 radius: width / 2
-                border.color: Theme.playBorder
-                border.width: 1
+                color: Theme.accent
                 opacity: root.hasPlayableTracks ? 1 : 0.45
-
-                gradient: Gradient {
-                    GradientStop { position: 0; color: Theme.accentStart }
-                    GradientStop { position: 1; color: Theme.accentEnd }
-                }
 
                 AppIcon {
                     anchors.centerIn: parent
                     name: root.isPlaying ? "pause" : "play_arrow"
                     filled: true
                     font.pixelSize: 32
-                    color: Theme.textOnAccent
+                    color: "#000000"
                 }
 
                 MouseArea {
@@ -356,10 +340,10 @@ Item {
                     return "file://" + rowImage
                 }
 
-                color: rowHoverHandler.hovered ? Theme.hoverOverlay : "transparent"
+                color: rowHoverHandler.hovered ? Theme.bgCardHover : Theme.bgCard
 
                 Behavior on color {
-                    ColorAnimation { duration: 120 }
+                    ColorAnimation { duration: Theme.colorDuration }
                 }
 
                 HoverHandler {

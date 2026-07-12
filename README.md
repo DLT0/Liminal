@@ -9,7 +9,7 @@ Trình phát đa phương tiện cục bộ (local media player) cho Linux. Giao
 - **Tải từ YouTube** — Tìm kiếm hoặc dán link, xuất MP3 hoặc MP4 với tuỳ chọn chất lượng
 - **Waveform seek bar** — Thanh tiến trình dạng waveform (kiểu SoundCloud), click để seek
 - **Quản lý thư viện** — Tạo thư mục, sắp xếp, đổi ảnh bìa, chỉnh metadata
-- **Đa chủ đề** — Nhiều bảng màu trong Settings
+- **Tuỳ chỉnh giao diện** — Chỉnh màu, sidebar, search, player bar qua `settings.json` (key `liminal.*` kiểu VS Code)
 - **MPRIS** — Điều khiển phát nhạc qua phím media và desktop environment
 
 ## Yêu cầu hệ thống
@@ -101,7 +101,15 @@ Tắt visualizer sẽ quay lại slider tiến trình thông thường.
 
 ## Cấu hình
 
-Cấu hình lưu tại `~/.config/liminal/settings.json`.
+Một file duy nhất cho **cấu hình người dùng**: `~/.config/liminal/settings.json` (giống VS Code — chỉ ghi key cần thay đổi).
+
+Trạng thái phiên phát (bài đang nghe, vị trí seek, v.v.) lưu riêng tại `state.json` — app tự quản lý, không cần chỉnh tay.
+
+| Nhóm key | Ví dụ |
+|---|---|
+| Ứng dụng | `media_root`, `volume`, `download_quality` |
+| Giao diện | `liminal.sidebar.width`, `liminal.colorCustomizations.accent` |
+| Layout | `liminal.layout.gridColumns`, `liminal.playerBar.alwaysVisible` |
 
 Chọn **Media Root** trong Settings — Liminal tự tạo các thư mục con:
 
@@ -109,7 +117,44 @@ Chọn **Media Root** trong Settings — Liminal tự tạo các thư mục con:
 |---|---|
 | `Music/` | File nhạc và album (thư mục con) |
 | `Videos/` | File video và playlist (thư mục con) |
-| `Playlist/` | Playlist chung |
+
+### Tuỳ chỉnh giao diện (kiểu VS Code)
+
+Chỉ cần thêm key muốn override — phần còn lại giữ mặc định:
+
+```json
+{
+  "liminal.colorCustomizations": {
+    "accent": "#e91e63",
+    "bgElevated": "#0f0f0f"
+  },
+  "liminal.sidebar.width": 260,
+  "liminal.playerBar.alwaysVisible": true,
+  "liminal.window.customTitleBar": false
+}
+```
+
+Hoặc dùng key dạng chấm:
+
+```json
+{
+  "liminal.colorCustomizations.accent": "#22c55e",
+  "liminal.search.placeholder": "Tìm bài hát…"
+}
+```
+
+Hoặc nhóm trong object `liminal`:
+
+```json
+{
+  "liminal": {
+    "sidebar": { "width": 240 },
+    "colorCustomizations": { "accent": "#3b82f6" }
+  }
+}
+```
+
+Xem `settings.json.example` trong repo. Khởi động lại app sau khi sửa. Trong Settings, bấm **Mở thư mục** để mở nhanh `~/.config/liminal/`.
 
 ## Định dạng hỗ trợ
 
@@ -134,7 +179,8 @@ Liminal/
     ├── scanner.py            # Quét file media
     ├── waveform_analyzer.py  # Phân tích waveform offline (ffmpeg)
     ├── audio_visualizer.py   # FFT realtime từ PipeWire monitor
-    ├── settings_store.py     # Cấu hình người dùng
+    ├── settings_store.py     # settings.json — app + user overrides
+    ├── ui_config.py            # Resolve liminal.* UI keys for QML
     ├── metadata_store.py     # Metadata và ảnh bìa tuỳ chỉnh
     ├── mpris_service.py        # Tích hợp MPRIS
     ├── qml/

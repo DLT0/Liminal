@@ -121,18 +121,14 @@ Item {
                         NumberAnimation { duration: Theme.colorDuration }
                     }
 
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: Theme.accentStart }
-                        GradientStop { position: 1.0; color: Theme.accentEnd }
-                    }
+                    color: Theme.accent
 
                     AppIcon {
                         anchors.centerIn: parent
                         name: "play_arrow"
                         filled: true
                         font.pixelSize: 22
-                        color: Theme.textOnAccent
+                        color: "#000000"
                     }
                 }
             }

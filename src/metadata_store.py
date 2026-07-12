@@ -198,6 +198,21 @@ def resolve_source_id(path: str | Path, *, cache: bool = True) -> str:
     return embedded
 
 
+def resolve_source_url(path: str | Path, *, cache: bool = True) -> str:
+    """Return the original download URL (YouTube/Drive) when available."""
+    resolved = str(Path(path).resolve())
+    meta = get_metadata(resolved)
+    stored = str(meta.get("source_url") or "").strip()
+    if stored:
+        return stored
+
+    source_id = resolve_source_id(resolved, cache=cache)
+    video_id = extract_youtube_id(source_id)
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return ""
+
+
 def read_embedded_metadata(path: Path) -> dict[str, str]:
     """Return title, artist and cached embedded cover from an audio file."""
     if MutagenFile is None:

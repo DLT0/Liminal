@@ -546,11 +546,7 @@ Item {
                         height: parent.height * barHeight(index)
                         radius: width / 2
                         visible: index < filledCount && state !== "error"
-                        gradient: Gradient {
-                            orientation: Gradient.Vertical
-                            GradientStop { position: 0; color: Theme.accentStart }
-                            GradientStop { position: 1; color: Theme.accentEnd }
-                        }
+                        color: Theme.accent
                     }
                 }
             }
@@ -1182,11 +1178,7 @@ Item {
                         Layout.preferredHeight: 42
                         radius: 8
                         visible: root.intakeMode === "search"
-                        gradient: Gradient {
-                            orientation: Gradient.Horizontal
-                            GradientStop { position: 0; color: Theme.accentStart }
-                            GradientStop { position: 1; color: Theme.accentEnd }
-                        }
+                        color: Theme.accent
 
                         Text {
                             id: actionLabel
@@ -1241,11 +1233,7 @@ Item {
                         Layout.preferredHeight: 42
                         radius: 8
                         visible: root.intakeMode === "link"
-                        gradient: Gradient {
-                            orientation: Gradient.Horizontal
-                            GradientStop { position: 0; color: Theme.accentStart }
-                            GradientStop { position: 1; color: Theme.accentEnd }
-                        }
+                        color: Theme.accent
 
                         Text {
                             id: linkActionLabel
@@ -1501,9 +1489,13 @@ Item {
                 width: resultList.width
                 height: resultContent.implicitHeight + 24
                 radius: Theme.cardRadius
-                color: Theme.cardBg
-                border.color: rowHover.containsMouse ? Theme.glassStrongBorder : Theme.cardBorder
+                color: rowHover.containsMouse ? Theme.bgCardHover : Theme.bgCard
+                border.color: rowHover.containsMouse ? Theme.accent : Theme.border
                 border.width: 1
+
+                Behavior on color {
+                    ColorAnimation { duration: Theme.colorDuration }
+                }
 
                 required property int index
                 required property bool selected

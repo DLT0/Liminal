@@ -14,10 +14,19 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: "#66000000"
+        color: Theme.bgTop
+        opacity: 0.92
+
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 1
+            color: Theme.glassBorder
+            opacity: 0.55
+        }
     }
 
-    // Drag region (behind buttons; empty titlebar area moves window)
+    // Drag region — empty titlebar area moves the window
     MouseArea {
         anchors.fill: parent
         z: 0
@@ -25,7 +34,7 @@ Item {
         acceptedButtons: Qt.LeftButton
         propagateComposedEvents: false
 
-        onPressed: (mouse) => {
+        onPressed: {
             const win = root.Window.window
             if (win)
                 win.startSystemMove()
@@ -51,22 +60,50 @@ Item {
 
         Repeater {
             model: [
-                { color: Theme.trafficRed, action: "close" },
-                { color: Theme.trafficYellow, action: "minimize" },
-                { color: Theme.trafficGreen, action: "maximize" }
+                { color: Theme.trafficRed, hover: "×", action: "close" },
+                { color: Theme.trafficYellow, hover: "−", action: "minimize" },
+                { color: Theme.trafficGreen, hover: "□", action: "maximize" }
             ]
 
-            delegate: Rectangle {
+            delegate: Item {
                 width: 12
                 height: 12
-                radius: 6
-                color: modelData.color
-                border.color: Qt.darker(modelData.color, 1.15)
-                border.width: 1
+
+                property bool hovered: false
+
+                Rectangle {
+                    id: light
+                    anchors.fill: parent
+                    radius: 6
+                    color: modelData.color
+                    border.color: Qt.darker(modelData.color, 1.15)
+                    border.width: 1
+                    scale: parent.hovered ? 1.05 : 1.0
+
+                    Behavior on scale {
+                        NumberAnimation { duration: 120; easing.type: Easing.OutQuad }
+                    }
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    text: modelData.hover
+                    font.pixelSize: 9
+                    font.weight: Font.Bold
+                    color: Qt.rgba(0, 0, 0, 0.55)
+                    opacity: parent.hovered ? 1.0 : 0.0
+
+                    Behavior on opacity {
+                        NumberAnimation { duration: 100 }
+                    }
+                }
 
                 MouseArea {
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
+                    onEntered: parent.hovered = true
+                    onExited: parent.hovered = false
                     onClicked: {
                         if (modelData.action === "close")
                             root.closeRequested()
@@ -84,44 +121,11 @@ Item {
     Text {
         z: 1
         anchors.centerIn: parent
-        text: "Liminal"
+        text: root.Window.window ? root.Window.window.title : "Liminal"
         font.family: Theme.fontFamily
-        font.pixelSize: 14
+        font.pixelSize: 13
         font.weight: Font.DemiBold
-        color: Theme.textPrimary
-    }
-
-    // Window controls (right)
-    Row {
-        z: 1
-        anchors.right: parent.right
-        anchors.rightMargin: 12
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 4
-
-        Repeater {
-            model: [
-                { icon: "remove", action: "minimize" },
-                { icon: "check_box_outline_blank", action: "maximize" },
-                { icon: "close", action: "close" }
-            ]
-
-            delegate: IconButton {
-                icon: modelData.icon
-                iconSize: 18
-                width: 28
-                height: 28
-                radius: 6
-
-                onClicked: {
-                    if (modelData.action === "close")
-                        root.closeRequested()
-                    else if (modelData.action === "minimize")
-                        root.minimizeRequested()
-                    else
-                        root.maximizeRequested()
-                }
-            }
-        }
+        color: Theme.textSecondary
+        opacity: 0.9
     }
 }

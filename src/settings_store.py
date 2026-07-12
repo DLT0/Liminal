@@ -7,15 +7,49 @@ import os
 import sys
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "liminal"
+def _config_dir() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "liminal"
+
+
+CONFIG_DIR = _config_dir()
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-SETTINGS_VERSION = 4
+SETTINGS_VERSION = 6
 
 YOUTUBE_DEFAULTS: dict[str, str] = {
     "youtube_auth_mode": "oauth",
     "youtube_browser": "firefox",
     "youtube_browser_profile": "",
     "youtube_cookies_file": "",
+}
+
+DISCOVER_FEED_BASE_URL = "https://hoangminhduong.top"
+
+DISCOVER_DEFAULTS: dict = {
+    "discover_feed_url": "",
+    "discover_feed_base_url": DISCOVER_FEED_BASE_URL,
+    "discover_feed_slug": "",
+    "discover_feed_api_key": "",
+    "discover_cache_ttl_minutes": 30,
+    "discover_allowed_domains": [
+        "youtube.com",
+        "youtu.be",
+        "drive.google.com",
+        "i.ytimg.com",
+        "img.youtube.com",
+        "hoangminhduong.top",
+        "www.hoangminhduong.top",
+    ],
+}
+
+APP_DEFAULTS: dict = {
+    "version": SETTINGS_VERSION,
+    "download_quality": "1080",
+    "volume": 100,
+    "muted": False,
+    **YOUTUBE_DEFAULTS,
+    **DISCOVER_DEFAULTS,
 }
 
 MUSIC_SUBDIR = "Music"
@@ -96,48 +130,45 @@ def _ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_raw_settings() -> dict:
-    """Load the full settings document from disk."""
+def _read_settings_file() -> dict:
     if not SETTINGS_FILE.exists():
-        return {"version": SETTINGS_VERSION, **YOUTUBE_DEFAULTS}
+        return {}
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            data = {}
     except (OSError, json.JSONDecodeError):
-        data = {}
-    merged = {
-        "version": SETTINGS_VERSION,
-        "theme_index": 0,
-        "download_quality": "1080",
-        "volume": 100,
-        "muted": False,
-        # ── Session / last-played restore ──────────────────────────────────
-        "has_played_before":   False,
-        "last_track_title":    "",
-        "last_track_artist":   "",
-        "last_track_thumbnail": "",
-        "last_track_path":     "",
-        "last_track_audio_only": True,
-        "last_track_position":   0.0,
-        # ──────────────────────────────────────────────────────────────────
-        "show_visualizer":     True,
-        **YOUTUBE_DEFAULTS,
-    }
-    merged.update({k: v for k, v in data.items() if k in merged or k == "media_root"})
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_raw_settings() -> dict:
+    """Load settings with app defaults; preserve user customization keys."""
+    from src.state_store import migrate_state_from_settings
+
+    migrate_state_from_settings()
+    data = _read_settings_file()
+    merged = dict(data)
+
+    for key, default in APP_DEFAULTS.items():
+        if key not in merged:
+            merged[key] = default
+
     for key, default in YOUTUBE_DEFAULTS.items():
-        value = data.get(key, default)
+        value = merged.get(key, default)
         merged[key] = str(value) if value is not None else default
-    if isinstance(data.get("media_root"), str):
-        merged["media_root"] = data["media_root"]
+
+    merged["version"] = SETTINGS_VERSION
     return merged
 
 
 def save_raw_settings(data: dict) -> None:
-    """Persist the full settings document."""
+    """Persist settings while preserving user customization keys."""
+    from src.state_store import SESSION_KEYS
+
     _ensure_config_dir()
-    current = load_raw_settings()
+    current = _read_settings_file()
     current.update(data)
+    for key in SESSION_KEYS:
+        current.pop(key, None)
     current["version"] = SETTINGS_VERSION
     SETTINGS_FILE.write_text(
         json.dumps(current, indent=2, ensure_ascii=False) + "\n",

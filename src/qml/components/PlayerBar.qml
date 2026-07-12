@@ -177,21 +177,15 @@ GlassPanel {
                     width: Theme.playButtonSize
                     height: Theme.playButtonSize
                     radius: width / 2
-                    border.color: Theme.playBorder
-                    border.width: 1
+                    color: Theme.accent
                     opacity: root.hasMedia ? 1 : 0.55
-
-                    gradient: Gradient {
-                        GradientStop { position: 0; color: Theme.accentStart }
-                        GradientStop { position: 1; color: Theme.accentEnd }
-                    }
 
                     AppIcon {
                         anchors.centerIn: parent
                         name: root.isPlaying ? "pause" : "play_arrow"
                         filled: true
                         font.pixelSize: 28
-                        color: Theme.textOnAccent
+                        color: "#000000"
                     }
 
                     MouseArea {
@@ -260,17 +254,13 @@ GlassPanel {
                         width: volSlider.availableWidth
                         height: 4
                         radius: 2
-                        color: Theme.sliderTrack
+                        color: Theme.border
 
                         Rectangle {
                             width: volSlider.visualPosition * parent.width
                             height: parent.height
                             radius: 2
-                            gradient: Gradient {
-                                orientation: Gradient.Horizontal
-                                GradientStop { position: 0; color: Theme.accentStart }
-                                GradientStop { position: 1; color: Theme.accentCyan }
-                            }
+                            color: Theme.accent
                         }
                     }
 
@@ -280,9 +270,7 @@ GlassPanel {
                         width: 12
                         height: 12
                         radius: 6
-                        color: Theme.accentStart
-                        border.color: Theme.textPrimary
-                        border.width: 2
+                        color: "#ffffff"
                     }
                 }
 
@@ -296,10 +284,10 @@ GlassPanel {
             }
         }
 
-        // ── Row 2: Time · Progress slider / Waveform · Duration ──────────────────────
+        // ── Row 2: Time · Progress slider · Duration ──────────────────────
         RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: (typeof backend !== "undefined" && backend.showVisualizer) ? 38 : 26
+            Layout.preferredHeight: 26
             spacing: 8
 
             Text {
@@ -311,26 +299,11 @@ GlassPanel {
                 horizontalAlignment: Text.AlignRight
             }
 
-            SoundCloudWaveform {
-                id: waveSeek
-                Layout.fillWidth: true
-                Layout.preferredHeight: 32
-                visible: typeof backend !== "undefined" && backend.showVisualizer
-                waveform: (typeof backend !== "undefined") ? backend.waveform : []
-                position: root.position
-                duration: root.duration
-                isPlaying: root.isPlaying
-                hasMedia: root.hasMedia
-                onSeekRequested: function(pos) {
-                    root.seekRequested(pos)
-                }
-            }
-
             Slider {
                 id: progressSlider
                 Layout.fillWidth: true
                 Layout.preferredHeight: 26
-                visible: typeof backend === "undefined" || !backend.showVisualizer
+                visible: true
                 from: 0
                 to: root.duration > 0 ? root.duration : 1
                 enabled: root.hasMedia && root.duration > 0
@@ -344,22 +317,38 @@ GlassPanel {
                         root.seekRequested(value)
                 }
 
+                HoverHandler {
+                    id: progressHover
+                }
+
                 background: Rectangle {
+                    id: trackBg
                     x: progressSlider.leftPadding
                     y: progressSlider.topPadding + progressSlider.availableHeight / 2 - 2
                     width: progressSlider.availableWidth
                     height: 4
                     radius: 2
-                    color: Theme.sliderTrack
+                    color: Theme.border
+
+                    Behavior on height {
+                        NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                    }
 
                     Rectangle {
+                        id: fillBar
                         width: progressSlider.visualPosition * parent.width
                         height: parent.height
                         radius: 2
-                        gradient: Gradient {
-                            orientation: Gradient.Horizontal
-                            GradientStop { position: 0; color: Theme.accentStart }
-                            GradientStop { position: 1; color: Theme.accentCyan }
+                        color: progressHover.hovered ? Theme.accentCyan : Theme.accent
+
+                        Behavior on width {
+                            SmoothedAnimation {
+                                velocity: 180
+                                duration: 120
+                            }
+                        }
+                        Behavior on color {
+                            ColorAnimation { duration: 200 }
                         }
                     }
                 }
@@ -371,7 +360,11 @@ GlassPanel {
                     height: 10
                     radius: 5
                     color: Theme.textPrimary
-                    visible: progressSlider.enabled
+                    opacity: progressSlider.enabled && progressHover.hovered ? 1 : 0
+
+                    Behavior on opacity {
+                        NumberAnimation { duration: 120; easing.type: Easing.OutQuad }
+                    }
                 }
             }
 

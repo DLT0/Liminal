@@ -21,6 +21,7 @@ Item {
     property bool isPlaying: false
     property bool showScrollBar: true
     property bool scrollEnabled: true
+    property bool showShareAction: false
     property int gridColumns: Theme.gridColumns
     // Allows compact embedded library sections without changing full-page views.
     property int contentMargin: Theme.contentPadding
@@ -136,6 +137,12 @@ Item {
                 contextMenu.itemTitle,
                 contextMenu.itemArtist
             )
+        }
+        StyledMenuItem {
+            visible: root.showShareAction && !contextMenu.isCollection
+            iconName: "share"
+            text: "Chia sẻ"
+            onTriggered: shareBridge.createShareFromLibraryPath(contextMenu.itemPath)
         }
         StyledMenuSeparator {}
         StyledMenuItem {
