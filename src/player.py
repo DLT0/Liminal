@@ -344,7 +344,9 @@ class LiminalPlayer:
                         await self._dispatch(json.loads(line))
                     except json.JSONDecodeError:
                         logger.warning("bad json from mpv: %s", line)
-        except (ConnectionError, asyncio.CancelledError):
+        except asyncio.CancelledError:
+            pass
+        except Exception:
             pass
         finally:
             self._writer = None
@@ -416,6 +418,9 @@ class LiminalPlayer:
         except asyncio.TimeoutError:
             self._pending.pop(str(self._req_id), None)
             return {"error": "timeout"}
+        except Exception:
+            self._pending.pop(str(self._req_id), None)
+            return {"error": "disconnected"}
 
 class PlayerBridge(QObject):
     """Qt signal bridge wrapping LiminalPlayer for PyQt6 GUI use.

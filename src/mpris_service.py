@@ -126,8 +126,8 @@ class _MprisObj(dbus.service.Object):
         self._emit(c)
 
     def _on_pos(self, _t: float, _d: float) -> None:
-        self._check_pos()
-        # D-Bus dispatch handled by _tick timer
+        # D-Bus position dispatch is handled by the _tick timer
+        pass
 
     def _tick(self) -> None:
         pos = int(max(0.0, self._player.state.time_pos) * 1_000_000)

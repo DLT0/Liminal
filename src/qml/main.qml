@@ -30,7 +30,11 @@ ApplicationWindow {
 
     onClosing: function(close) {
         close.accepted = false
-        backend.quitApp()
+        if (backend.closeActionTray) {
+            backend.minimizeToTray()
+        } else {
+            backend.quitApp()
+        }
     }
 
     Shortcut {
