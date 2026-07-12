@@ -1,281 +1,254 @@
-"""MPRIS D-Bus bridge so playerctl/waybar can show Liminal playback."""
+"""MPRIS D-Bus — dbus-python with GLib mainloop, correct signal typing."""
 
 from __future__ import annotations
 
 import logging
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
-from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection
+import dbus
+import dbus.lowlevel
+import dbus.service
+from gi.repository import GLib
+from PyQt6.QtCore import QObject, QTimer
 
 from src.models import PlaybackState, PlaybackStatus
 from src.player import PlayerBridge
 
 logger = logging.getLogger(__name__)
 
-MPRIS_SERVICE = "org.mpris.MediaPlayer2.liminal"
-MPRIS_PATH = "/org/mpris/MediaPlayer2"
+BUS_NAME = "org.mpris.MediaPlayer2.liminal"
+OBJ_PATH = "/org/mpris/MediaPlayer2"
 TRACK_ID = "/org/liminal/CurrentTrack"
+
+PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+ROOT_IFACE = "org.mpris.MediaPlayer2"
+PROPS_IFACE = "org.freedesktop.DBus.Properties"
 
 
 def _status_name(status: PlaybackStatus) -> str:
-    if status == PlaybackStatus.PLAYING:
-        return "Playing"
-    if status == PlaybackStatus.PAUSED:
-        return "Paused"
-    return "Stopped"
+    return ("Playing" if status == PlaybackStatus.PLAYING
+            else "Paused" if status == PlaybackStatus.PAUSED
+            else "Stopped")
 
 
-class _MprisRootAdaptor(QDBusAbstractAdaptor):
-    pyqtClassInfo("D-Bus Interface", "org.mpris.MediaPlayer2")
+class _MprisObj(dbus.service.Object):
+    """MPRIS D-Bus object (Root + Player interfaces)."""
 
-    def __init__(self, parent: "MprisPlayer") -> None:
-        super().__init__(parent)
-        self.setAutoRelaySignals(True)
-
-
-class _MprisPlayerAdaptor(QDBusAbstractAdaptor):
-    pyqtClassInfo("D-Bus Interface", "org.mpris.MediaPlayer2.Player")
-
-    def __init__(self, parent: "MprisPlayer") -> None:
-        super().__init__(parent)
-        self.setAutoRelaySignals(True)
-
-
-class MprisPlayer(QObject):
-    """MPRIS player object exported on the session bus."""
-
-    playback_status_changed = pyqtSignal(str)
-    metadata_changed = pyqtSignal("QVariantMap")
-    position_changed = pyqtSignal(int)
-
-    def __init__(
-        self,
-        player: PlayerBridge,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
+    def __init__(self, player: PlayerBridge) -> None:
+        from dbus.mainloop.glib import DBusGMainLoop
+        DBusGMainLoop(set_as_default=True)
+        self._bus = dbus.SessionBus()
+        bus_name = dbus.service.BusName(BUS_NAME, bus=self._bus)
+        super().__init__(bus_name, OBJ_PATH)
         self._player = player
         self._on_next: Optional[Callable[[], None]] = None
         self._on_previous: Optional[Callable[[], None]] = None
+        self._last_status = ""
+        self._last_pos = -1
+        self._last_meta: dict = {}
 
-        self._playback_status = "Stopped"
-        self._metadata: dict = {}
-        self._position_us = 0
+        player.state_changed.connect(self._on_state)
+        player.position_changed.connect(self._on_pos)
 
-        _MprisRootAdaptor(self)
-        _MprisPlayerAdaptor(self)
+        self._timer = QTimer()
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
 
-        player.state_changed.connect(self._on_state_changed)
-        player.position_changed.connect(self._on_position_changed)
+        # Iterate GLib to dispatch pending D-Bus registration/calls
+        for _ in range(20):
+            GLib.MainContext.default().iteration(False)
 
-    def set_transport_handlers(
-        self,
-        on_next: Callable[[], None],
-        on_previous: Callable[[], None],
-    ) -> None:
-        self._on_next = on_next
-        self._on_previous = on_previous
+    def set_transport(self, nxt: Callable, prev: Callable) -> None:
+        self._on_next = nxt
+        self._on_previous = prev
 
-    @pyqtProperty(bool, constant=True)
-    def CanQuit(self) -> bool:
-        return False
+    # -- State & signal emission --
 
-    @pyqtProperty(bool, constant=True)
-    def CanRaise(self) -> bool:
-        return True
+    def _build_meta(self) -> dict:
+        s = self._player.state
+        artist = s.artist if s.artist and s.artist != "—" else "Unknown Artist"
+        return {
+            "xesam:title": s.title or "Nothing playing",
+            "xesam:artist": [artist],
+            "mpris:trackid": TRACK_ID,
+            "mpris:length": int(max(0.0, s.duration) * 1_000_000),
+            "xesam:url": s.path or "",
+        }
 
-    @pyqtProperty(bool, constant=True)
-    def HasTrackList(self) -> bool:
-        return False
+    def _emit(self, changes: dict) -> None:
+        if not changes:
+            return
+        try:
+            props = {}
+            for key, val in changes.items():
+                if key == "PlaybackStatus":
+                    props[key] = dbus.String(val, variant_level=1)
+                elif key == "Position":
+                    props[key] = dbus.Int64(val, variant_level=1)
+                elif key == "Metadata":
+                    meta = {}
+                    for mk, mv in val.items():
+                        if mk == "xesam:artist":
+                            meta[mk] = dbus.Array(
+                                [dbus.String(a) for a in mv],
+                                signature="s", variant_level=1,
+                            )
+                        elif mk == "mpris:length":
+                            meta[mk] = dbus.Int64(mv, variant_level=1)
+                        else:
+                            meta[mk] = dbus.String(str(mv), variant_level=1)
+                    props[key] = dbus.Dictionary(meta, signature="sv", variant_level=1)
+            msg = dbus.lowlevel.SignalMessage(
+                OBJ_PATH, PROPS_IFACE, "PropertiesChanged",
+            )
+            msg.append(
+                PLAYER_IFACE,
+                dbus.Dictionary(props, signature="sv"),
+                dbus.Array([], signature="s"),
+                signature="sa{sv}as",
+            )
+            # Use the same connection that owns BUS_NAME
+            self._bus.send_message(msg)
+        except Exception:
+            logger.warning("MPRIS: emit failed", exc_info=True)
 
-    @pyqtProperty(str, constant=True)
-    def Identity(self) -> str:
-        return "Liminal"
+    def _on_state(self, state: PlaybackState) -> None:
+        c: dict = {}
+        s = _status_name(state.status)
+        if s != self._last_status:
+            c["PlaybackStatus"] = s
+            self._last_status = s
+        meta = self._build_meta()
+        if meta != self._last_meta:
+            c["Metadata"] = meta
+            self._last_meta = meta
+        self._emit(c)
 
-    @pyqtProperty(str, constant=True)
-    def DesktopEntry(self) -> str:
-        return "liminal"
+    def _on_pos(self, _t: float, _d: float) -> None:
+        self._tick()
 
-    @pyqtProperty("QStringList", constant=True)
-    def SupportedUriSchemes(self) -> list[str]:
-        return ["file", "http", "https"]
+    def _tick(self) -> None:
+        pos = int(max(0.0, self._player.state.time_pos) * 1_000_000)
+        if abs(pos - self._last_pos) > 500_000:
+            self._last_pos = pos
+            self._emit({"Position": pos})
+        # Iterate GLib for D-Bus method call dispatch
+        for _ in range(10):
+            GLib.MainContext.default().iteration(False)
 
-    @pyqtProperty("QStringList", constant=True)
-    def SupportedMimeTypes(self) -> list[str]:
-        return []
+    # -- Properties --
 
-    @pyqtSlot()
-    def Raise(self) -> None:
-        pass
+    def _root_all(self) -> dict:
+        return {
+            "CanQuit": False, "CanRaise": True, "HasTrackList": False,
+            "Identity": "Liminal", "DesktopEntry": "liminal",
+            "SupportedUriSchemes": dbus.Array(["file", "http", "https"], signature="s"),
+            "SupportedMimeTypes": dbus.Array([], signature="s"),
+        }
 
-    @pyqtSlot()
-    def Quit(self) -> None:
-        pass
+    def _player_all(self) -> dict:
+        s = self._player.state
+        artist = s.artist if s.artist and s.artist != "—" else "Unknown Artist"
+        meta = dbus.Dictionary({
+            "xesam:title": dbus.String(s.title or "Nothing playing"),
+            "xesam:artist": dbus.Array([artist], signature="s"),
+            "mpris:trackid": dbus.ObjectPath(TRACK_ID),
+            "mpris:length": dbus.Int64(int(max(0.0, s.duration) * 1_000_000)),
+            "xesam:url": dbus.String(s.path or ""),
+        }, signature="sv")
+        return {
+            "PlaybackStatus": _status_name(s.status),
+            "Metadata": meta,
+            "Position": dbus.Int64(int(max(0.0, s.time_pos) * 1_000_000)),
+            "CanPlay": True, "CanPause": True,
+            "CanGoNext": self._on_next is not None,
+            "CanGoPrevious": self._on_previous is not None,
+            "CanSeek": True, "CanControl": True,
+            "Rate": 1.0, "MinimumRate": 1.0, "MaximumRate": 1.0,
+            "LoopStatus": "None", "Shuffle": False,
+            "Volume": s.volume / 100.0,
+        }
 
-    @pyqtProperty(str, notify=playback_status_changed)
-    def PlaybackStatus(self) -> str:
-        return self._playback_status
+    @dbus.service.method(PROPS_IFACE, in_signature="ss", out_signature="v")
+    def Get(self, interface: str, prop: str):
+        src = self._root_all if interface == ROOT_IFACE else self._player_all
+        m = src()
+        if prop not in m:
+            raise dbus.exceptions.DBusException(
+                "org.freedesktop.DBus.Error.InvalidArgs",
+                f"Unknown property {interface}.{prop}",
+            )
+        return m[prop]
 
-    @pyqtProperty("QVariantMap", notify=metadata_changed)
-    def Metadata(self) -> dict:
-        return self._metadata
+    @dbus.service.method(PROPS_IFACE, in_signature="s", out_signature="a{sv}")
+    def GetAll(self, interface: str):
+        src = self._root_all if interface == ROOT_IFACE else self._player_all
+        return dbus.Dictionary(src(), signature="sv")
 
-    @pyqtProperty(int, notify=position_changed)
-    def Position(self) -> int:
-        return self._position_us
+    @dbus.service.method(ROOT_IFACE, in_signature="", out_signature="")
+    def Raise(self) -> None: pass
 
-    @pyqtProperty(bool, constant=True)
-    def CanPlay(self) -> bool:
-        return True
+    @dbus.service.method(ROOT_IFACE, in_signature="", out_signature="")
+    def Quit(self) -> None: pass
 
-    @pyqtProperty(bool, constant=True)
-    def CanPause(self) -> bool:
-        return True
-
-    @pyqtProperty(bool, constant=True)
-    def CanSeek(self) -> bool:
-        return True
-
-    @pyqtProperty(bool, constant=True)
-    def CanControl(self) -> bool:
-        return True
-
-    @pyqtProperty(bool, constant=True)
-    def CanGoNext(self) -> bool:
-        return self._on_next is not None
-
-    @pyqtProperty(bool, constant=True)
-    def CanGoPrevious(self) -> bool:
-        return self._on_previous is not None
-
-    @pyqtProperty(float, constant=True)
-    def Rate(self) -> float:
-        return 1.0
-
-    @pyqtProperty(float, constant=True)
-    def MinimumRate(self) -> float:
-        return 1.0
-
-    @pyqtProperty(float, constant=True)
-    def MaximumRate(self) -> float:
-        return 1.0
-
-    @pyqtProperty(str, constant=True)
-    def LoopStatus(self) -> str:
-        return "None"
-
-    @pyqtProperty(bool, constant=True)
-    def Shuffle(self) -> bool:
-        return False
-
-    @pyqtSlot()
+    @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
     def Play(self) -> None:
-        state = self._player.state
-        if state.status == PlaybackStatus.PAUSED:
+        if self._player.state.status == PlaybackStatus.PAUSED:
             self._player.toggle_pause()
 
-    @pyqtSlot()
+    @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
     def Pause(self) -> None:
-        state = self._player.state
-        if state.status == PlaybackStatus.PLAYING:
+        if self._player.state.status == PlaybackStatus.PLAYING:
             self._player.toggle_pause()
 
-    @pyqtSlot()
+    @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
     def PlayPause(self) -> None:
         if self._player.state.status != PlaybackStatus.STOPPED:
             self._player.toggle_pause()
 
-    @pyqtSlot()
-    def Stop(self) -> None:
-        self._player.stop()
+    @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
+    def Stop(self) -> None: self._player.stop()
 
-    @pyqtSlot()
+    @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
     def Next(self) -> None:
-        if self._on_next:
-            self._on_next()
+        if self._on_next: self._on_next()
 
-    @pyqtSlot()
+    @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
     def Previous(self) -> None:
-        if self._on_previous:
-            self._on_previous()
+        if self._on_previous: self._on_previous()
 
-    @pyqtSlot(int)
-    def Seek(self, offset_us: int) -> None:
-        self._player.seek(offset_us / 1_000_000)
+    @dbus.service.method(PLAYER_IFACE, in_signature="x", out_signature="")
+    def Seek(self, us: int) -> None:
+        self._player.seek(us / 1_000_000)
 
-    @pyqtSlot(str, int)
-    def SetPosition(self, _track_id: str, position_us: int) -> None:
-        self._player.seek_absolute(max(0.0, position_us / 1_000_000))
+    @dbus.service.method(PLAYER_IFACE, in_signature="ox", out_signature="")
+    def SetPosition(self, _tid: dbus.ObjectPath, us: int) -> None:
+        self._player.seek_absolute(max(0.0, us / 1_000_000))
 
-    @pyqtSlot(str)
-    def OpenUri(self, _uri: str) -> None:
-        pass
-
-    def _on_state_changed(self, state: PlaybackState) -> None:
-        status = _status_name(state.status)
-        if status != self._playback_status:
-            self._playback_status = status
-            self.playback_status_changed.emit(status)
-
-        artist = state.artist if state.artist and state.artist != "—" else "Unknown Artist"
-        title = state.title or "Nothing playing"
-        length_us = int(max(0.0, state.duration) * 1_000_000)
-
-        metadata = {
-            "xesam:title": title,
-            "xesam:artist": [artist],
-            "mpris:trackid": TRACK_ID,
-            "mpris:length": length_us,
-        }
-        if state.path:
-            metadata["xesam:url"] = state.path
-
-        if metadata != self._metadata:
-            self._metadata = metadata
-            self.metadata_changed.emit(metadata)
-
-        self._update_position(state.time_pos)
-
-    def _on_position_changed(self, time_pos: float, _duration: float) -> None:
-        self._update_position(time_pos)
-
-    def _update_position(self, time_pos: float) -> None:
-        position_us = int(max(0.0, time_pos) * 1_000_000)
-        if position_us != self._position_us:
-            self._position_us = position_us
-            self.position_changed.emit(position_us)
+    @dbus.service.method(PLAYER_IFACE, in_signature="s", out_signature="")
+    def OpenUri(self, uri: str) -> None:
+        from urllib.parse import unquote, urlparse
+        p = urlparse(uri)
+        if p.scheme == "file":
+            self._player.play(unquote(p.path))
+        elif p.scheme in ("http", "https"):
+            self._player.play(uri)
 
 
-class MprisService:
-    """Register Liminal on the session D-Bus for playerctl integration."""
+class MprisService(QObject):
+    """Register Liminal on session bus for playerctl/waybar."""
 
-    def __init__(self, player: PlayerBridge) -> None:
-        self._mpris = MprisPlayer(player)
-        self._bus = QDBusConnection.sessionBus()
+    def __init__(self, player: PlayerBridge, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._obj = _MprisObj(player)
+        logger.info("MPRIS on bus as %s", BUS_NAME)
 
-        if not self._bus.registerObject(
-            MPRIS_PATH,
-            self._mpris,
-            QDBusConnection.RegisterOption.ExportAllContents,
-        ):
-            logger.warning("MPRIS: failed to register object at %s", MPRIS_PATH)
-            return
-
-        if not self._bus.registerService(MPRIS_SERVICE):
-            logger.warning("MPRIS: failed to register service %s", MPRIS_SERVICE)
-            return
-
-        logger.info("MPRIS registered as %s", MPRIS_SERVICE)
-
-    def set_transport_handlers(
-        self,
-        on_next: Callable[[], None],
-        on_previous: Callable[[], None],
-    ) -> None:
-        self._mpris.set_transport_handlers(on_next, on_previous)
+    def set_transport_handlers(self, nxt: Callable, prev: Callable) -> None:
+        self._obj.set_transport(nxt, prev)
 
     def shutdown(self) -> None:
-        if self._bus.isConnected():
-            self._bus.unregisterService(MPRIS_SERVICE)
-            self._bus.unregisterObject(MPRIS_PATH)
+        try:
+            self._obj._bus.release_name(BUS_NAME)
+        except Exception:
+            pass
