@@ -28,6 +28,36 @@ _MAX_REDIRECTS = 5
 _SERIES_INITIAL_DOWNLOADS = 3
 _PLAYLIST_INITIAL_DOWNLOADS = 3
 
+
+def redeem_target_page(media_type: str) -> int:
+    """Library page index for a redeemed share (2 = Music, 3 = Videos)."""
+    kind = str(media_type or "video").strip().lower()
+    if kind in {"music", "playlist"}:
+        return 2
+    return 3
+
+
+def redeem_section_label(media_type: str) -> str:
+    """Human-readable destination section for redeem success toasts."""
+    kind = str(media_type or "video").strip().lower()
+    if kind in {"music", "playlist"}:
+        return "Music › Được chia sẻ với tôi"
+    return "Videos › Được chia sẻ với tôi"
+
+
+def redeem_success_message(item: dict) -> str:
+    """Build a redeem success toast from the redeemed share row."""
+    title = str(item.get("title") or "Nội dung").strip() or "Nội dung"
+    media_type = str(item.get("media_type") or "video").strip().lower()
+    section = redeem_section_label(media_type)
+    message = f"«{title}» đã được thêm vào mục {section} của bạn."
+    if media_type == "series":
+        message += f" Tập 1–{_SERIES_INITIAL_DOWNLOADS} sẽ được tải tự động."
+    elif media_type == "playlist":
+        message += f" Bài 1–{_PLAYLIST_INITIAL_DOWNLOADS} sẽ được tải tự động."
+    return message
+
+
 SHARED_ITEMS_FILE = CONFIG_DIR / "shared_items.json"
 SHARED_THUMB_DIR = Path(
     __import__("os").environ.get("XDG_CACHE_HOME", Path.home() / ".cache")

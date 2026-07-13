@@ -23,7 +23,7 @@ class ShareBridge(QObject):
     sharedUpdated = pyqtSignal()
     shareCreated = pyqtSignal(str)
     shareError = pyqtSignal(str)
-    redeemSuccess = pyqtSignal()
+    redeemSuccess = pyqtSignal(str)
     isLoadingChanged = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -95,17 +95,18 @@ class ShareBridge(QObject):
     async def _redeem(self, code: str) -> None:
         self._set_loading(True)
         try:
-            await share_manager.redeem_share_code(code)
+            item = await share_manager.redeem_share_code(code)
             items = share_manager.get_cached_items()
             if self._backend is not None:
                 self._backend.apply_shared_items(items)
-                for item in items:
-                    media_type = str(item.get("media_type") or "")
-                    if media_type == "series":
-                        self._backend.queueInitialSharedSeriesDownloads(str(item.get("id") or ""))
-                    elif media_type == "playlist":
-                        self._backend.queueInitialSharedPlaylistDownloads(str(item.get("id") or ""))
-            self.redeemSuccess.emit()
+                media_type = str(item.get("media_type") or "")
+                share_id = str(item.get("id") or "")
+                if media_type == "series":
+                    self._backend.queueInitialSharedSeriesDownloads(share_id)
+                elif media_type == "playlist":
+                    self._backend.queueInitialSharedPlaylistDownloads(share_id)
+                self._backend.setCurrentPage(share_manager.redeem_target_page(media_type))
+            self.redeemSuccess.emit(share_manager.redeem_success_message(item))
             self.sharedUpdated.emit()
         except asyncio.CancelledError:
             raise

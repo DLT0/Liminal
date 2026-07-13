@@ -31,7 +31,7 @@ Dialog {
 
         Text {
             Layout.fillWidth: true
-            text: "Gửi mã này cho bạn bè trong vòng 15 phút. Họ nhập mã trong Videos → Nhập mã."
+            text: "Gửi mã này cho bạn bè trong vòng 15 phút. Họ nhập mã tại Music hoặc Videos → Nhập mã."
             wrapMode: Text.Wrap
             font.family: Theme.fontFamily
             font.pixelSize: Theme.bodySize

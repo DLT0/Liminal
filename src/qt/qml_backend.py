@@ -2233,10 +2233,8 @@ class AppBackend(QObject):
             self._shared_item_to_model(item, index, pool="music")
             for index, item in enumerate(music_items)
         ]
-        if self._current_page == 3 and not self.inCollectionView and not self.inSharedSeriesView:
-            self._apply_library_filter(self._all_video_shared, self._video_shared_model)
-        if self._current_page == 2 and not self.inCollectionView and not self.inSharedPlaylistView:
-            self._apply_library_filter(self._all_music_shared, self._music_shared_model)
+        self._apply_library_filter(self._all_video_shared, self._video_shared_model)
+        self._apply_library_filter(self._all_music_shared, self._music_shared_model)
 
     @pyqtSlot(int)
     def dismissSharedItem(self, index: int) -> None:

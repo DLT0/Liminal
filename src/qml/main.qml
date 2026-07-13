@@ -104,8 +104,8 @@ ApplicationWindow {
                 shareToast.open()
             }
         }
-        function onRedeemSuccess() {
-            shareToast.text = "Đã thêm vào danh sách chia sẻ. Tập 1–3 sẽ được tải tự động."
+        function onRedeemSuccess(message) {
+            shareToast.text = message
             shareToast.open()
         }
     }
