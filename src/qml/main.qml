@@ -603,7 +603,7 @@ ApplicationWindow {
                                 y: backend.inCollectionView ? 0 : seriesTitle.y + seriesTitle.height + 4
                                 width: parent.width
                                 height: backend.inCollectionView ? parent.height : videoContent.seriesHeight
-                                visible: (videoContent.showSeries && !videoContent.inVideoDetail)
+                                visible: (videoContent.showSeries && !videoContent.inVideoDetail && !backend.videoSearchActive)
                                     || (videoContent.inVideoDetail && backend.inCollectionView)
                                 model: backend.inCollectionView ? backend.videoModel : backend.videoSeriesModel
                                 useVideoStyle: true
