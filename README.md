@@ -27,62 +27,61 @@ Trình phát đa phương tiện cục bộ cho Linux. Giao diện desktop xây 
 | Qt6 Multimedia | Phát video trong QML (`qml6-module-qtmultimedia`) |
 | PipeWire / PulseAudio | Khuyến nghị cho audio desktop |
 
-### Gói hệ thống theo distro
+## Cài đặt nhanh (Tự động)
 
-**Fedora:**
+Hỗ trợ các bản phân phối Fedora, Ubuntu/Debian/Mint, và Arch Linux. Lệnh này sẽ tự động cài các gói hệ thống cần thiết (mpv, ffmpeg, Qt6 Multimedia, MPRIS), tạo môi trường ảo Python và tạo shortcut desktop:
+
+```bash
+git clone https://github.com/hmduongdl/Liminal.git
+cd Liminal
+./setup.sh
+```
+
+---
+
+## Cài đặt thủ công
+
+Nếu bạn muốn kiểm soát từng bước cài đặt:
+
+### 1. Gói hệ thống theo distro
+
+<details>
+<summary><b>Fedora</b></summary>
+
 ```bash
 sudo dnf install mpv ffmpeg qt6-qtmultimedia
 ```
+*(Nếu dùng RPM Fusion, hãy cài `ffmpeg` theo hướng dẫn của RPM Fusion)*
+</details>
 
-Nếu dùng RPM Fusion, cài `ffmpeg` theo hướng dẫn của RPM Fusion.
+<details>
+<summary><b>Arch Linux</b></summary>
 
-**Arch Linux:**
 ```bash
-sudo pacman -S mpv ffmpeg qt6-declarative qt6-multimedia qt6-multimedia-ffmpeg
+sudo pacman -S mpv ffmpeg qt6-multimedia
 ```
+</details>
 
-**Ubuntu / Linux Mint:**
+<details>
+<summary><b>Ubuntu / Linux Mint</b></summary>
+
 ```bash
 sudo add-apt-repository universe
 sudo apt update
 sudo apt install mpv ffmpeg libqt6multimedia6 qml6-module-qtmultimedia
 ```
+</details>
 
-> Nếu cài PyQt6 bằng `pip` mà gặp lỗi `module "QtMultimedia" is not installed`, hãy cài các gói Qt Multimedia ở trên rồi tạo lại virtual environment.
-
-## Cài đặt
+### 2. Thiết lập môi trường ảo và dependencies
 
 ```bash
-git clone https://github.com/hmduongdl/Liminal.git
-cd Liminal
-python3 -m venv .venv
+python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+./scripts/install-desktop.sh
 ```
 
-### Cài đặt tối thiểu (không MPRIS)
-
-Khi `dbus-python` hoặc `PyGObject` không build được qua pip:
-
-```bash
-pip install -r requirements-minimal.txt
-```
-
-App vẫn chạy bình thường, chỉ không có phím media. Để bật MPRIS sau đó, cài gói distro và tạo lại venv:
-
-```bash
-# Fedora
-sudo dnf install python3-dbus python3-gobject
-python3 -m venv --system-site-packages .venv
-
-# Debian / Ubuntu
-sudo apt install python3-dbus python3-gi
-python3 -m venv --system-site-packages .venv
-
-# Arch
-sudo pacman -S python-dbus python-gobject
-python3 -m venv --system-site-packages .venv
-```
+*(Sử dụng `--system-site-packages` để ứng dụng nhận diện và sử dụng gói `dbus`/`gobject` hệ thống cho tính năng phím Media/MPRIS).*
 
 ## Chạy ứng dụng
 
