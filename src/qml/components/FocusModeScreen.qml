@@ -516,7 +516,7 @@ Item {
         // Two-line subtitles need a little more separation from text that
         // may already be burned into the video. Keep the overlay above the
         // controls while moving multi-line cues down slightly.
-        anchors.bottomMargin: lineCount > 1 ? 140 : 154
+        anchors.bottomMargin: lineCount > 1 ? 136 : 154
         anchors.leftMargin: parent.width * 0.08
         anchors.rightMargin: parent.width * 0.08
         visible: root.subtitlesEnabled
