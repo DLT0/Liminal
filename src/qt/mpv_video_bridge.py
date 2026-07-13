@@ -22,14 +22,13 @@ from PyQt6.QtQuick import QQuickItem
 from PyQt6.QtWidgets import QWidget
 
 from src.config import mpv_audio_gain_args
+from src.player import mpv_end_reason_is_eof
 
 logger = logging.getLogger(__name__)
 
 _RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", f"/tmp/liminal-{os.getuid()}")
 os.makedirs(_RUNTIME_DIR, exist_ok=True)
 IPC_SOCKET = os.path.join(_RUNTIME_DIR, f"mpv-video-{os.getpid()}.sock")
-
-_END_FILE_EOF = 0
 
 # High-quality decode + upscale/downscale.  gpu-next is used when available.
 _MPV_QUALITY_ARGS = (
@@ -427,9 +426,9 @@ class MpvVideoBridge(QObject):
             return
         ev = msg["event"]
         if ev == "end-file":
-            reason = msg.get("reason", _END_FILE_EOF)
+            reason = msg.get("reason", 0)
             self._set_playing(False)
-            if reason == _END_FILE_EOF:
+            if mpv_end_reason_is_eof(reason):
                 self.mediaEnded.emit()
         elif ev == "property-change":
             name = msg.get("name")

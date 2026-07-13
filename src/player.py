@@ -39,6 +39,18 @@ _END_FILE_QUIT = 2
 _END_FILE_STOP = 4
 
 
+def mpv_end_reason_is_eof(reason) -> bool:
+    """True when mpv end-file means natural playback completion.
+
+    mpv JSON IPC may send integer codes (legacy) or string names (mpv 0.33+).
+    """
+    if reason == _END_FILE_EOF:
+        return True
+    if isinstance(reason, str):
+        return reason.lower() == "eof"
+    return False
+
+
 def _mpv_executable() -> str | None:
     """Resolve mpv once through PATH, including distro/Flatpak wrappers."""
     return shutil.which(os.environ.get("LIMINAL_MPV", "mpv"))
@@ -386,7 +398,7 @@ class LiminalPlayer:
                 self.state.status = PlaybackStatus.STOPPED
                 self.state.time_pos = 0.0
                 # Only auto-advance on natural EOF; explicit stop must not race it.
-                if reason == _END_FILE_EOF and self._on_end_file:
+                if mpv_end_reason_is_eof(reason) and self._on_end_file:
                     self._on_end_file()
             elif ev == "shutdown":
                 self.state.status = PlaybackStatus.STOPPED
