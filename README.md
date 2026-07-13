@@ -1,62 +1,87 @@
 # Liminal
 
-Trình phát đa phương tiện cục bộ (local media player) cho Linux. Giao diện desktop hiện đại xây dựng bằng **PyQt6** và **QML**. Video phát trực tiếp trong cửa sổ ứng dụng qua **Qt Multimedia + FFmpeg**; mpv được dùng cho phần phát nhạc.
+Trình phát đa phương tiện cục bộ cho Linux. Giao diện desktop xây dựng bằng **PyQt6** và **QML** — nhạc phát qua **mpv**, video phát trong app bằng **Qt Multimedia** hoặc **mpv** tùy cấu hình.
 
 ## Tính năng
 
-- **Thư viện cục bộ** — Duyệt nhạc (album/đĩa đơn), video và playlist theo lưới trực quan
-- **Phát nhạc & video** — Nhạc qua mpv; video MP4, MKV… phát ngay trong app bằng Qt Multimedia
-- **Tải từ YouTube** — Tìm kiếm hoặc dán link, xuất MP3 hoặc MP4 với tuỳ chọn chất lượng
-- **Waveform seek bar** — Thanh tiến trình dạng waveform (kiểu SoundCloud), click để seek
+- **Thư viện cục bộ** — Duyệt nhạc (album, đĩa đơn, playlist), video và series theo lưới trực quan
+- **Phát nhạc & video** — Nhạc qua mpv; video trong Focus Mode bằng Qt Multimedia hoặc cửa sổ mpv riêng
+- **Focus Mode** — Xem phim toàn màn hình với điều khiển tập, phụ đề SRT và thanh tiến trình
+- **Tải media** — Tìm kiếm YouTube, dán link (YouTube, Google Drive, playlist) qua `yt-dlp`
+- **Chia sẻ** — Tạo mã chia sẻ playlist, đĩa đơn hoặc series; nhập mã từ bạn bè để xem/nghe
+- **Series** — Tự nhận diện mùa/tập từ tên file, sắp xếp thứ tự tập, chia sẻ cả series
 - **Quản lý thư viện** — Tạo thư mục, sắp xếp, đổi ảnh bìa, chỉnh metadata
-- **Tuỳ chỉnh giao diện** — Chỉnh màu, sidebar, search, player bar qua `settings.json` (key `liminal.*` kiểu VS Code)
-- **MPRIS** — Điều khiển phát nhạc qua phím media và desktop environment
+- **Tuỳ chỉnh giao diện** — Màu sắc, sidebar, layout qua `settings.json` (key `liminal.*` kiểu VS Code)
+- **MPRIS** — Điều khiển phát nhạc bằng phím media và tích hợp desktop (tuỳ chọn)
+- **System tray** — Thu nhỏ xuống khay hệ thống, chỉ một instance mỗi phiên
+
+> **Đang phát triển:** Podcast, Book
 
 ## Yêu cầu hệ thống
 
-| Thành phần | Phiên bản / ghi chú |
+| Thành phần | Ghi chú |
 |---|---|
 | Python | 3.10+ |
-| mpv | Engine phát nhạc |
-| Qt Multimedia | Bề mặt phát video trong QML |
-| FFmpeg | Backend video, chuyển đổi audio, phân tích waveform, tải media |
-| PipeWire / PulseAudio | Khuyến nghị cho tích hợp desktop (MPRIS, audio) |
+| mpv | Engine phát nhạc; tuỳ chọn cho video |
+| FFmpeg | Tải/chuyển đổi media, xử lý thumbnail |
+| Qt6 Multimedia | Phát video trong QML (`qml6-module-qtmultimedia`) |
+| PipeWire / PulseAudio | Khuyến nghị cho audio desktop |
+
+### Gói hệ thống theo distro
 
 **Fedora:**
 ```bash
-sudo dnf install mpv portaudio qt6-qtmultimedia
+sudo dnf install mpv ffmpeg qt6-qtmultimedia
 ```
 
-Nếu dùng RPM Fusion để có FFmpeg đầy đủ, cài thêm gói `ffmpeg` theo hướng dẫn của RPM Fusion. Bản Fedora thông thường vẫn cần `qt6-qtmultimedia` để QML import được `QtMultimedia`.
+Nếu dùng RPM Fusion, cài `ffmpeg` theo hướng dẫn của RPM Fusion.
 
 **Arch Linux:**
 ```bash
-sudo pacman -S mpv ffmpeg portaudio qt6-declarative qt6-multimedia qt6-multimedia-ffmpeg
+sudo pacman -S mpv ffmpeg qt6-declarative qt6-multimedia qt6-multimedia-ffmpeg
 ```
 
 **Ubuntu / Linux Mint:**
 ```bash
 sudo add-apt-repository universe
 sudo apt update
-sudo apt install mpv ffmpeg portaudio19-dev libqt6multimedia6 qml6-module-qtmultimedia
+sudo apt install mpv ffmpeg libqt6multimedia6 qml6-module-qtmultimedia
 ```
 
-Liminal dùng module Qt có cùng runtime với PyQt6. Nếu bạn cài PyQt6 bằng `pip` mà gặp `module \"QtMultimedia\" is not installed`, ưu tiên cài PyQt6 từ package manager của distro hoặc tạo lại virtual environment sau khi đã cài các gói Qt Multimedia ở trên.
+> Nếu cài PyQt6 bằng `pip` mà gặp lỗi `module "QtMultimedia" is not installed`, hãy cài các gói Qt Multimedia ở trên rồi tạo lại virtual environment.
 
 ## Cài đặt
 
 ```bash
 git clone https://github.com/hmduongdl/Liminal.git
 cd Liminal
-pip install -r requirements.txt
-```
-
-Khuyến nghị dùng virtual environment:
-
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+### Cài đặt tối thiểu (không MPRIS)
+
+Khi `dbus-python` hoặc `PyGObject` không build được qua pip:
+
+```bash
+pip install -r requirements-minimal.txt
+```
+
+App vẫn chạy bình thường, chỉ không có phím media. Để bật MPRIS sau đó, cài gói distro và tạo lại venv:
+
+```bash
+# Fedora
+sudo dnf install python3-dbus python3-gobject
+python3 -m venv --system-site-packages .venv
+
+# Debian / Ubuntu
+sudo apt install python3-dbus python3-gi
+python3 -m venv --system-site-packages .venv
+
+# Arch
+sudo pacman -S python-dbus python-gobject
+python3 -m venv --system-site-packages .venv
 ```
 
 ## Chạy ứng dụng
@@ -65,74 +90,90 @@ pip install -r requirements.txt
 python3 app_qt.py
 ```
 
-Hoặc qua launcher script (chỉ cho phép một instance mỗi session):
+Hoặc qua launcher (một instance mỗi phiên):
 
 ```bash
 ./scripts/run-liminal.sh
 ```
 
-### Thêm shortcut trên desktop
-
-File `liminal.desktop.in` là template — không chứa đường dẫn cố định. Sau khi clone, chạy:
+### Shortcut trên desktop
 
 ```bash
 ./scripts/install-desktop.sh
 ```
 
-Script sẽ tạo `~/.local/share/applications/liminal.desktop` với đường dẫn đúng theo vị trí clone trên máy bạn.
+Script tạo `~/.local/share/applications/liminal.desktop` với đường dẫn đúng theo vị trí clone trên máy bạn.
 
-## Tải media từ YouTube
+## Tải media
 
-Trang **Download** dùng `yt-dlp` với hai chế độ:
+Trang **Download** hỗ trợ hai chế độ:
 
-- **Tìm kiếm** — Nhập từ khoá, chọn kết quả để tải
-- **Dán link** — Dán trực tiếp URL YouTube
+| Chế độ | Mô tả |
+|---|---|
+| **Tìm kiếm** | Nhập từ khoá, chọn kết quả để tải |
+| **Dán link** | Dán URL YouTube, Google Drive hoặc playlist |
 
-Tuỳ chọn đầu ra:
+Đầu ra:
 
 - **Nhạc** — MP3
 - **Video** — MP4 (480p, 720p, 1080p, 2K, 4K, Max)
 
-File tải về lưu vào thư mục Music hoặc Videos đã cấu hình trong Settings.
+File tải về lưu vào thư mục Music hoặc Videos trong Settings. YouTube có thể dùng cookie trình duyệt hoặc OAuth — cấu hình trong `settings.json` (`youtube_auth_mode`, `youtube_browser`, …).
 
 Kiểm tra nhanh:
+
 ```bash
 python3 -c "import yt_dlp; print(yt_dlp.version.__version__)"
 ffmpeg -version
 ```
 
-## Waveform seek bar
+Trong Settings, bấm **Cập nhật yt-dlp** khi tải xuống gặp lỗi do YouTube thay đổi.
 
-Khi bật **Show Visualizer** trong Settings, thanh tiến trình được thay bằng waveform tương tác (`SoundCloudWaveform`):
+## Chia sẻ media
 
-1. Khi phát một bài nhạc, `waveform_analyzer.py` dùng **ffmpeg** decode file và tính ~150 bin amplitude
-2. Kết quả được cache tại `~/.config/liminal/waveforms/`
-3. QML vẽ waveform với màu theo vị trí phát và hỗ trợ hover/seek
+Liminal hỗ trợ chia sẻ playlist nhạc, đĩa đơn và series phim qua **mã ngắn**:
 
-Tắt visualizer sẽ quay lại slider tiến trình thông thường.
+1. Chọn nội dung trong thư viện → **Chia sẻ** → nhận mã
+2. Bạn bè vào **Videos** hoặc **Music** → **Nhập mã** → xem/nghe
+3. Series chia sẻ sẽ tự tải 3 tập đầu; các tập còn lại tải khi phát
+
+Chỉ hỗ trợ link **YouTube** và **Google Drive**. File tải qua trang Download sẽ lưu `source_url` để chia sẻ sau này.
+
+## Focus Mode & phụ đề
+
+Khi mở video, Liminal chuyển sang **Focus Mode** — giao diện xem phim toàn màn hình với:
+
+- Danh sách tập (series)
+- Phụ đề SRT/VTT đặt cạnh file video (`.srt`, `.vtt`)
+- Điều khiển âm lượng video độc lập với nhạc
+
+Trong **Settings → Trình phát video**, chọn:
+
+- **Trong ứng dụng (Qt Multimedia)** — mặc định
+- **mpv (cửa sổ riêng)** — hữu ích khi codec Qt Multimedia không phát được
 
 ## Cấu hình
 
-Một file duy nhất cho **cấu hình người dùng**: `~/.config/liminal/settings.json` (giống VS Code — chỉ ghi key cần thay đổi).
+Cấu hình người dùng: `~/.config/liminal/settings.json` — chỉ ghi key cần thay đổi, giống VS Code.
 
-Trạng thái phiên phát (bài đang nghe, vị trí seek, v.v.) lưu riêng tại `state.json` — app tự quản lý, không cần chỉnh tay.
+Trạng thái phiên phát (bài đang nghe, vị trí seek, …) lưu riêng tại `state.json`.
 
 | Nhóm key | Ví dụ |
 |---|---|
-| Ứng dụng | `media_root`, `volume`, `download_quality` |
+| Ứng dụng | `media_root`, `volume`, `download_quality`, `video_playback_backend` |
+| YouTube | `youtube_auth_mode`, `youtube_browser`, `youtube_cookies_file` |
 | Giao diện | `liminal.sidebar.width`, `liminal.colorCustomizations.accent` |
 | Layout | `liminal.layout.gridColumns`, `liminal.playerBar.alwaysVisible` |
 
-Chọn **Media Root** trong Settings — Liminal tự tạo các thư mục con:
+Chọn **Media Root** trong Settings — Liminal tự tạo:
 
 | Thư mục | Nội dung |
 |---|---|
-| `Music/` | File nhạc và album (thư mục con) |
-| `Videos/` | File video và playlist (thư mục con) |
+| `Music/` | Nhạc, album, playlist |
+| `Videos/` | Video, series, playlist |
+| `Books/` | Dành cho tính năng sách (sắp ra mắt) |
 
-### Tuỳ chỉnh giao diện (kiểu VS Code)
-
-Chỉ cần thêm key muốn override — phần còn lại giữ mặc định:
+### Tuỳ chỉnh giao diện
 
 ```json
 {
@@ -146,7 +187,7 @@ Chỉ cần thêm key muốn override — phần còn lại giữ mặc định:
 }
 ```
 
-Hoặc dùng key dạng chấm:
+Key dạng chấm cũng được hỗ trợ:
 
 ```json
 {
@@ -155,18 +196,7 @@ Hoặc dùng key dạng chấm:
 }
 ```
 
-Hoặc nhóm trong object `liminal`:
-
-```json
-{
-  "liminal": {
-    "sidebar": { "width": 240 },
-    "colorCustomizations": { "accent": "#3b82f6" }
-  }
-}
-```
-
-Xem `settings.json.example` trong repo. Khởi động lại app sau khi sửa. Trong Settings, bấm **Mở thư mục** để mở nhanh `~/.config/liminal/`.
+Xem `settings.json.example` để biết đầy đủ các key. Khởi động lại app sau khi sửa.
 
 ## Định dạng hỗ trợ
 
@@ -174,40 +204,52 @@ Xem `settings.json.example` trong repo. Khởi động lại app sau khi sửa. 
 
 **Video:** `.mp4` `.mkv` `.avi` `.mov` `.webm` `.m4v` `.ts` `.wmv`
 
+**Phụ đề:** `.srt` `.vtt`
+
+**Sách (sắp ra mắt):** `.pdf` `.epub` `.mobi` `.azw3` `.fb2` `.djvu` `.cbr` `.cbz`
+
 ## Cấu trúc dự án
 
 ```text
 Liminal/
-├── app_qt.py                 # Entry point — PyQt6 + QML
-├── app.py                    # Entry point — Textual TUI (tuỳ chọn)
-├── requirements.txt
-├── liminal.desktop.in        # Template desktop entry
+├── app_qt.py                    # Entry point — PyQt6 + QML
+├── app.py                       # Entry point — Textual TUI (tuỳ chọn)
+├── requirements.txt             # Cài đặt đầy đủ (có MPRIS)
+├── requirements-minimal.txt     # Cài đặt không MPRIS
+├── settings.json.example
+├── liminal.desktop.in
 ├── scripts/
-│   ├── run-liminal.sh        # Launcher (single instance)
-│   └── install-desktop.sh    # Cài shortcut vào ~/.local/share/applications/
+│   ├── run-liminal.sh           # Launcher (single instance)
+│   └── install-desktop.sh       # Cài desktop shortcut
 └── src/
-    ├── player.py             # MPV wrapper, JSON IPC
-    ├── downloader.py         # Tải media từ YouTube (yt-dlp)
-    ├── scanner.py            # Quét file media
-    ├── waveform_analyzer.py  # Phân tích waveform offline (ffmpeg)
-    ├── audio_visualizer.py   # FFT realtime từ PipeWire monitor
-    ├── settings_store.py     # settings.json — app + user overrides
-    ├── ui_config.py            # Resolve liminal.* UI keys for QML
-    ├── metadata_store.py     # Metadata và ảnh bìa tuỳ chỉnh
-    ├── mpris_service.py        # Tích hợp MPRIS
+    ├── player.py                # MPV wrapper, JSON IPC
+    ├── downloader.py            # Tải media (yt-dlp, Google Drive)
+    ├── google_drive.py          # Tải file/folder Google Drive
+    ├── scanner.py               # Quét file media
+    ├── share_manager.py         # API chia sẻ & cache
+    ├── series_layout.py         # Nhận diện mùa/tập series
+    ├── playlist_layout.py       # Sắp xếp playlist nhạc
+    ├── metadata_store.py        # Metadata & ảnh bìa
+    ├── settings_store.py        # settings.json
+    ├── state_store.py           # state.json — phiên phát
+    ├── ui_config.py             # Resolve key liminal.* cho QML
+    ├── mpris_service.py         # Tích hợp MPRIS (tuỳ chọn)
+    ├── config.py                # Extension, browser cookies, mpv
     ├── qml/
     │   ├── main.qml
-    │   ├── components/       # PlayerBar, Download, LibraryPage, SoundCloudWaveform…
-    │   └── Liminal/          # Theme singleton
+    │   ├── components/          # PlayerBar, Download, FocusModeScreen…
+    │   └── Liminal/             # Theme singleton
     └── qt/
-        ├── qml_app.py        # Khởi tạo QML engine
-        ├── qml_backend.py    # AppBackend — cầu nối Python ↔ QML
-        └── intro_splash.py   # Màn hình intro
+        ├── qml_app.py           # Khởi tạo QML engine
+        ├── qml_backend.py       # AppBackend — Python ↔ QML
+        ├── share_bridge.py      # Bridge chia sẻ cho QML
+        ├── mpv_video_bridge.py  # Video mpv trong QML
+        └── intro_splash.py      # Màn hình intro
 ```
 
 ## Giao diện TUI (tuỳ chọn)
 
-Liminal còn có phiên bản terminal dùng Textual:
+Phiên bản terminal dùng Textual (đã có trong `requirements.txt`):
 
 ```bash
 python3 app.py
