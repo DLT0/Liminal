@@ -6,6 +6,7 @@ import logging
 import random
 import asyncio
 import shutil
+import srt
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from src.metadata_store import (
     migrate_metadata,
     get_metadata,
     read_embedded_metadata,
+    find_video_subtitle_paths,
     read_video_thumbnail,
     resolve_display,
     resolve_source_id,
@@ -86,6 +88,8 @@ logger = logging.getLogger(__name__)
 
 _PLAYER_BAR_IDLE_MS = 10 * 60 * 1000
 _LIBRARY_HOTLOAD_MS = 10 * 1000
+_LIBRARY_HOTLOAD_DOWNLOAD_MS = 10 * 1000
+_SHARED_PROGRESS_DEBOUNCE_MS = 1000
 
 APP_ICON_PATH = Path(__file__).resolve().parent / "liminal.png"
 
@@ -469,6 +473,15 @@ class AppBackend(QObject):
         self._library_hotload_timer.setInterval(_LIBRARY_HOTLOAD_MS)
         self._library_hotload_timer.timeout.connect(self._on_library_hotload_tick)
 
+        self._shared_progress_save_timer = QTimer(self)
+        self._shared_progress_save_timer.setSingleShot(True)
+        self._shared_progress_save_timer.setInterval(_SHARED_PROGRESS_DEBOUNCE_MS)
+        self._shared_progress_save_timer.timeout.connect(self._flush_shared_progress_state)
+        self._shared_series_pending_persist: set[str] = set()
+        self._shared_playlist_pending_persist: set[str] = set()
+        self._active_video_download_subdirs: dict[str, int] = {}
+        self._active_music_download_subdirs: dict[str, int] = {}
+
         self._music_paths: list[str] = []
         self._current_path = ""
         self._current_audio_only = True
@@ -547,6 +560,9 @@ class AppBackend(QObject):
         self._video_is_playing = False
         self._video_position = 0
         self._video_duration = 0
+        self._subtitle_cues: list[dict] = []
+        self._subtitle_available = False
+        self._subtitle_index = 0
         self._current_episode_list: list[dict] = []
         self._current_episode_index = -1
         self._current_episode_series_key = ""
@@ -819,6 +835,37 @@ class AppBackend(QObject):
     @pyqtProperty(int, notify=videoStateChanged)
     def videoPosition(self) -> int:
         return self._video_position
+
+    @pyqtProperty(bool, notify=videoStateChanged)
+    def subtitleAvailable(self) -> bool:
+        return self._subtitle_available
+
+    @pyqtProperty(str, notify=videoStateChanged)
+    def currentSubtitleText(self) -> str:
+        if not self._subtitle_available or not self._subtitle_cues:
+            return ""
+
+        position = max(0, self._video_position)
+        index = min(max(0, self._subtitle_index), len(self._subtitle_cues) - 1)
+
+        # Most position updates move forward by a few milliseconds. Seeking
+        # backwards is handled by walking from the last known cue instead of
+        # scanning the whole subtitle list on every videoStateChanged signal.
+        if position < self._subtitle_cues[index]["start_ms"]:
+            while index > 0 and position < self._subtitle_cues[index]["start_ms"]:
+                index -= 1
+        else:
+            while (
+                index + 1 < len(self._subtitle_cues)
+                and position >= self._subtitle_cues[index]["end_ms"]
+            ):
+                index += 1
+
+        self._subtitle_index = index
+        cue = self._subtitle_cues[index]
+        if cue["start_ms"] <= position < cue["end_ms"]:
+            return cue["text"]
+        return ""
 
     @pyqtProperty(int, notify=videoStateChanged)
     def videoDuration(self) -> int:
@@ -1348,6 +1395,7 @@ class AppBackend(QObject):
 
     @pyqtSlot(str, str)
     def enterFocusMode(self, path: str, title: str = "") -> None:
+        self._load_focus_subtitles(path)
         episode_list, episode_index, series_key = self._episode_context_for_path(path)
         if series_key != self._current_episode_series_key:
             self._current_episode_list = episode_list
@@ -1369,6 +1417,38 @@ class AppBackend(QObject):
             self._is_full_screen = True
             self.fullScreenChanged.emit()
         # FocusModeScreen uses Qt Multimedia's portable QML backend.
+
+    def _load_focus_subtitles(self, path: str) -> None:
+        self._subtitle_cues = []
+        self._subtitle_available = False
+        self._subtitle_index = 0
+        if not path or _is_remote(path):
+            self.videoStateChanged.emit()
+            return
+
+        source_path = QUrl(path).toLocalFile() if path.startswith("file:") else path
+        video_path = Path(source_path).expanduser()
+        subtitle_paths = find_video_subtitle_paths(video_path)
+        if not subtitle_paths:
+            self.videoStateChanged.emit()
+            return
+
+        try:
+            text = Path(subtitle_paths[0]).read_text(encoding="utf-8-sig")
+            self._subtitle_cues = [
+                {
+                    "start_ms": max(0, int(cue.start.total_seconds() * 1000)),
+                    "end_ms": max(0, int(cue.end.total_seconds() * 1000)),
+                    "text": cue.content.strip(),
+                }
+                for cue in srt.parse(text)
+                if cue.content.strip() and cue.end > cue.start
+            ]
+            self._subtitle_available = bool(self._subtitle_cues)
+        except (OSError, UnicodeError, ValueError):
+            self._subtitle_cues = []
+            self._subtitle_available = False
+        self.videoStateChanged.emit()
 
     def _episode_context_for_path(self, path: str) -> tuple[list[dict], int, str]:
         if not path:
@@ -1485,6 +1565,9 @@ class AppBackend(QObject):
         self._current_episode_list = []
         self._current_episode_index = -1
         self._current_episode_series_key = ""
+        self._subtitle_cues = []
+        self._subtitle_available = False
+        self._subtitle_index = 0
         self._player_bar_visible = self._player_bar_always_visible
         self.videoStateChanged.emit()
         self.focusModeChanged.emit()
@@ -2746,20 +2829,12 @@ class AppBackend(QObject):
         match = self._find_shared_episode(key)
         if match is not None:
             series, episode = match
-            episode["download_percent"] = percent
-            episode["download_status"] = "downloading"
-            episode["is_downloading"] = True
-            self._persist_shared_series_state(series)
-            self._refresh_shared_series_model(series)
+            self._patch_shared_episode_progress(series, episode, percent)
             return
         playlist_match = self._find_shared_playlist_track(key)
         if playlist_match is not None:
             playlist, track = playlist_match
-            track["download_percent"] = percent
-            track["download_status"] = "downloading"
-            track["is_downloading"] = True
-            self._persist_shared_playlist_state(playlist)
-            self._refresh_shared_playlist_model(playlist)
+            self._patch_shared_track_progress(playlist, track, percent)
             return
         item = self._find_shared_item(key)
         if item is None or item.get("is_series") or item.get("is_playlist"):
@@ -2770,7 +2845,86 @@ class AppBackend(QObject):
         pool = "music" if item.get("audio_only") else "video"
         self._emit_shared_item_changed(item, pool=pool)
 
+    def _find_shared_playlist_model(self, share_id: str) -> dict | None:
+        needle = (share_id or "").strip()
+        if not needle:
+            return None
+        for item in self._all_music_shared:
+            if str(item.get("share_id") or "") == needle:
+                return item
+        return None
+
+    def _schedule_shared_progress_persist(self, share_id: str, *, pool: str) -> None:
+        needle = (share_id or "").strip()
+        if not needle:
+            return
+        if pool == "music":
+            self._shared_playlist_pending_persist.add(needle)
+        else:
+            self._shared_series_pending_persist.add(needle)
+        if not self._shared_progress_save_timer.isActive():
+            self._shared_progress_save_timer.start()
+
+    def _flush_shared_progress_state(self) -> None:
+        for share_id in list(self._shared_series_pending_persist):
+            series = self._find_shared_series_model(share_id)
+            if series:
+                self._persist_shared_series_state(series)
+        self._shared_series_pending_persist.clear()
+        for share_id in list(self._shared_playlist_pending_persist):
+            playlist = self._find_shared_playlist_model(share_id)
+            if playlist:
+                self._persist_shared_playlist_state(playlist)
+        self._shared_playlist_pending_persist.clear()
+
+    def _patch_shared_episode_progress(
+        self,
+        series: dict,
+        episode: dict,
+        percent: float,
+    ) -> None:
+        episode["download_percent"] = percent
+        episode["download_status"] = "downloading"
+        episode["is_downloading"] = True
+        share_id = str(series.get("share_id") or series.get("id") or "")
+        self._schedule_shared_progress_persist(share_id, pool="video")
+        source_url = str(episode.get("source_url") or "").strip()
+        track_id = extract_youtube_id(source_url) or source_url
+        if self._shared_series_index >= 0:
+            model_item = self._video_shared_model.item_at(self._shared_series_index)
+            if model_item is not None and str(model_item.get("share_id") or "") == share_id:
+                self._video_model.update_download_state(
+                    track_id,
+                    percent=percent,
+                    status="downloading",
+                    is_downloading=True,
+                )
+
+    def _patch_shared_track_progress(
+        self,
+        playlist: dict,
+        track: dict,
+        percent: float,
+    ) -> None:
+        track["download_percent"] = percent
+        track["download_status"] = "downloading"
+        track["is_downloading"] = True
+        share_id = str(playlist.get("share_id") or playlist.get("id") or "")
+        self._schedule_shared_progress_persist(share_id, pool="music")
+        source_url = str(track.get("source_url") or "").strip()
+        track_id = extract_youtube_id(source_url) or source_url
+        if self._shared_playlist_index >= 0:
+            model_item = self._music_shared_model.item_at(self._shared_playlist_index)
+            if model_item is not None and str(model_item.get("share_id") or "") == share_id:
+                self._music_model.update_download_state(
+                    track_id,
+                    percent=percent,
+                    status="downloading",
+                    is_downloading=True,
+                )
+
     def _on_shared_download_finished(self, video_id: str, file_path: str) -> None:
+        self._flush_shared_progress_state()
         match = self._find_shared_episode(video_id)
         if match is not None:
             series, episode = match
@@ -2828,6 +2982,7 @@ class AppBackend(QObject):
             )
 
     def _on_shared_download_error(self, key: str, _message: str) -> None:
+        self._flush_shared_progress_state()
         match = self._find_shared_episode(key)
         if match is not None:
             series, episode = match
@@ -3453,6 +3608,59 @@ class AppBackend(QObject):
         subdir = output_subdir.strip()
         self._enqueue_download(_DownloadJob(value, media_type, subdir, self._download_quality))
 
+    @pyqtSlot(str, str, result=bool)
+    def removeQueuedDownload(self, url: str, media_kind: str) -> bool:
+        """Remove a job that is still waiting in the download queue.
+
+        A job already reported as ``downloadJobStarted`` is intentionally not
+        cancelled here: yt-dlp/ffmpeg does not currently expose a safe
+        cancellation handle, and removing only its row would leave the
+        backend counters inconsistent.  The UI hides the remove button for
+        that state.
+        """
+        value = str(url or "").strip()
+        kind = "music" if str(media_kind or "").strip() in {"music", "audio"} else "video"
+        if not value:
+            return False
+
+        removed: list[_DownloadJob] = []
+        queue = self._download_queue
+        if queue is not None:
+            queued_jobs = list(queue._queue)
+            kept_jobs = [
+                job
+                for job in queued_jobs
+                if not (job.url == value and job.media_type == kind)
+            ]
+            removed.extend(
+                job for job in queued_jobs
+                if job.url == value and job.media_type == kind
+            )
+            if removed:
+                queue._queue.clear()
+                queue._queue.extend(kept_jobs)
+
+        deferred = [
+            job for job in self._deferred_403_jobs
+            if job.url == value and job.media_type == kind
+        ]
+        if deferred:
+            removed.extend(deferred)
+            self._deferred_403_jobs = [
+                job for job in self._deferred_403_jobs
+                if not (job.url == value and job.media_type == kind)
+            ]
+
+        if not removed:
+            return False
+
+        for job in removed:
+            if job.media_type != "music":
+                self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
+            self._untrack_download_subdir(job.media_type, job.output_subdir)
+        self._refresh_download_concurrency()
+        return True
+
     @pyqtSlot(str, str)
     def queueLink(self, url: str, media_type: str) -> None:
         """Resolve a link in the background and enqueue all items (video or playlist)."""
@@ -3501,6 +3709,7 @@ class AppBackend(QObject):
         queue.put_nowait(job)
         if job.media_type != "music":
             self._pending_video_downloads += 1
+        self._track_download_subdir(job.media_type, job.output_subdir)
         self._start_library_hotload_timer()
         self._refresh_download_concurrency()
 
@@ -3571,6 +3780,9 @@ class AppBackend(QObject):
                 resolved_path,
                 source_id=video_id,
                 source_url=canonical_source_url(job.url, video_id=video_id),
+                subtitle_path=(
+                    find_video_subtitle_paths(Path(resolved_path)) or [None]
+                )[0],
             )
             if job.media_type == "music":
                 self._music_source_ids.add(video_id)
@@ -3581,6 +3793,8 @@ class AppBackend(QObject):
             self._download_jobs_in_progress -= 1
             if finished and job.media_type != "music":
                 self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
+            if finished:
+                self._untrack_download_subdir(job.media_type, job.output_subdir)
             self._refresh_download_concurrency()
 
     async def _download_worker(self) -> None:
@@ -4306,15 +4520,164 @@ class AppBackend(QObject):
             del self._playlist_order_undo[folder_key]
             self.playlistOrderUndoChanged.emit()
 
+    def _normalize_download_subdir(self, subdir: str) -> str:
+        return (subdir or "").strip().strip("/\\")
+
+    def _active_download_subdir_map(self, media_type: str) -> dict[str, int]:
+        if media_type == "music":
+            return self._active_music_download_subdirs
+        return self._active_video_download_subdirs
+
+    def _track_download_subdir(self, media_type: str, subdir: str) -> None:
+        key = self._normalize_download_subdir(subdir)
+        counters = self._active_download_subdir_map(media_type)
+        counters[key] = counters.get(key, 0) + 1
+
+    def _untrack_download_subdir(self, media_type: str, subdir: str) -> None:
+        key = self._normalize_download_subdir(subdir)
+        counters = self._active_download_subdir_map(media_type)
+        if counters.get(key, 0) <= 1:
+            counters.pop(key, None)
+        else:
+            counters[key] -= 1
+
+    def _merge_tracks_from_active_subdirs(
+        self,
+        *,
+        root: Path,
+        subdirs: dict[str, int],
+        extensions: set[str],
+        existing: list[MediaInfo] | None,
+    ) -> list[MediaInfo]:
+        from src.scanner import _media_from_file
+
+        tracks = list(existing or [])
+        seen = {info.canonical_path or info.path for info in tracks}
+        for subdir, count in subdirs.items():
+            if count <= 0:
+                continue
+            if subdir:
+                folder = root / subdir
+                new_infos = scan_directory(folder, extensions) if folder.exists() else []
+            elif root.exists():
+                new_infos = []
+                for f in sorted(root.iterdir()):
+                    if not f.is_file():
+                        continue
+                    ext = f.suffix.lower()
+                    if ext not in extensions:
+                        continue
+                    new_infos.append(
+                        _media_from_file(f, audio_only=ext in AUDIO_EXTS),
+                    )
+            else:
+                new_infos = []
+            for info in new_infos:
+                key = info.canonical_path or info.path
+                if key in seen:
+                    continue
+                seen.add(key)
+                tracks.append(info)
+        for i, track in enumerate(tracks, start=1):
+            track.index = i
+        return tracks
+
+    def _child_media_paths(
+        self,
+        root: Path,
+        child_names: set[str],
+        extensions: set[str],
+    ) -> set[str]:
+        paths: set[str] = set()
+        for child_name in child_names:
+            child = root / child_name
+            if not child.is_dir():
+                continue
+            for f in child.rglob("*"):
+                if not f.is_file() or f.suffix.lower() not in extensions:
+                    continue
+                try:
+                    paths.add(str(f.resolve()))
+                except OSError:
+                    paths.add(str(f))
+        return paths
+
+    def _hotload_video_download_dirs(self, *, push_to_models: bool = False) -> None:
+        root = Path(self._video_dir)
+        subdirs = self._active_video_download_subdirs
+        if not subdirs:
+            self._rebuild_video_root_catalog(push_to_models=push_to_models)
+            return
+
+        self._video_track_infos = self._merge_tracks_from_active_subdirs(
+            root=root,
+            subdirs=subdirs,
+            extensions=VIDEO_EXTS,
+            existing=self._video_track_infos,
+        )
+        root_items = self._library_infos_to_items(scan_library_folder(root))
+        top_levels = {
+            Path(subdir).parts[0]
+            for subdir in subdirs
+            if subdir and Path(subdir).parts
+        }
+        in_series = self._child_media_paths(root, top_levels, VIDEO_EXTS)
+
+        self._all_video_my_movies = [
+            item for item in root_items
+            if not item.get("is_collection")
+            and (item.get("canonical_path") or item.get("path") or "") not in in_series
+        ]
+        self._all_video_movies = []
+        self._all_video_series = [item for item in root_items if item.get("is_collection")]
+        self._all_video_tracks = self._library_infos_to_items(self._video_track_infos)
+        if push_to_models:
+            self._sync_video_root_view()
+
+    def _hotload_music_download_dirs(self, *, push_to_models: bool = False) -> None:
+        root = Path(self._music_dir)
+        subdirs = self._active_music_download_subdirs
+        if not subdirs:
+            self._rebuild_music_root_catalog(push_to_models=push_to_models)
+            return
+
+        music_tracks = self._merge_tracks_from_active_subdirs(
+            root=root,
+            subdirs=subdirs,
+            extensions=AUDIO_EXTS,
+            existing=self._music_track_infos,
+        )
+        self._music_track_infos = music_tracks
+        if not self._music_paths:
+            self._music_paths = [info.path for info in music_tracks]
+
+        root_items = self._library_infos_to_items(scan_library_folder(root))
+        top_levels = {
+            Path(subdir).parts[0]
+            for subdir in subdirs
+            if subdir and Path(subdir).parts
+        }
+        in_album = self._child_media_paths(root, top_levels, AUDIO_EXTS)
+
+        self._all_music_singles = [
+            item for item in root_items
+            if not item.get("is_collection")
+            and (item.get("canonical_path") or item.get("path") or "") not in in_album
+        ]
+        self._all_music_albums = self._music_albums_for_root(
+            [item for item in root_items if item.get("is_collection")],
+            tracks=music_tracks,
+        )
+        self._rebuild_all_music_tracks(music_tracks)
+        if push_to_models:
+            self._sync_music_root_view()
+
     def _hotload_after_download(self, job: _DownloadJob, file_path: str) -> None:
-        """Refresh Music/Videos views while a batch is still downloading."""
+        """Track new files during a batch; catalog refresh is batched by the hotload timer."""
         if job.media_type == "music":
             path = Path(file_path)
             if path.exists() and str(path) not in self._music_paths:
                 self._music_paths.append(str(path))
-            self._refresh_music_catalog()
-        else:
-            self._refresh_video_catalog()
 
     def _refresh_music_catalog(self) -> None:
         if not self._music_library_loaded:
@@ -4324,6 +4687,10 @@ class AppBackend(QObject):
         stack = self._folder_stack_for_page(2)
         if stack:
             self._reload_library_view(2)
+        elif self._active_music_download_subdirs:
+            self._hotload_music_download_dirs(push_to_models=True)
+            if self._current_page == 2:
+                self._music_model.set_items(self._music_singles_model._items)
         else:
             self._rebuild_music_root_catalog(push_to_models=True)
             if self._current_page == 2:
@@ -4337,12 +4704,18 @@ class AppBackend(QObject):
         if not self._video_library_loaded:
             self._load_video_library(refresh=True)
         else:
-            self._video_track_infos = None
             stack = self._folder_stack_for_page(3)
             if stack:
                 self._reload_library_view(3)
+            elif self._active_video_download_subdirs:
+                self._hotload_video_download_dirs(
+                    push_to_models=self._current_page == 3 and not self.inCollectionView,
+                )
             else:
-                self._rebuild_video_root_catalog(push_to_models=True)
+                self._video_track_infos = None
+                self._rebuild_video_root_catalog(
+                    push_to_models=self._current_page == 3 and not self.inCollectionView,
+                )
 
         if self._current_page == 3:
             self._sync_library_page_view(3)
@@ -4357,7 +4730,11 @@ class AppBackend(QObject):
         return queue is not None and not queue.empty()
 
     def _start_library_hotload_timer(self) -> None:
-        interval = 3000 if self._downloads_active() else _LIBRARY_HOTLOAD_MS
+        interval = (
+            _LIBRARY_HOTLOAD_DOWNLOAD_MS
+            if self._downloads_active()
+            else _LIBRARY_HOTLOAD_MS
+        )
         if self._library_hotload_timer.interval() != interval:
             self._library_hotload_timer.setInterval(interval)
         if not self._library_hotload_timer.isActive():

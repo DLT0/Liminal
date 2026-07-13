@@ -167,9 +167,14 @@ _VIDEO_YTDLP_OPTS: dict = {
     "fragment_retries": 10,
     "writethumbnail": True,
     "writeinfojson": True,
+    "writesubtitles": True,
+    "writeautomaticsub": True,
+    "subtitleslangs": ["vi", "en"],
+    "subtitlesformat": "srt",
     "postprocessors": [
         {"key": "FFmpegMetadata"},
         {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
+        {"key": "FFmpegSubtitlesConvertor", "format": "srt"},
     ],
 }
 

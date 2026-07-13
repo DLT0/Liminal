@@ -224,6 +224,34 @@ def read_video_thumbnail(path: Path) -> str:
         return ""
 
 
+def find_video_subtitle_paths(path: Path) -> list[str]:
+    """Return yt-dlp SRT sidecars for *path*, preferring Vietnamese then English."""
+    if not path.is_file():
+        return []
+    # Do not use a glob pattern containing ``path.stem`` here.  Video titles
+    # commonly contain glob metacharacters such as ``[`` and ``]`` (for
+    # example ``[VIETSUB]``), which would make an otherwise matching sidecar
+    # disappear from the result.  Compare the filename prefix literally.
+    prefix = f"{path.stem}."
+    candidates = [
+        candidate
+        for candidate in path.parent.iterdir()
+        if (
+            candidate.is_file()
+            and candidate.suffix.lower() == ".srt"
+            and candidate.name.startswith(prefix)
+        )
+    ]
+    priority = {"vi": 0, "en": 1}
+
+    def sort_key(candidate: Path) -> tuple[int, str]:
+        language = candidate.stem[len(path.stem) + 1:]
+        base_language = language.split("-", 1)[0].lower()
+        return priority.get(base_language, 2), candidate.name.lower()
+
+    return [str(candidate.resolve()) for candidate in sorted(candidates, key=sort_key)]
+
+
 def read_embedded_source_id(path: Path) -> str:
     """Read a YouTube video id from embedded tags (WOAS, comment, description)."""
     if MutagenFile is None:

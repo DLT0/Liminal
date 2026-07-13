@@ -1,7 +1,16 @@
-PyQt6>=6.5
+# Liminal — Python dependencies
+# System packages (mpv, ffmpeg, Qt6 Multimedia) are required — see README.md.
+
+# Core GUI
+PyQt6>=6.5,<7
 qasync>=0.24
-textual>=0.40
-yt-dlp>=2024.12.23
+
+# Media library & subtitles
 mutagen>=1.47.0
-dbus-python>=1.3
-PyGObject>=3.46
+srt>=3.5.0
+
+# YouTube / link downloads (needs system ffmpeg binary)
+yt-dlp>=2024.12.23
+
+# Optional terminal UI (python app.py)
+textual>=0.40

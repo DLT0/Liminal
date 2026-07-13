@@ -13,10 +13,21 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 from src.player import PlayerBridge
-from src.mpris_service import MprisService
 from src.qt.qml_app import prepare_qml_app, show_qml_app
 
 ICON_PATH = Path(__file__).resolve().parent / "src" / "qt" / "liminal.png"
+
+
+def _create_mpris_service(player: PlayerBridge):
+    """Register MPRIS when dbus/gi are available (pip or distro packages)."""
+    try:
+        from src.mpris_service import MprisService
+    except ImportError:
+        return None
+    try:
+        return MprisService(player)
+    except Exception:
+        return None
 
 
 def _configure_platform() -> None:
@@ -72,7 +83,7 @@ def main() -> None:
     asyncio.set_event_loop(loop)
 
     player = PlayerBridge()
-    mpris = MprisService(player)
+    mpris = _create_mpris_service(player)
 
     # Preload QML during intro so the main window appears as soon as intro ends.
     from src.qt.intro_splash import IntroSplash
@@ -103,7 +114,8 @@ def main() -> None:
         _try_show_main()
 
     intro.finished.connect(_on_intro_finished)
-    app.aboutToQuit.connect(mpris.shutdown)
+    if mpris is not None:
+        app.aboutToQuit.connect(mpris.shutdown)
     intro.start()
     QTimer.singleShot(0, _on_qml_prepared)
 

@@ -151,6 +151,24 @@ Item {
         }
     }
 
+    function removeQueueItem(index) {
+        if (index < 0 || index >= downloadQueue.count)
+            return
+        var row = downloadQueue.get(index)
+        if (row.state === "queued") {
+            if (!backend.removeQueuedDownload(row.url, row.mediaKind))
+                return
+        }
+
+        var resultIndex = findResultIndex(row.url)
+        if (resultIndex >= 0 && row.state !== "done") {
+            setResultDownloadState(resultIndex, "idle", row.mediaKind)
+            results.setProperty(resultIndex, "downloadProgress", 0)
+            results.setProperty(resultIndex, "downloadError", "")
+        }
+        downloadQueue.remove(index)
+    }
+
     function toggleSelection(index) {
         var row = results.get(index)
         results.setProperty(index, "selected", !row.selected)
@@ -505,9 +523,6 @@ Item {
                 results.setProperty(idx, "downloadProgress", value)
             else if (root.directDownloadActive && root.directDownloadState === "downloading")
                 root.directDownloadProgress = value
-            var qIdx = root.findQueueIndex(videoId, root.activeDownloadKind)
-            if (qIdx >= 0)
-                downloadQueue.setProperty(qIdx, "progress", value)
         }
 
         function onDownloadFinished(videoId, filePath) {
@@ -523,10 +538,8 @@ Item {
                 root.directDownloadState = "done"
             }
             var qIdx = root.findQueueIndex(videoId, kind)
-            if (qIdx >= 0) {
+            if (qIdx >= 0)
                 downloadQueue.setProperty(qIdx, "state", "done")
-                downloadQueue.setProperty(qIdx, "progress", 100)
-            }
             root.activeDownloadUrl = ""
             root.activeDownloadId = ""
             root.activeDownloadKind = ""
@@ -1008,7 +1021,7 @@ Item {
                     delegate: Rectangle {
                         id: queueRow
                         width: queueList.width
-                        height: queueRowContent.implicitHeight + 12
+                        height: 36
                         radius: 8
                         color: Theme.bgTop
                         border.color: Theme.cardBorder
@@ -1023,63 +1036,62 @@ Item {
                         required property real progress
                         required property string error
 
-                        ColumnLayout {
-                            id: queueRowContent
+                        readonly property string statusLabel:
+                            state === "done" ? "Xong"
+                            : state === "error" ? "Lỗi"
+                            : state === "downloading" ? "Đang tải"
+                            : "Chờ"
+
+                        readonly property color statusColor:
+                            state === "done" ? "#34D399"
+                            : state === "error" ? "#F87171"
+                            : state === "downloading" ? Theme.accentStart
+                            : Theme.textMuted
+
+                        RowLayout {
                             anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 4
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
 
-                            RowLayout {
+                            Text {
                                 Layout.fillWidth: true
-                                spacing: 8
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: title
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.captionSize
-                                    font.weight: Font.Medium
-                                    color: Theme.textPrimary
-                                    elide: Text.ElideRight
-                                }
-
-                                Text {
-                                    visible: batchLabel.length > 0
-                                    text: batchLabel
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: 10
-                                    color: Theme.textMuted
-                                    elide: Text.ElideRight
-                                    maximumLineCount: 1
-                                    Layout.maximumWidth: 120
-                                }
-
-                                AppIcon {
-                                    name: state === "done" ? "check"
-                                         : state === "downloading" ? "progress_activity"
-                                         : state === "error" ? "error"
-                                         : "schedule"
-                                    color: state === "done" ? "#34D399"
-                                           : state === "error" ? "#F87171"
-                                           : state === "downloading" ? Theme.accentStart
-                                           : Theme.textMuted
-                                    font.pixelSize: 14
-
-                                    RotationAnimation on rotation {
-                                        running: state === "downloading"
-                                        from: 0
-                                        to: 360
-                                        duration: 900
-                                        loops: Animation.Infinite
-                                    }
-                                }
+                                text: title
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.captionSize
+                                font.weight: Font.Medium
+                                color: Theme.textPrimary
+                                elide: Text.ElideRight
                             }
 
-                            WaveformProgress {
-                                Layout.fillWidth: true
-                                visible: state === "downloading" || state === "queued"
-                                progress: progress
-                                state: state
+                            Text {
+                                visible: batchLabel.length > 0
+                                text: batchLabel
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 10
+                                color: Theme.textMuted
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                                Layout.maximumWidth: 120
+                            }
+
+                            Text {
+                                text: statusLabel
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.captionSize
+                                font.weight: Font.Medium
+                                color: statusColor
+                            }
+
+                            IconButton {
+                                visible: state !== "downloading"
+                                icon: "close"
+                                iconSize: 16
+                                iconColor: Theme.textMuted
+                                Layout.preferredWidth: 24
+                                Layout.preferredHeight: 24
+                                tooltipText: state === "queued" ? "Xóa khỏi hàng đợi" : "Xóa khỏi danh sách"
+                                onClicked: root.removeQueueItem(index)
                             }
                         }
                     }
