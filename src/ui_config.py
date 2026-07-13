@@ -36,7 +36,7 @@ DEFAULT_COLORS: dict[str, str] = {
 }
 
 DEFAULT_UI: dict = {
-    "window": {"custom_title_bar": True, "opacity": 1.0},
+    "window": {"custom_title_bar": False, "opacity": 1.0},
     "colors": deepcopy(DEFAULT_COLORS),
     "sidebar": {"width": 220, "visible": True},
     "search": {"width": 340, "placeholder": "Tìm trong thư viện…"},

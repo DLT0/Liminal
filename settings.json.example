@@ -17,7 +17,7 @@
   "liminal.search.placeholder": "Tìm trong thư viện…",
   "liminal.playerBar.height": 108,
   "liminal.playerBar.alwaysVisible": false,
-  "liminal.window.customTitleBar": true,
+  "liminal.window.customTitleBar": false,
   "liminal.layout.gridColumns": 5,
   "liminal.layout.contentPadding": 24,
   "liminal.layout.cardRadius": 12,
