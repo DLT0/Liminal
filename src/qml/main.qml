@@ -555,16 +555,11 @@ ApplicationWindow {
                                 x: 0
                                 y: seriesTitle.y + seriesTitle.height + 4
                                 width: parent.width
-                            LibraryPage {
-                                id: videoSeriesPage
-                                objectName: "videoSeriesPage"
-                                x: 0
-                                y: seriesTitle.y + seriesTitle.height + 4
-                                width: parent.width
-                                height: backend.inCollectionView ? parent.height : videoContent.seriesHeight
-                                visible: (videoContent.showSeries && !videoContent.inVideoDetail)
-                                    || (videoContent.inVideoDetail && backend.inCollectionView)
-                                model: backend.inCollectionView ? backend.videoModel : backend.videoSeriesModel
+                                height: videoContent.seriesHeight
+                                visible: videoContent.showSeries
+                                    && !videoContent.inVideoDetail
+                                    && !backend.videoSearchActive
+                                model: backend.videoSeriesModel
                                 useVideoStyle: true
                                 widescreenPosters: true
                                 showScrollBar: false
@@ -572,14 +567,9 @@ ApplicationWindow {
                                 verticalContentMargin: 8
                                 gridColumns: videoContent.videoColumns
                                 showShareAction: true
-                                showBackButton: backend.inCollectionView
-                                breadcrumb: backend.libraryBreadcrumb
-                                embedCollectionDetail: true
-                                inCollectionView: backend.inCollectionView
-                                bannerTitle: backend.collectionBannerTitle
-                                bannerSubtitle: backend.collectionBannerSubtitle
-                                bannerImage: backend.collectionBannerImage
-                                hasPlayableTracks: backend.collectionHasPlayableTracks
+                                showBackButton: false
+                                embedCollectionDetail: false
+                                inCollectionView: false
                                 isPlaying: backend.isPlaying
                                 emptyTitle: "Chưa có phim bộ"
                                 emptyMessage: "Tạo thư mục trong thư mục Videos để thêm phim bộ."
@@ -763,6 +753,8 @@ ApplicationWindow {
         }
     }
 }
-
-
 }
+
+
+
+
