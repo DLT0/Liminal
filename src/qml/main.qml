@@ -462,22 +462,29 @@ ApplicationWindow {
                                 x: 0
                                 y: seriesTitle.y + seriesTitle.height + 4
                                 width: parent.width
-                                height: videoContent.seriesHeight
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
-                                model: backend.videoSeriesModel
+                                height: backend.inCollectionView ? parent.height : videoContent.seriesHeight
+                                visible: backend.inCollectionView || (!backend.videoSearchActive && !backend.inCollectionView)
+                                model: backend.inCollectionView ? backend.videoModel : backend.videoSeriesModel
                                 useVideoStyle: true
                                 widescreenPosters: true
                                 showScrollBar: false
                                 scrollEnabled: false
                                 verticalContentMargin: 8
                                 gridColumns: videoContent.videoColumns
-                                showBackButton: false
-                                inCollectionView: false
+                                showBackButton: backend.inCollectionView
+                                breadcrumb: backend.libraryBreadcrumb
+                                inCollectionView: backend.inCollectionView
+                                bannerTitle: backend.collectionBannerTitle
+                                bannerSubtitle: backend.collectionBannerSubtitle
+                                bannerImage: backend.collectionBannerImage
+                                hasPlayableTracks: backend.collectionHasPlayableTracks
                                 isPlaying: backend.isPlaying
                                 emptyTitle: "Chưa có phim bộ"
                                 emptyMessage: "Tạo thư mục trong thư mục Videos để thêm phim bộ."
                                 onPlayRequested: function(index) { backend.playMedia(index) }
                                 onOpenCollectionRequested: function(index) { backend.openVideoSeries(index) }
+                                onPlayAllRequested: backend.togglePlayCollection()
+                                onShufflePlayRequested: backend.playCollectionShuffled()
                             }
 
                             LibraryPage {
