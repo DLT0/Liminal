@@ -1,0 +1,15 @@
+# Minimal install — app runs without MPRIS media keys.
+# Use when dbus-python / PyGObject fail to build via pip:
+#   pip install -r requirements-minimal.txt
+#
+# For MPRIS, install distro packages and recreate the venv with system site packages:
+#   python3 -m venv --system-site-packages .venv
+#   Fedora:        sudo dnf install python3-dbus python3-gobject
+#   Debian/Ubuntu: sudo apt install python3-dbus python3-gi
+#   Arch:          sudo pacman -S python-dbus python-gobject
+
+PyQt6>=6.5,<7
+qasync>=0.24
+mutagen>=1.47.0
+srt>=3.5.0
+yt-dlp>=2024.12.23

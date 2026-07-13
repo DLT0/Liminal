@@ -11,7 +11,6 @@ from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
 from PyQt6.QtWidgets import QApplication
 
 from src.player import PlayerBridge
-from src.mpris_service import MprisService
 from src.qt.mpv_video_bridge import MpvVideoBridge
 from src.qt.share_bridge import ShareBridge
 from src.qt.qml_backend import AppBackend
@@ -47,7 +46,7 @@ def _register_theme() -> None:
 def prepare_qml_app(
     app: QApplication,
     player: PlayerBridge,
-    mpris: MprisService | None = None,
+    mpris=None,
 ) -> AppBackend:
     """Load QML and backend while intro may still be playing. Window stays hidden."""
     global _engine
@@ -142,7 +141,7 @@ def show_qml_app(backend: AppBackend) -> None:
 def run_qml_app(
     app: QApplication,
     player: PlayerBridge,
-    mpris: MprisService | None = None,
+    mpris=None,
 ) -> AppBackend:
     backend = prepare_qml_app(app, player, mpris)
     show_qml_app(backend)

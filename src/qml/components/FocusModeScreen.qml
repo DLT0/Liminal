@@ -16,6 +16,7 @@ Item {
     // Video mute is intentionally independent from backend.muted, which belongs
     // to the music/mpv player and must not mute video playback.
     property bool videoMuted: false
+    property bool subtitlesEnabled: true
     readonly property int autoHideDelay: 3000
     // Keep video inside the QML scene. The native mpv --wid surface can be
     // above QML overlays, which hides the episode sidebar and controls.
@@ -390,6 +391,16 @@ Item {
                 }
                 Item { Layout.fillWidth: true }
                 IconButton {
+                    icon: root.subtitlesEnabled ? "closed_caption" : "closed_caption_disabled"
+                    iconColor: "white"
+                    iconSize: 26
+                    visible: backend.subtitleAvailable
+                    onClicked: {
+                        root.subtitlesEnabled = !root.subtitlesEnabled
+                        root.showControls()
+                    }
+                }
+                IconButton {
                     icon: backend.isFullScreen ? "fullscreen_exit" : "fullscreen"
                     iconColor: "white"
                     iconSize: 26
@@ -496,6 +507,32 @@ Item {
         }
     }
 
+    Text {
+        id: subtitleOverlay
+        z: 10
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        // Two-line subtitles need a little more separation from text that
+        // may already be burned into the video. Keep the overlay above the
+        // controls while moving multi-line cues down slightly.
+        anchors.bottomMargin: lineCount > 1 ? 140 : 154
+        anchors.leftMargin: parent.width * 0.08
+        anchors.rightMargin: parent.width * 0.08
+        visible: root.subtitlesEnabled
+            && backend.subtitleAvailable
+            && backend.currentSubtitleText.length > 0
+        text: backend.currentSubtitleText
+        color: "white"
+        style: Text.Outline
+        styleColor: "black"
+        font.pixelSize: Math.max(20, Math.min(34, parent.width * 0.022))
+        font.weight: Font.DemiBold
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.Wrap
+        maximumLineCount: 3
+    }
+
     MouseArea {
         id: episodeSidebarBackdrop
         anchors.left: parent.left
@@ -597,8 +634,10 @@ Item {
                     }
                 }
 
-                TapHandler {
-                    onTapped: {
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton
+                    onClicked: {
                         backend.playEpisodeAtIndex(index)
                         root.episodeSidebarOpen = false
                         root.showControls()
