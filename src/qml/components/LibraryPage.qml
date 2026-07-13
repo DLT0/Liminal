@@ -10,6 +10,7 @@ Item {
     property string emptyMessage: "Tải media về hoặc thêm file vào playlist đã cấu hình."
     property bool useVinylStyle: false
     property bool useVideoStyle: false
+    property bool embedCollectionDetail: true
     property bool widescreenPosters: false
     property bool showBackButton: false
     property string breadcrumb: ""
@@ -19,6 +20,7 @@ Item {
     property string bannerTitle: ""
     property string bannerSubtitle: ""
     property string bannerImage: ""
+    property string bannerDescription: ""
     property bool hasPlayableTracks: false
     property bool isPlaying: false
     property bool showScrollBar: true
@@ -39,6 +41,10 @@ Item {
     CreateFolderDialog {
         id: createFolderDialog
         parent: Overlay.overlay
+        onFolderCreated: {
+            if (contextMenu.itemPath)
+                populateMoveTargets(contextMenu.itemPath)
+        }
     }
 
     EditMediaDialog {
@@ -65,7 +71,10 @@ Item {
         contextMenu.itemTitle = title
         contextMenu.itemArtist = artist
         contextMenu.itemPath = itemPath
-        if (!isCollection)
+        contextMenu.canMoveToCollection = root.useVideoStyle
+            ? backend.mediaCanMoveToSeries(itemPath)
+            : backend.mediaCanMoveToPlaylist(itemPath)
+        if (!isCollection && contextMenu.canMoveToCollection)
             populateMoveTargets(itemPath)
         else
             moveTargetsModel.clear()
@@ -93,6 +102,10 @@ Item {
         property string itemTitle: ""
         property string itemArtist: ""
         property string itemPath: ""
+        property bool canMoveToCollection: true
+        readonly property bool showMoveToCollectionMenu: root.allowMoveToCollection
+            && !contextMenu.isCollection
+            && contextMenu.canMoveToCollection
 
         StyledMenuItem {
             iconName: contextMenu.isCollection ? "folder_open" : "play_arrow"
@@ -101,32 +114,19 @@ Item {
             onTriggered: {
                 if (contextMenu.isCollection)
                     root.openCollectionRequested(contextMenu.itemIndex)
+                else if (root.useVideoStyle && !root.inCollectionView && !contextMenu.isCollection)
+                    backend.playVideoMyMovie(contextMenu.itemIndex)
                 else
                     root.playRequested(contextMenu.itemIndex)
             }
         }
-        StyledMenu {
-            id: moveToFolderMenu
-            title: root.useVideoStyle ? "Phân loại vào phim bộ" : "Thêm vào playlist khác"
-            visible: root.allowMoveToCollection && !contextMenu.isCollection
-
-            Instantiator {
-                model: moveTargetsModel
-                delegate: StyledMenuItem {
-                    iconName: "folder"
-                    required property string title
-                    required property string path
-                    text: title
-                    onTriggered: backend.moveMediaToFolder(contextMenu.itemPath, path)
-                }
-                onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
-                onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
-            }
-            StyledMenuItem {
-                visible: moveTargetsModel.count === 0
-                enabled: false
-                text: root.useVideoStyle ? "Không có thư mục nào" : "Không còn playlist khác"
-            }
+        StyledMenuItem {
+            id: moveToCollectionEntry
+            visible: contextMenu.showMoveToCollectionMenu
+            enabled: contextMenu.showMoveToCollectionMenu
+            iconName: "drive_file_move"
+            text: root.useVideoStyle ? "Phân loại vào phim bộ" : "Thêm vào playlist khác"
+            onTriggered: moveToFolderMenu.popup(moveToCollectionEntry, moveToCollectionEntry.width, 0)
         }
         StyledMenuItem {
             iconName: "image"
@@ -148,6 +148,12 @@ Item {
             text: "Chia sẻ"
             onTriggered: shareBridge.createShareFromLibraryPath(contextMenu.itemPath)
         }
+        StyledMenuItem {
+            visible: root.showShareAction && contextMenu.isCollection && root.useVideoStyle
+            iconName: "share"
+            text: "Chia sẻ phim bộ"
+            onTriggered: shareBridge.createShareFromSeriesPath(contextMenu.itemPath)
+        }
         StyledMenuSeparator {}
         StyledMenuItem {
             iconName: "delete"
@@ -157,17 +163,73 @@ Item {
         }
     }
 
+    Menu {
+        id: moveToFolderMenu
+        parent: Overlay.overlay
+        topPadding: 8
+        bottomPadding: 8
+        leftPadding: 8
+        rightPadding: 8
+
+        background: Rectangle {
+            radius: 10
+            color: Theme.glassStrong
+            border.width: 1
+            border.color: Theme.glassStrongBorder
+        }
+
+        StyledMenuItem {
+            visible: !root.useVideoStyle
+            iconName: "create_new_folder"
+            text: "Tạo playlist mới"
+            onTriggered: createFolderDialog.openDialog(false)
+        }
+        StyledMenuSeparator {
+            visible: !root.useVideoStyle
+        }
+
+        StyledMenuItem {
+            visible: root.useVideoStyle
+            iconName: "create_new_folder"
+            text: "Tạo phim bộ mới"
+            onTriggered: createFolderDialog.openDialog(true)
+        }
+        StyledMenuSeparator {
+            visible: root.useVideoStyle
+        }
+
+        Instantiator {
+            model: moveTargetsModel
+            delegate: StyledMenuItem {
+                iconName: "folder"
+                required property string title
+                required property string path
+                text: title
+                onTriggered: backend.moveMediaToFolder(contextMenu.itemPath, path)
+            }
+            onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
+            onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
+        }
+        StyledMenuItem {
+            visible: moveTargetsModel.count === 0
+            enabled: false
+            text: root.useVideoStyle ? "Chưa có phim bộ khác" : "Không còn playlist khác"
+        }
+    }
+
     // Collection detail (inside folder)
     CollectionDetailView {
         id: detailView
         anchors.fill: parent
-        visible: root.inCollectionView
+        visible: root.inCollectionView && root.embedCollectionDetail
         model: grid.model
         bannerTitle: root.bannerTitle
         bannerSubtitle: root.bannerSubtitle
         bannerImage: root.bannerImage
+        bannerDescription: root.bannerDescription
         hasPlayableTracks: root.hasPlayableTracks
         isPlaying: root.isPlaying
+        useSeriesStyle: root.useVideoStyle && root.inCollectionView
         onPlayRequested: function(index) { root.playRequested(index) }
         onOpenCollectionRequested: function(index) { root.openCollectionRequested(index) }
         onPlayAllRequested: function() { root.playAllRequested() }
@@ -178,7 +240,7 @@ Item {
     Item {
         id: lobbyView
         anchors.fill: parent
-        visible: !root.inCollectionView
+        visible: !root.inCollectionView || !root.embedCollectionDetail
 
         Row {
             id: breadcrumbRow
@@ -282,7 +344,7 @@ Item {
                             index,
                             isFolder,
                             model.title,
-                            model.subtitle,
+                            model.artist,
                             itemPath,
                             cell,
                             mouse.x,
@@ -293,14 +355,30 @@ Item {
 
                 FolderCard {
                     anchors.fill: parent
-                    visible: isFolder && !root.useVinylStyle
+                    visible: isFolder && !root.useVinylStyle && !root.useVideoStyle
                     title: model.title
                     subtitle: model.subtitle
                     imageSource: model.imageSource
                     accentColor: model.accentColor
                     onClicked: root.openCollectionRequested(index)
                     onContextMenuRequested: function(x, y) {
-                        root.openContextMenu(index, true, model.title, model.subtitle, itemPath, cell, x, y)
+                        root.openContextMenu(index, true, model.title, model.artist, itemPath, cell, x, y)
+                    }
+                }
+
+                SeriesCard {
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    visible: isFolder && root.useVideoStyle
+                    title: model.title
+                    subtitle: model.subtitle
+                    imageSource: model.imageSource
+                    episodeCount: model.childCount || 0
+                    accentColor: model.accentColor
+                    onClicked: root.openCollectionRequested(index)
+                    onContextMenuRequested: function(x, y) {
+                        root.openContextMenu(index, true, model.title, model.artist, itemPath, cell, x, y)
                     }
                 }
 
@@ -316,7 +394,7 @@ Item {
                     accentColor: model.accentColor
                     onClicked: root.openCollectionRequested(index)
                     onContextMenuRequested: function(x, y) {
-                        root.openContextMenu(index, true, model.title, model.subtitle, itemPath, cell, x, y)
+                        root.openContextMenu(index, true, model.title, model.artist, itemPath, cell, x, y)
                     }
                 }
 
@@ -395,7 +473,10 @@ Item {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Chuột phải để tạo playlist"
+                visible: root.allowCreateCollection
+                text: root.useVideoStyle
+                    ? "Chuột phải để tạo thư mục"
+                    : "Chuột phải để tạo playlist"
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.captionSize
                 color: Theme.textMuted

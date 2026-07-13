@@ -64,6 +64,7 @@ Item {
                 downloadPercent: model.downloadPercent
                 downloadStatus: model.downloadStatus
                 isDownloading: model.isDownloading
+                isSeries: model.isCollection
                 onPlayRequested: root.playRequested(index)
                 onDownloadRequested: root.downloadRequested(index)
                 onContextMenuRequested: function(x, y) {

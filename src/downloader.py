@@ -14,6 +14,14 @@ try:
 except ImportError:  # Keep the application launchable without the optional downloader.
     yt_dlp = None
 
+from src.google_drive import (
+    GoogleDriveError,
+    download_google_drive_file,
+    is_google_drive_folder,
+    is_google_drive_url,
+    resolve_google_drive_link,
+)
+
 
 class DownloadFailed(Exception):
     """A user-facing yt-dlp failure without leaking its traceback to QML."""
@@ -202,6 +210,8 @@ class Downloader:
 
         def blocking_resolve() -> dict[str, object]:
             try:
+                if is_google_drive_url(target) and not is_google_drive_folder(target):
+                    return resolve_google_drive_link(target, media_type)
                 if playlist_id:
                     opts = {
                         "quiet": True,
@@ -239,6 +249,8 @@ class Downloader:
                 return {"playlist_folder": None, "items": [row]}
             except DownloadFailed:
                 raise
+            except GoogleDriveError as exc:
+                raise DownloadFailed(str(exc)) from exc
             except Exception as exc:
                 raise DownloadFailed(f"Không thể đọc link: {exc}") from exc
 
@@ -292,6 +304,7 @@ class Downloader:
                 # Keep a JPEG sidecar next to the video. The library scanner
                 # resolves this file by matching the video's stem.
                 "writethumbnail": True,
+                "writeinfojson": True,
                 "postprocessors": [
                     {"key": "FFmpegMetadata"},
                     {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
@@ -302,12 +315,24 @@ class Downloader:
 
         def blocking_download() -> tuple[str, str]:
             try:
+                if is_google_drive_url(target) and not is_google_drive_folder(target):
+                    return download_google_drive_file(
+                        target,
+                        output_dir,
+                        media_type,
+                        progress_hook,
+                    )
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(target, download=True)
                     video_id = str((info or {}).get("id") or url_or_id)
                     prepared = Path(ydl.prepare_filename(info))
                     final_path = prepared.with_suffix(".mp3") if media_type == "music" else prepared
                     return video_id, str(final_path.resolve())
+            except GoogleDriveError as exc:
+                text = str(exc)
+                if "403" in text:
+                    raise Download403Failed(text) from exc
+                raise DownloadFailed(text) from exc
             except Exception as exc:
                 text = str(exc)
                 message = f"Tải xuống thất bại: {exc}"

@@ -19,6 +19,35 @@ def canonical_path(path: Path) -> Path:
         return path
 
 
+def video_can_move_to_series(video_path: Path | str, video_root: Path | str) -> bool:
+    """Return True when *video_path* is a loose file at the videos root."""
+    try:
+        src = canonical_path(Path(video_path))
+        root = Path(video_root).resolve()
+        src.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    if not src.is_file() or src.suffix.lower() not in VIDEO_EXTS:
+        return False
+    return src.parent == root
+
+
+def audio_can_move_to_playlist(audio_path: Path | str, music_root: Path | str) -> bool:
+    """Return True when *audio_path* is a loose file at the music root."""
+    try:
+        entry = Path(audio_path)
+        root = Path(music_root).resolve()
+        entry.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    if entry.is_symlink():
+        return False
+    src = canonical_path(entry)
+    if not src.is_file() or src.suffix.lower() not in AUDIO_EXTS:
+        return False
+    return src.parent == root
+
+
 def is_symlink_entry(path: Path) -> bool:
     return path.is_symlink()
 

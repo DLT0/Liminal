@@ -30,7 +30,11 @@ ApplicationWindow {
 
     onClosing: function(close) {
         close.accepted = false
-        backend.quitApp()
+        if (backend.closeActionTray) {
+            backend.minimizeToTray()
+        } else {
+            backend.quitApp()
+        }
     }
 
     Shortcut {
@@ -95,13 +99,17 @@ ApplicationWindow {
             shareToast.open()
         }
         function onRedeemSuccess() {
-            shareToast.text = "Đã thêm vào danh sách chia sẻ."
+            shareToast.text = "Đã thêm vào danh sách chia sẻ. Tập 1–3 sẽ được tải tự động."
             shareToast.open()
         }
     }
 
     Connections {
         target: backend
+        function onSeriesAiSortError(message) {
+            shareToast.text = message
+            shareToast.open()
+        }
         function onCurrentPageChanged() {
             contentHeader.pageTitle = backend.pageTitle
             contentHeader.currentPage = backend.currentPage
@@ -336,37 +344,51 @@ ApplicationWindow {
                         clip: true
                         contentWidth: width
                         contentHeight: videoContent.height
-                        interactive: videoContent.height > videoPage.height
+                        interactive: !videoContent.inVideoDetail && videoContent.height > videoPage.height
+
+                        Connections {
+                            target: backend
+                            function onLibraryNavigationChanged() {
+                                if (backend.inVideoDetailView)
+                                    videoPage.contentY = 0
+                            }
+                        }
 
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                         Item {
                             id: videoContent
                             width: videoPage.width
-                            height: backend.inCollectionView
+                            readonly property bool inVideoDetail: backend.inVideoDetailView
+                            height: videoContent.inVideoDetail
                                 ? videoPage.height
                                 : backend.videoSearchActive
                                     ? videoSearchPage.y + videoSearchPage.height + Theme.contentPadding
-                                    : videoSeriesPage.y + videoSeriesPage.height + Theme.contentPadding
+                                    : (videoContent.showSeries
+                                        ? videoSeriesPage.y + videoSeriesPage.height + Theme.contentPadding
+                                        : videoMyMoviesPage.y + videoMyMoviesPage.height + Theme.contentPadding)
 
                             readonly property int videoColumns: Theme.gridColumns
                             readonly property real videoCellWidth: Math.floor(
                                 (width - 2 * Theme.contentPadding - (videoColumns - 1) * Theme.cardGap) / videoColumns
                             )
-                            readonly property real videoCellHeight: Math.ceil(Math.max(videoCellWidth / Theme.videoPosterAspect, videoCellWidth * 0.82)) + 8
+                            readonly property real videoCellHeight: Math.ceil(videoCellWidth / Theme.videoPosterAspect + 62) + 8
 
                             readonly property real sharedHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.videoSharedModel.count) || 0) / videoColumns) * videoCellHeight + 16
                             )
-                            readonly property real seriesHeight: Math.max(
-                                180,
-                                Math.ceil((Number(backend.videoSeriesModel.count) || 0) / videoColumns) * videoCellHeight + 16
-                            )
+                            readonly property real seriesHeight: videoContent.showSeries
+                                ? Math.max(
+                                    180,
+                                    Math.ceil((Number(backend.videoSeriesModel.count) || 0) / videoColumns) * videoCellHeight + 16
+                                  )
+                                : 0
                             readonly property real myMoviesHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.videoMyMoviesModel.count) || 0) / videoColumns) * videoCellHeight + 16
                             )
+                            readonly property bool showSeries: backend.videoSeriesModel.count > 0
                             readonly property real searchHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.videoSearchModel.count) || 0) / videoColumns) * videoCellHeight + 16
@@ -385,22 +407,91 @@ ApplicationWindow {
                                 font.pixelSize: 24
                                 font.weight: Font.Bold
                                 color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.videoSearchActive && videoContent.showShared
+                                visible: !videoContent.inVideoDetail && !backend.videoSearchActive && videoContent.showShared
                             }
 
                             SharedVideosSection {
                                 id: videoSharedSection
                                 objectName: "videoSharedSection"
                                 x: 0
-                                y: backend.inCollectionView ? 0 : sharedTitle.y + sharedTitle.height + 4
+                                y: sharedTitle.y + sharedTitle.height + 4
                                 width: parent.width
-                                height: backend.inCollectionView ? parent.height : videoContent.sharedHeight
-                                visible: backend.inCollectionView || (!backend.videoSearchActive && videoContent.showShared)
+                                height: videoContent.sharedHeight
+                                visible: !videoContent.inVideoDetail && !backend.videoSearchActive && videoContent.showShared
                                 gridColumns: videoContent.videoColumns
                                 model: backend.videoSharedModel
                                 onPlayRequested: function(index) { backend.playVideoShared(index) }
                                 onDownloadRequested: function(index) { backend.downloadSharedItem(index) }
                                 onDismissRequested: function(index) { backend.dismissSharedItem(index) }
+                            }
+
+                            CollectionDetailView {
+                                id: localSeriesDetailView
+                                objectName: "localSeriesDetailView"
+                                z: 20
+                                x: 0
+                                y: 0
+                                width: parent.width
+                                height: parent.height
+                                visible: backend.inCollectionView
+                                model: backend.videoModel
+                                useSeriesStyle: true
+                                bannerTitle: backend.collectionBannerTitle
+                                bannerSubtitle: backend.collectionBannerSubtitle
+                                bannerImage: backend.collectionBannerImage
+                                bannerDescription: backend.collectionBannerDescription
+                                hasPlayableTracks: backend.collectionHasPlayableTracks
+                                isPlaying: backend.isPlaying
+                                onPlayRequested: function(index) { backend.playMedia(index) }
+                                onPlayAllRequested: backend.togglePlayCollection()
+                                onShufflePlayRequested: backend.playCollectionShuffled()
+                                onSeriesShareRequested: {
+                                    if (backend.currentSeriesFolderPath)
+                                        shareBridge.createShareFromSeriesPath(backend.currentSeriesFolderPath)
+                                }
+                            }
+
+                            CollectionDetailView {
+                                id: sharedSeriesDetailView
+                                objectName: "sharedSeriesDetailView"
+                                z: 20
+                                x: 0
+                                y: 0
+                                width: parent.width
+                                height: parent.height
+                                visible: backend.inSharedSeriesView
+                                model: backend.videoModel
+                                useSeriesStyle: true
+                                showDownloadState: true
+                                bannerTitle: backend.collectionBannerTitle
+                                bannerSubtitle: backend.collectionBannerSubtitle
+                                bannerImage: backend.collectionBannerImage
+                                bannerDescription: backend.collectionBannerDescription
+                                hasPlayableTracks: backend.collectionHasPlayableTracks
+                                isPlaying: backend.isPlaying
+                                onPlayRequested: function(index) { backend.playSharedSeriesEpisode(index) }
+                                onDownloadEpisodeRequested: function(index) { backend.downloadSharedSeriesEpisode(index) }
+                                onPlayAllRequested: backend.togglePlayCollection()
+                            }
+
+                            CollectionDetailView {
+                                id: movieDetailView
+                                objectName: "movieDetailView"
+                                z: 20
+                                x: 0
+                                y: 0
+                                width: parent.width
+                                height: parent.height
+                                visible: backend.inMovieDetailView
+                                useMovieStyle: true
+                                showDownloadState: backend.movieDetailIsShared
+                                bannerTitle: backend.collectionBannerTitle
+                                bannerSubtitle: backend.collectionBannerSubtitle
+                                bannerImage: backend.collectionBannerImage
+                                bannerDescription: backend.collectionBannerDescription
+                                hasPlayableTracks: backend.collectionHasPlayableTracks
+                                isPlaying: backend.isPlaying
+                                onPlayAllRequested: backend.playMovieDetail()
                             }
 
                             Text {
@@ -415,7 +506,7 @@ ApplicationWindow {
                                 font.pixelSize: 24
                                 font.weight: Font.Bold
                                 color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
+                                visible: !videoContent.inVideoDetail && !backend.videoSearchActive
                             }
 
                             LibraryPage {
@@ -425,7 +516,7 @@ ApplicationWindow {
                                 y: myMoviesTitle.y + myMoviesTitle.height + 4
                                 width: parent.width
                                 height: videoContent.myMoviesHeight
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
+                                visible: !videoContent.inVideoDetail && !backend.videoSearchActive
                                 model: backend.videoMyMoviesModel
                                 useVideoStyle: true
                                 allowCreateCollection: false
@@ -440,7 +531,7 @@ ApplicationWindow {
                                 isPlaying: backend.isPlaying
                                 emptyTitle: "Chưa có phim nào"
                                 emptyMessage: "Thêm phim vào thư mục Videos."
-                                onPlayRequested: function(index) { backend.playVideoMyMovie(index) }
+                                onPlayRequested: function(index) { backend.openVideoMyMovie(index) }
                             }
 
                             Text {
@@ -453,7 +544,9 @@ ApplicationWindow {
                                 font.pixelSize: 24
                                 font.weight: Font.Bold
                                 color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.videoSearchActive
+                                visible: videoContent.showSeries
+                                    && !videoContent.inVideoDetail
+                                    && !backend.videoSearchActive
                             }
 
                             LibraryPage {
@@ -462,8 +555,15 @@ ApplicationWindow {
                                 x: 0
                                 y: seriesTitle.y + seriesTitle.height + 4
                                 width: parent.width
+                            LibraryPage {
+                                id: videoSeriesPage
+                                objectName: "videoSeriesPage"
+                                x: 0
+                                y: seriesTitle.y + seriesTitle.height + 4
+                                width: parent.width
                                 height: backend.inCollectionView ? parent.height : videoContent.seriesHeight
-                                visible: backend.inCollectionView || (!backend.videoSearchActive && !backend.inCollectionView)
+                                visible: (videoContent.showSeries && !videoContent.inVideoDetail)
+                                    || (videoContent.inVideoDetail && backend.inCollectionView)
                                 model: backend.inCollectionView ? backend.videoModel : backend.videoSeriesModel
                                 useVideoStyle: true
                                 widescreenPosters: true
@@ -471,8 +571,10 @@ ApplicationWindow {
                                 scrollEnabled: false
                                 verticalContentMargin: 8
                                 gridColumns: videoContent.videoColumns
+                                showShareAction: true
                                 showBackButton: backend.inCollectionView
                                 breadcrumb: backend.libraryBreadcrumb
+                                embedCollectionDetail: true
                                 inCollectionView: backend.inCollectionView
                                 bannerTitle: backend.collectionBannerTitle
                                 bannerSubtitle: backend.collectionBannerSubtitle

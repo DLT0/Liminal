@@ -17,6 +17,7 @@ Item {
     property string errorStatus: ""
     property string activeDownloadUrl: ""
     property string activeDownloadId: ""
+    property string activeDownloadKind: ""
     property bool directDownloadActive: false
     property real directDownloadProgress: 0
     property string directDownloadState: "idle"
@@ -25,6 +26,9 @@ Item {
     property string playlistFolder: ""
     property bool queuePanelOpen: false
     property int selectedCount: 0
+    property bool mediaTypeRefreshPending: false
+
+    onMediaTypeChanged: refreshResultsForMediaType()
 
     function recalcSelectedCount() {
         var count = 0
@@ -35,11 +39,36 @@ Item {
         selectedCount = count
     }
 
-    function findQueueIndex(value) {
+    function mediaKindFromType(type) {
+        return type === "music" ? "music" : "video"
+    }
+
+    function downloadStateField(kind) {
+        return mediaKindFromType(kind || mediaType) === "music"
+            ? "musicDownloadState" : "videoDownloadState"
+    }
+
+    function inLibraryField(kind) {
+        return mediaKindFromType(kind || mediaType) === "music"
+            ? "musicInLibrary" : "videoInLibrary"
+    }
+
+    function resultDownloadState(index, kind) {
+        return results.get(index)[downloadStateField(kind)]
+    }
+
+    function setResultDownloadState(index, state, kind) {
+        results.setProperty(index, downloadStateField(kind), state)
+    }
+
+    function findQueueIndex(value, mediaKind) {
         for (var i = 0; i < downloadQueue.count; ++i) {
             var row = downloadQueue.get(i)
-            if (row.id === value || row.url === value)
-                return i
+            if (row.id !== value && row.url !== value)
+                continue
+            if (mediaKind && row.mediaKind !== mediaKind)
+                continue
+            return i
         }
         return -1
     }
@@ -61,7 +90,8 @@ Item {
         return { total: total, done: done, active: active, pending: pending }
     }
 
-    function addToDownloadQueue(items, folder) {
+    function addToDownloadQueue(items, folder, mediaKind) {
+        var kind = mediaKindFromType(mediaKind || mediaType)
         queuePanelOpen = true
         for (var i = 0; i < items.length; ++i) {
             var item = items[i]
@@ -70,12 +100,13 @@ Item {
             var itemUrl = item.url || item.id || ""
             if (!itemUrl)
                 continue
-            if (findQueueIndex(itemUrl) >= 0)
+            if (findQueueIndex(itemUrl, kind) >= 0)
                 continue
             downloadQueue.append({
                 id: item.id || "",
                 title: item.title || "Không có tiêu đề",
                 url: itemUrl,
+                mediaKind: kind,
                 batchLabel: folder || "",
                 outputFolder: folder || "",
                 state: "queued",
@@ -86,8 +117,9 @@ Item {
     }
 
     function enqueueItems(items, folder) {
-        var kind = mediaType === "music" ? "audio" : "video"
-        addToDownloadQueue(items, folder)
+        var backendKind = mediaType === "music" ? "audio" : "video"
+        var queueKind = mediaKindFromType(mediaType)
+        addToDownloadQueue(items, folder, queueKind)
         for (var i = 0; i < items.length; ++i) {
             var item = items[i]
             if (item.in_library || item.inLibrary)
@@ -95,8 +127,8 @@ Item {
             var itemUrl = (item.url || item.id || "").trim()
             if (!itemUrl)
                 continue
-            markDownloadQueued(itemUrl, item.title || "", folder || "")
-            backend.downloadMedia(itemUrl, kind, folder || "")
+            markDownloadQueued(itemUrl, item.title || "", folder || "", queueKind)
+            backend.downloadMedia(itemUrl, backendKind, folder || "")
         }
     }
 
@@ -127,8 +159,8 @@ Item {
 
     function selectAllResults(select) {
         for (var i = 0; i < results.count; ++i) {
-            var row = results.get(i)
-            if (row.downloadState === "library" || row.downloadState === "done")
+            var state = resultDownloadState(i)
+            if (state === "library" || state === "done")
                 continue
             results.setProperty(i, "selected", select)
         }
@@ -141,13 +173,14 @@ Item {
             var row = results.get(i)
             if (!row.selected)
                 continue
-            if (row.downloadState !== "idle" && row.downloadState !== "error")
+            var state = resultDownloadState(i)
+            if (state !== "idle" && state !== "error")
                 continue
             selected.push({
                 id: row.id,
                 title: row.title,
                 url: row.url,
-                inLibrary: row.inLibrary
+                inLibrary: row[root.inLibraryField()]
             })
         }
         if (selected.length === 0)
@@ -173,12 +206,14 @@ Item {
         return -1
     }
 
-    function markDownloadQueued(url, title, folder) {
+    function markDownloadQueued(url, title, folder, mediaKind) {
+        var kind = mediaKindFromType(mediaKind || mediaType)
         activeDownloadUrl = url
+        activeDownloadKind = kind
         var idx = findResultIndex(url)
         if (idx >= 0) {
             activeDownloadId = results.get(idx).id
-            results.setProperty(idx, "downloadState", "queued")
+            setResultDownloadState(idx, "queued", kind)
             results.setProperty(idx, "downloadProgress", 0)
             results.setProperty(idx, "downloadError", "")
             title = title || results.get(idx).title
@@ -188,12 +223,13 @@ Item {
             directDownloadState = "queued"
             directDownloadError = ""
         }
-        if (findQueueIndex(url) < 0) {
+        if (findQueueIndex(url, kind) < 0) {
             queuePanelOpen = true
             downloadQueue.append({
                 id: idx >= 0 ? results.get(idx).id : "",
                 title: title || "Đang tải…",
                 url: url,
+                mediaKind: kind,
                 batchLabel: folder || playlistFolder || "",
                 outputFolder: folder || playlistFolder || "",
                 state: "queued",
@@ -212,7 +248,7 @@ Item {
         }
 
         activeDownloadId = results.get(idx).id
-        results.setProperty(idx, "downloadState", "downloading")
+        setResultDownloadState(idx, "downloading", activeDownloadKind)
         results.setProperty(idx, "downloadProgress", 0)
         results.setProperty(idx, "downloadError", "")
     }
@@ -222,7 +258,7 @@ Item {
         var done = 0
         var active = 0
         for (var i = 0; i < total; ++i) {
-            var state = results.get(i).downloadState
+            var state = resultDownloadState(i)
             if (state === "done")
                 done++
             else if (state === "queued" || state === "downloading")
@@ -236,6 +272,7 @@ Item {
         for (var i = 0; i < items.length; ++i) {
             var item = items[i]
             var inLibrary = Boolean(item.in_library)
+            var isMusic = mediaType === "music"
             results.append({
                 id: item.id || "",
                 title: item.title || "Không có tiêu đề",
@@ -243,15 +280,69 @@ Item {
                 duration: item.duration || "--:--",
                 thumbnail: item.thumbnail_url || "",
                 url: item.url || "",
-                inLibrary: inLibrary,
+                musicInLibrary: isMusic && inLibrary,
+                videoInLibrary: !isMusic && inLibrary,
                 selected: false,
-                downloadState: inLibrary ? "library" : "idle",
+                musicDownloadState: isMusic && inLibrary ? "library" : "idle",
+                videoDownloadState: !isMusic && inLibrary ? "library" : "idle",
                 downloadProgress: 0,
                 downloadError: ""
             })
         }
         selectedCount = 0
         searchStatus = results.count > 0 ? "results" : "empty"
+    }
+
+    function buildResultAnnotationPayload() {
+        var payload = []
+        for (var i = 0; i < results.count; ++i) {
+            var row = results.get(i)
+            payload.push({
+                id: row.id,
+                url: row.url,
+                title: row.title,
+                artist: row.artist,
+                duration: row.duration,
+                thumbnail: row.thumbnail
+            })
+        }
+        return payload
+    }
+
+    function applyHotloadedResults(items) {
+        for (var i = 0; i < items.length && i < results.count; ++i) {
+            var inLibrary = Boolean(items[i].in_library)
+            var libField = inLibraryField()
+            var state = resultDownloadState(i)
+            results.setProperty(i, libField, inLibrary)
+            if (state === "done" || state === "queued"
+                    || state === "downloading" || state === "error")
+                continue
+            setResultDownloadState(i, inLibrary ? "library" : "idle", mediaType)
+        }
+    }
+
+    function hotloadResultLibraryStatus() {
+        if (results.count === 0)
+            return
+        var annotated = backend.annotateDownloadResults(mediaType, buildResultAnnotationPayload())
+        applyHotloadedResults(annotated)
+    }
+
+    function refreshResultsForMediaType() {
+        if (searchStatus !== "results")
+            return
+        if (intakeMode === "search") {
+            var query = queryField.text.trim()
+            if (query.length === 0)
+                return
+            mediaTypeRefreshPending = true
+            results.clear()
+            selectedCount = 0
+            runSearch(query)
+            return
+        }
+        hotloadResultLibraryStatus()
     }
 
     function startDownload(url, forcedKind) {
@@ -265,7 +356,7 @@ Item {
         errorStatus = ""
 
         if (kind === "music") {
-            markDownloadQueued(trimmed, "", playlistFolder)
+            markDownloadQueued(trimmed, "", playlistFolder, "music")
             backend.downloadMedia(trimmed, "audio", playlistFolder)
         } else {
             videoQualityPopup.targetUrl = trimmed
@@ -292,15 +383,16 @@ Item {
         var batch = []
         for (var i = 0; i < results.count; ++i) {
             var row = results.get(i)
-            if (row.inLibrary)
+            if (row[inLibraryField()])
                 continue
-            if (row.downloadState !== "idle" && row.downloadState !== "error")
+            var state = resultDownloadState(i)
+            if (state !== "idle" && state !== "error")
                 continue
             batch.push({
                 id: row.id,
                 title: row.title,
                 url: row.url,
-                inLibrary: row.inLibrary
+                inLibrary: row[inLibraryField()]
             })
         }
         if (batch.length === 0)
@@ -311,14 +403,15 @@ Item {
     function downloadAllFromList() {
         var batch = []
         for (var i = 0; i < results.count; ++i) {
-            var row = results.get(i)
-            if (row.downloadState !== "idle" && row.downloadState !== "error")
+            var state = resultDownloadState(i)
+            if (state !== "idle" && state !== "error")
                 continue
+            var row = results.get(i)
             batch.push({
                 id: row.id,
                 title: row.title,
                 url: row.url,
-                inLibrary: row.inLibrary
+                inLibrary: row[inLibraryField()]
             })
         }
         enqueueItems(batch, playlistFolder)
@@ -351,7 +444,9 @@ Item {
         function onSearchResults(items) {
             root.errorStatus = ""
             root.populateResults(items)
-            root.linkFromResolve = root.intakeMode === "link" && results.count > 0
+            if (!root.mediaTypeRefreshPending)
+                root.linkFromResolve = root.intakeMode === "link" && results.count > 0
+            root.mediaTypeRefreshPending = false
         }
 
         function onPlaylistLinkReady(folder, items) {
@@ -361,14 +456,15 @@ Item {
             root.populateResults(items)
         }
 
-        function onPlaylistQueued(folder, mediaType, items) {
+        function onPlaylistQueued(folder, queuedMediaType, items) {
             root.errorStatus = ""
-            root.addToDownloadQueue(items, folder || "")
+            var queueKind = root.mediaKindFromType(queuedMediaType)
+            root.addToDownloadQueue(items, folder || "", queueKind)
             for (var i = 0; i < items.length; ++i) {
                 var item = items[i]
                 if (item.in_library || item.inLibrary)
                     continue
-                root.markDownloadQueued(item.url || item.id || "")
+                root.markDownloadQueued(item.url || item.id || "", "", folder || "", queueKind)
             }
         }
 
@@ -378,6 +474,7 @@ Item {
         }
 
         function onSearchError(message) {
+            root.mediaTypeRefreshPending = false
             root.errorStatus = message || (root.intakeMode === "link"
                 ? "Không thể đọc link."
                 : "Không thể tìm kiếm media.")
@@ -389,14 +486,14 @@ Item {
 
         function onDownloadJobStarted(url) {
             root.markDownloadActive(url)
-            var qIdx = root.findQueueIndex(url)
+            var qIdx = root.findQueueIndex(url, root.activeDownloadKind)
             if (qIdx >= 0)
                 downloadQueue.setProperty(qIdx, "state", "downloading")
         }
 
         function onDownloadJobRequeued(url) {
-            root.markDownloadQueued(url)
-            var qIdx = root.findQueueIndex(url)
+            root.markDownloadQueued(url, "", "", root.activeDownloadKind)
+            var qIdx = root.findQueueIndex(url, root.activeDownloadKind)
             if (qIdx >= 0)
                 downloadQueue.setProperty(qIdx, "state", "queued")
         }
@@ -408,49 +505,53 @@ Item {
                 results.setProperty(idx, "downloadProgress", value)
             else if (root.directDownloadActive && root.directDownloadState === "downloading")
                 root.directDownloadProgress = value
-            var qIdx = root.findQueueIndex(videoId)
+            var qIdx = root.findQueueIndex(videoId, root.activeDownloadKind)
             if (qIdx >= 0)
                 downloadQueue.setProperty(qIdx, "progress", value)
         }
 
         function onDownloadFinished(videoId, filePath) {
+            var kind = root.activeDownloadKind || root.mediaType
             var idx = root.findResultIndex(videoId)
             if (idx >= 0) {
-                results.setProperty(idx, "downloadState", "done")
+                root.setResultDownloadState(idx, "done", kind)
                 results.setProperty(idx, "downloadProgress", 100)
-                results.setProperty(idx, "inLibrary", true)
+                results.setProperty(idx, root.inLibraryField(kind), true)
             }
             if (root.directDownloadActive && root.directDownloadState === "downloading") {
                 root.directDownloadProgress = 100
                 root.directDownloadState = "done"
             }
-            var qIdx = root.findQueueIndex(videoId)
+            var qIdx = root.findQueueIndex(videoId, kind)
             if (qIdx >= 0) {
                 downloadQueue.setProperty(qIdx, "state", "done")
                 downloadQueue.setProperty(qIdx, "progress", 100)
             }
             root.activeDownloadUrl = ""
             root.activeDownloadId = ""
+            root.activeDownloadKind = ""
         }
 
         function onDownloadError(videoId, message) {
             root.errorStatus = message || "Tải xuống thất bại."
+            var kind = root.activeDownloadKind || root.mediaType
             var idx = root.findResultIndex(videoId || root.activeDownloadId || root.activeDownloadUrl)
             if (idx >= 0) {
-                results.setProperty(idx, "downloadState", "error")
+                root.setResultDownloadState(idx, "error", kind)
                 results.setProperty(idx, "downloadError", root.errorStatus)
             }
             if (root.directDownloadActive && root.directDownloadState === "downloading") {
                 root.directDownloadState = "error"
                 root.directDownloadError = root.errorStatus
             }
-            var qIdx = root.findQueueIndex(videoId || root.activeDownloadUrl)
+            var qIdx = root.findQueueIndex(videoId || root.activeDownloadUrl, kind)
             if (qIdx >= 0) {
                 downloadQueue.setProperty(qIdx, "state", "error")
                 downloadQueue.setProperty(qIdx, "error", root.errorStatus)
             }
             root.activeDownloadUrl = ""
             root.activeDownloadId = ""
+            root.activeDownloadKind = ""
             errorTimer.restart()
         }
     }
@@ -774,7 +875,8 @@ Item {
                             root.markDownloadQueued(
                                 videoQualityPopup.targetUrl,
                                 "",
-                                videoQualityPopup.outputFolder)
+                                videoQualityPopup.outputFolder,
+                                "video")
                             backend.downloadMedia(
                                 videoQualityPopup.targetUrl,
                                 "video",
@@ -915,6 +1017,7 @@ Item {
                         required property string id
                         required property string title
                         required property string url
+                        required property string mediaKind
                         required property string batchLabel
                         required property string state
                         required property real progress
@@ -1251,33 +1354,6 @@ Item {
                             onClicked: root.submitLink(queryField.text)
                         }
                     }
-
-                    Rectangle {
-                        Layout.preferredWidth: fileLabel.implicitWidth + 28
-                        Layout.preferredHeight: 42
-                        radius: 8
-                        visible: root.intakeMode === "link"
-                        color: fileHover.containsMouse ? Theme.glassStrong : Theme.bgTop
-                        border.color: Theme.cardBorder
-                        border.width: 1
-
-                        Text {
-                            id: fileLabel
-                            anchors.centerIn: parent
-                            text: "\U0001F4C4  File .txt"
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.bodySize
-                            color: Theme.textPrimary
-                        }
-
-                        MouseArea {
-                            id: fileHover
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: backend.readLinksFromFile(root.mediaType)
-                        }
-                    }
                 }
 
                 WaveformProgress {
@@ -1531,10 +1607,17 @@ Item {
                 required property string duration
                 required property string thumbnail
                 required property string url
-                required property bool inLibrary
-                required property string downloadState
+                required property bool musicInLibrary
+                required property bool videoInLibrary
+                required property string musicDownloadState
+                required property string videoDownloadState
                 required property real downloadProgress
                 required property string downloadError
+
+                readonly property bool inLibrary: root.mediaType === "music"
+                    ? musicInLibrary : videoInLibrary
+                readonly property string downloadState: root.mediaType === "music"
+                    ? musicDownloadState : videoDownloadState
 
                 onDownloadStateChanged: {
                     if (downloadState !== "downloading")
