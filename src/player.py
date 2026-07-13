@@ -13,12 +13,14 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from src.config import mpv_audio_gain_args
 from src.models import PlaybackState, PlaybackStatus
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,9 @@ logger = logging.getLogger(__name__)
 # Each Liminal process needs its own mpv IPC socket.  A shared path lets one
 # app instance unlink another instance's socket, leaving its PlayerBar unable
 # to pause, seek, mute, or change volume.
-IPC_SOCKET = f"/tmp/liminal-mpv-{os.getpid()}.sock"
+_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", f"/tmp/liminal-{os.getuid()}")
+os.makedirs(_RUNTIME_DIR, exist_ok=True)
+IPC_SOCKET = os.path.join(_RUNTIME_DIR, f"mpv-{os.getpid()}.sock")
 
 # mpv end-file reasons (see mpv manual: END_FILE_REASON_*)
 _END_FILE_EOF = 0
@@ -35,8 +39,13 @@ _END_FILE_QUIT = 2
 _END_FILE_STOP = 4
 
 
+def _mpv_executable() -> str | None:
+    """Resolve mpv once through PATH, including distro/Flatpak wrappers."""
+    return shutil.which(os.environ.get("LIMINAL_MPV", "mpv"))
+
+
 class LiminalPlayer:
-    """Async controller for an mpv subprocess via JSON IPC."""
+    """Async controller for the audio-only mpv subprocess via JSON IPC."""
 
     def __init__(self) -> None:
         self._process: Optional[subprocess.Popen] = None
@@ -48,7 +57,6 @@ class LiminalPlayer:
         self.state: PlaybackState = PlaybackState()
         self._mpv_available: bool = self._check_mpv()
         self._on_end_file: Optional[Callable[[], None]] = None
-        self._audio_only_mode: bool | None = None
         self._properties_observed: bool = False
 
     # ------------------------------------------------------------------
@@ -62,7 +70,6 @@ class LiminalPlayer:
     async def play(
         self,
         path: str,
-        audio_only: bool = False,
         title: str = "",
         artist: str = "",
         *,
@@ -70,11 +77,10 @@ class LiminalPlayer:
         muted: bool = False,
         start_pos: float = 0.0,
     ) -> None:
-        """Start playing a media file or stream URL.
+        """Start audio playback for a media file or stream URL.
 
         Args:
             path: Path to the media file or streaming URL.
-            audio_only: If True, no video window opens (for music).
             title: Optional display title (used for remote streams).
             artist: Optional display artist (used for remote streams).
             volume: Optional output volume (0-100) for this session.
@@ -82,7 +88,8 @@ class LiminalPlayer:
             start_pos: Start playback at this position in seconds.
         """
         if not self._mpv_available:
-            self.state.title = "mpv not installed — install with: sudo pacman -S mpv"
+            from src.distro_detect import distro_package_manager
+            self.state.title = f"mpv not installed — install with: {distro_package_manager()}"
             self.state.status = PlaybackStatus.STOPPED
             return
 
@@ -99,7 +106,6 @@ class LiminalPlayer:
             self._writer is not None
             and self._process is not None
             and self._process.poll() is None
-            and self._audio_only_mode == audio_only
             and self._properties_observed
         )
         if can_reuse:
@@ -120,15 +126,14 @@ class LiminalPlayer:
         stale = Path(IPC_SOCKET)
         stale.unlink(missing_ok=True)
 
-        window_flag = "--no-video" if audio_only else "--force-window=yes"
-
         cmd = [
-            "mpv",
+            _mpv_executable() or "mpv",
             f"--input-ipc-server={IPC_SOCKET}",
             "--keep-open=no",
-            window_flag,
+            "--no-video",
             "--no-terminal",
             "--msg-level=all=no",
+            *mpv_audio_gain_args(),
             f"--volume={saved_volume}",
             f"--force-media-title={media_title}",
         ]
@@ -140,15 +145,11 @@ class LiminalPlayer:
             cmd.append(f"--start={start_pos}")
         cmd.append(path)
 
-        if not audio_only:
-            cmd.insert(-1, "--hwdec=auto-safe")
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        self._audio_only_mode = audio_only
-
         connected = await self._connect_ipc()
         if not connected:
             self.state.title = "Failed to connect to mpv"
@@ -277,7 +278,6 @@ class LiminalPlayer:
         stale.unlink(missing_ok=True)
         self.state = PlaybackState()
         self.state.volume = saved_volume
-        self._audio_only_mode = None
         self._properties_observed = False
 
     def cleanup_sync(self) -> None:
@@ -300,14 +300,18 @@ class LiminalPlayer:
     # ------------------------------------------------------------------
 
     def _check_mpv(self) -> bool:
+        executable = _mpv_executable()
+        if not executable:
+            return False
         try:
             subprocess.run(
-                ["mpv", "--version"],
+                [executable, "--version"],
                 capture_output=True,
                 timeout=5,
+                check=True,
             )
             return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.SubprocessError):
             return False
 
     async def _connect_ipc(self) -> bool:
@@ -355,10 +359,9 @@ class LiminalPlayer:
             self._on_mpv_disconnected()
 
     def _on_mpv_disconnected(self) -> None:
-        """Sync state when mpv closes IPC (user closed window, crash, etc.)."""
+        """Sync state when the audio subprocess closes IPC or crashes."""
         if self._process is not None and self._process.poll() is not None:
             self._process = None
-        self._audio_only_mode = None
         self._properties_observed = False
         if self.state.status != PlaybackStatus.STOPPED:
             self.state.status = PlaybackStatus.STOPPED
@@ -382,8 +385,7 @@ class LiminalPlayer:
                 reason = msg.get("reason", _END_FILE_EOF)
                 self.state.status = PlaybackStatus.STOPPED
                 self.state.time_pos = 0.0
-                # Only auto-advance on natural EOF. User closing the mpv window
-                # sends reason=quit; that must not replay/advance or race stop().
+                # Only auto-advance on natural EOF; explicit stop must not race it.
                 if reason == _END_FILE_EOF and self._on_end_file:
                     self._on_end_file()
             elif ev == "shutdown":
@@ -456,7 +458,6 @@ class PlayerBridge(QObject):
     def play(
         self,
         path: str,
-        audio_only: bool = False,
         title: str = "",
         artist: str = "",
         *,
@@ -467,7 +468,6 @@ class PlayerBridge(QObject):
         asyncio.ensure_future(
             self._player.play(
                 path,
-                audio_only,
                 title=title,
                 artist=artist,
                 volume=volume,

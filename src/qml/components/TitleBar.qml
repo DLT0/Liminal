@@ -15,7 +15,6 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: Theme.bgTop
-        opacity: 0.92
 
         Rectangle {
             anchors.bottom: parent.bottom
@@ -126,6 +125,5 @@ Item {
         font.pixelSize: 13
         font.weight: Font.DemiBold
         color: Theme.textSecondary
-        opacity: 0.9
     }
 }

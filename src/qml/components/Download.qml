@@ -673,9 +673,9 @@ Item {
             { value: "480",  label: "480p", size: "~80MB",  recommended: false },
             { value: "720",  label: "720p", size: "~150MB", recommended: false },
             { value: "1080", label: "FHD",  size: "~350MB", recommended: true },
-            { value: "1440", label: "2K",   size: "~600MB", recommended: false },
-            { value: "2160", label: "4K",   size: "~1.2GB", recommended: false },
-            { value: "best", label: "Max",  size: "Tối đa", recommended: false }
+            { value: "2K",   label: "2K",   size: "~600MB", recommended: false },
+            { value: "4K",   label: "4K",   size: "~1.2GB", recommended: false },
+            { value: "Max",  label: "Max",  size: "Tối đa", recommended: false }
         ]
 
         function currentQualityOption() {

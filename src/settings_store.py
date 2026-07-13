@@ -39,6 +39,7 @@ OBSOLETE_SETTING_KEYS = (
 APP_DEFAULTS: dict = {
     "version": SETTINGS_VERSION,
     "download_quality": "1080",
+    "video_playback_backend": "inapp",
     "volume": 100,
     "muted": False,
     **YOUTUBE_DEFAULTS,

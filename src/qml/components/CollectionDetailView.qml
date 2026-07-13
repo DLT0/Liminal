@@ -36,6 +36,11 @@ Item {
     signal downloadEpisodeRequested(int index)
     signal seriesSetupRequested()
     signal seriesShareRequested()
+    signal playlistShareRequested()
+
+    property bool showPlaylistShare: false
+
+    property bool showTrackShare: false
 
     onSeasonListChanged: {
         if (seasonList.length > 0)
@@ -59,6 +64,15 @@ Item {
         parent: Overlay.overlay
     }
 
+    CreateFolderDialog {
+        id: createFolderDialog
+        parent: Overlay.overlay
+        onFolderCreated: {
+            if (rowContextMenu.itemPath)
+                moveTargetsPopup.sourcePath = rowContextMenu.itemPath
+        }
+    }
+
     SeriesSetupDialog {
         id: seriesSetupDialog
         parent: Overlay.overlay
@@ -69,17 +83,28 @@ Item {
         parent: Overlay.overlay
     }
 
-    ListModel {
-        id: moveTargetsModel
+    MoveTargetsPopup {
+        id: moveTargetsPopup
+        parent: Overlay.overlay
+        videoMode: false
+        onCreateFolderRequested: createFolderDialog.openDialog(false)
+        onTargetSelected: function(path) {
+            backend.moveMediaToFolder(rowContextMenu.itemPath, path)
+        }
     }
 
-    function populateMoveTargets(sourcePath) {
-        moveTargetsModel.clear()
-        if (!sourcePath)
+    function openMoveTargetsSubmenu(entryItem) {
+        if (!rowContextMenu.itemPath)
             return
-        var folders = backend.foldersForMove(sourcePath)
-        for (var i = 0; i < folders.length; i++)
-            moveTargetsModel.append(folders[i])
+        moveTargetsPopup.sourcePath = rowContextMenu.itemPath
+        if (entryItem) {
+            var pt = entryItem.mapToItem(Overlay.overlay, entryItem.width, 0)
+            rowContextMenu.moveSubmenuPos = Qt.point(pt.x, pt.y)
+        }
+        moveTargetsPopup.x = rowContextMenu.moveSubmenuPos.x
+        moveTargetsPopup.y = rowContextMenu.moveSubmenuPos.y
+        moveTargetsPopup.refreshTargets()
+        moveTargetsPopup.open()
     }
 
     function openRowContextMenu(index, isCollection, title, artist, itemPath, anchorItem, x, y, season, episode) {
@@ -92,9 +117,9 @@ Item {
         rowContextMenu.itemEpisode = episode || (index + 1)
         if (!isCollection && !root.useVideoDetailStyle
                 && backend.mediaCanMoveToPlaylist(itemPath))
-            populateMoveTargets(itemPath)
+            moveTargetsPopup.sourcePath = itemPath
         else
-            moveTargetsModel.clear()
+            moveTargetsPopup.sourcePath = ""
         rowContextMenu.popup(anchorItem, x, y)
     }
 
@@ -120,6 +145,7 @@ Item {
         property string itemPath: ""
         property int itemSeason: 1
         property int itemEpisode: 1
+        property point moveSubmenuPos: Qt.point(0, 0)
         readonly property bool showMoveToPlaylistMenu: !root.useVideoDetailStyle
             && !rowContextMenu.isCollection
             && backend.mediaCanMoveToPlaylist(rowContextMenu.itemPath)
@@ -156,7 +182,17 @@ Item {
             enabled: rowContextMenu.showMoveToPlaylistMenu
             iconName: "folder"
             text: "Thêm vào playlist khác"
-            onTriggered: moveToFolderMenu.popup(moveToPlaylistEntry, moveToPlaylistEntry.width, 0)
+            showSubmenuArrow: true
+            onHoveredChanged: {
+                if (hovered)
+                    openMoveTargetsSubmenu(moveToPlaylistEntry)
+            }
+            onPressed: {
+                // Lưu tọa độ trước khi menu đóng (onTriggered gọi sau khi menu đã đóng)
+                var pt = moveToPlaylistEntry.mapToItem(Overlay.overlay, moveToPlaylistEntry.width, 0)
+                rowContextMenu.moveSubmenuPos = Qt.point(pt.x, pt.y)
+            }
+            onTriggered: openMoveTargetsSubmenu(null)
         }
         StyledMenuItem {
             iconName: "image"
@@ -184,44 +220,17 @@ Item {
         }
         StyledMenuSeparator {}
         StyledMenuItem {
+            visible: root.showTrackShare && !rowContextMenu.isCollection
+            iconName: "share"
+            text: "Chia sẻ"
+            onTriggered: shareBridge.createShareFromMusicPath(rowContextMenu.itemPath)
+        }
+        StyledMenuSeparator {}
+        StyledMenuItem {
             iconName: "delete"
             destructive: true
             text: "Xóa khỏi thư viện"
             onTriggered: backend.deleteMediaByPath(rowContextMenu.itemPath)
-        }
-    }
-
-    Menu {
-        id: moveToFolderMenu
-        parent: Overlay.overlay
-        topPadding: 8
-        bottomPadding: 8
-        leftPadding: 8
-        rightPadding: 8
-
-        background: Rectangle {
-            radius: 10
-            color: Theme.glassStrong
-            border.width: 1
-            border.color: Theme.glassStrongBorder
-        }
-
-        Instantiator {
-            model: moveTargetsModel
-            delegate: StyledMenuItem {
-                iconName: "folder"
-                required property string title
-                required property string path
-                text: title
-                onTriggered: backend.moveMediaToFolder(rowContextMenu.itemPath, path)
-            }
-            onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
-            onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
-        }
-        StyledMenuItem {
-            visible: moveTargetsModel.count === 0
-            enabled: false
-            text: "Không còn playlist khác"
         }
     }
 
@@ -392,6 +401,16 @@ Item {
                 enabled: backend.collectionOrderCanUndo
                 onClicked: backend.undoCollectionOrderShuffle()
             }
+
+            IconButton {
+                anchors.verticalCenter: parent.verticalCenter
+                icon: "share"
+                iconSize: 24
+                width: 40
+                height: 40
+                visible: root.showPlaylistShare && !root.showDownloadState
+                onClicked: root.playlistShareRequested()
+            }
         }
 
         ListView {
@@ -418,10 +437,17 @@ Item {
 
                 TapHandler {
                     onTapped: {
-                        if (model.isCollection)
+                        if (model.isCollection) {
                             root.openCollectionRequested(index)
-                        else
+                        } else if (root.showDownloadState && model.downloadStatus !== "done") {
+                            root.downloadEpisodeRequested(index)
+                        } else {
                             root.playRequested(index)
+                        }
+                    }
+                    onDoubleTapped: {
+                        if (root.showDownloadState && model.downloadStatus !== "done")
+                            root.downloadEpisodeRequested(index)
                     }
                 }
 
@@ -496,10 +522,24 @@ Item {
 
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.showDownloadState
                         text: model.duration || ""
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.captionSize
                         color: Theme.textMuted
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: root.showDownloadState
+                        text: model.downloadStatus === "done"
+                            ? "Đã tải"
+                            : (model.isDownloading
+                                ? ("Đang tải " + Math.round(model.downloadPercent) + "%")
+                                : "Nhấp để tải")
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.captionSize
+                        color: model.downloadStatus === "done" ? Theme.textSecondary : Theme.textMuted
                     }
                 }
             }
@@ -516,7 +556,6 @@ Item {
         z: 10
         visible: root.useVideoDetailStyle && netflixScroll.contentY > root.heroHeight - 72
         color: Theme.bgBase
-        opacity: 0.96
         border.color: Theme.border
         border.width: 1
 
@@ -624,12 +663,25 @@ Item {
                 anchors.rightMargin: Math.max(32, netflixScroll.width * 0.35)
                 spacing: 10
 
-                Text {
-                    text: root.useMovieStyle ? "PHIM LẺ" : "PHIM BỘ"
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.captionSize
-                    font.weight: Font.Bold
-                    color: Theme.accentStart
+                Row {
+                    spacing: 6
+                    width: parent.width
+
+                    Text {
+                        text: root.useMovieStyle ? "PHIM LẺ" : "PHIM BỘ"
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.captionSize
+                        font.weight: Font.Bold
+                        color: Theme.accentStart
+                    }
+
+                    Text {
+                        visible: root.useMovieStyle && root.bannerSubtitle.length > 0
+                        text: "· " + root.bannerSubtitle
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.captionSize
+                        color: "#d6d6d6"
+                    }
                 }
 
                 Text {
@@ -646,7 +698,7 @@ Item {
 
                 Text {
                     width: parent.width
-                    visible: root.bannerSubtitle.length > 0
+                    visible: root.useSeriesStyle && root.bannerSubtitle.length > 0
                     text: root.bannerSubtitle
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.bodySize
@@ -763,26 +815,14 @@ Item {
                 width: parent.width - 64
                 x: 32
                 spacing: 8
-                visible: root.useMovieStyle
+                visible: root.useMovieStyle && root.bannerDescription.length > 0
 
                 Text {
                     width: parent.width
-                    visible: root.bannerDescription.length > 0
                     text: root.bannerDescription
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.bodySize
                     color: Theme.textSecondary
-                    wrapMode: Text.WordWrap
-                    lineHeight: 1.35
-                }
-
-                Text {
-                    width: parent.width
-                    visible: root.bannerDescription.length === 0
-                    text: "Xem phim ngay với chất lượng tốt nhất từ thư viện của bạn."
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.bodySize
-                    color: Theme.textMuted
                     wrapMode: Text.WordWrap
                     lineHeight: 1.35
                 }
@@ -845,7 +885,7 @@ Item {
                 }
             }
 
-            ComboBox {
+            StyledComboBox {
                 id: seasonCombo
                 x: 32
                 width: Math.min(220, parent.width - 64)
@@ -877,7 +917,7 @@ Item {
                 height: contentHeight
                 interactive: false
                 spacing: 4
-                model: musicListView.model
+                model: root.model
                 visible: root.useSeriesStyle
 
                 delegate: Item {

@@ -181,7 +181,7 @@ class MusicScreen(Screen):
         self._highlight_selection()
         real = self._real_index()
         if real >= 0:
-            await self._player.play(self._all_tracks[real].path, audio_only=True)
+            await self._player.play(self._all_tracks[real].path)
 
     async def _play_prev(self) -> None:
         if not self._filtered_indices:
@@ -191,7 +191,7 @@ class MusicScreen(Screen):
         self._highlight_selection()
         real = self._real_index()
         if real >= 0:
-            await self._player.play(self._all_tracks[real].path, audio_only=True)
+            await self._player.play(self._all_tracks[real].path)
 
     # ── Now‑playing refresh ──
 
@@ -280,7 +280,7 @@ class MusicScreen(Screen):
         elif event.key == "enter":
             real = self._real_index()
             if real >= 0:
-                asyncio.create_task(self._player.play(self._all_tracks[real].path, audio_only=True))
+                asyncio.create_task(self._player.play(self._all_tracks[real].path))
         elif event.key == "space":
             asyncio.create_task(self._player.toggle_pause())
         elif event.key == "left":

@@ -96,6 +96,30 @@ Item {
                             onClicked: root.pickMediaRoot()
                         }
                     }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: root.mediaRoot !== ""
+                        Layout.topMargin: 4
+
+                        AppIcon {
+                            name: backend.freeDiskSpaceGB < 10 ? "warning" : "info"
+                            font.pixelSize: 16
+                            color: backend.freeDiskSpaceGB < 10 ? Theme.trafficYellow : Theme.textMuted
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: backend.freeDiskSpaceGB < 10
+                                ? "Dung lượng trống còn lại: " + backend.freeDiskSpaceGB.toFixed(1) + " GB. Cảnh báo: Ổ đĩa sắp hết dung lượng (dưới 10 GB), vui lòng chuyển ổ đĩa hoặc xóa bớt dữ liệu."
+                                : "Dung lượng trống còn lại: " + backend.freeDiskSpaceGB.toFixed(1) + " GB."
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.captionSize
+                            color: backend.freeDiskSpaceGB < 10 ? Theme.trafficYellow : Theme.textMuted
+                            wrapMode: Text.WordWrap
+                        }
+                    }
                 }
             }
 
@@ -107,6 +131,47 @@ Item {
                 color: Theme.textMuted
                 wrapMode: Text.WordWrap
                 Layout.topMargin: 10
+            }
+
+            GlassPanel {
+                Layout.fillWidth: true
+                Layout.preferredHeight: playbackPanel.implicitHeight + 24
+                radius: Theme.cardRadius
+
+                ColumnLayout {
+                    id: playbackPanel
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 8
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Trình phát video"
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.bodySize
+                        font.weight: Font.Bold
+                        color: Theme.textPrimary
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Chọn phát video trong ứng dụng hoặc bằng cửa sổ mpv riêng. Thay đổi sẽ áp dụng cho lần mở Focus Mode tiếp theo."
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.captionSize
+                        color: Theme.textMuted
+                        wrapMode: Text.WordWrap
+                    }
+
+                    StyledComboBox {
+                        Layout.fillWidth: true
+                        model: [
+                            "Trong ứng dụng (Qt Multimedia)",
+                            "mpv (cửa sổ riêng)"
+                        ]
+                        currentIndex: backend.videoPlaybackMode === "mpv" ? 1 : 0
+                        onActivated: backend.setVideoPlaybackMode(index === 1 ? "mpv" : "inapp")
+                    }
+                }
             }
 
             GlassPanel {

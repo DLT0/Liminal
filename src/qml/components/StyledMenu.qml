@@ -11,8 +11,6 @@ Menu {
     leftPadding: 8
     rightPadding: 8
 
-    delegate: StyledMenuItem {}
-
     enter: Transition {
         ParallelAnimation {
             NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120 }

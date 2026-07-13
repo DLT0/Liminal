@@ -1,11 +1,11 @@
 # Liminal
 
-Trình phát đa phương tiện cục bộ (local media player) cho Linux. Giao diện desktop hiện đại xây dựng bằng **PyQt6** và **QML**, dùng **mpv** làm engine phát nhạc/video.
+Trình phát đa phương tiện cục bộ (local media player) cho Linux. Giao diện desktop hiện đại xây dựng bằng **PyQt6** và **QML**. Video phát trực tiếp trong cửa sổ ứng dụng qua **Qt Multimedia + FFmpeg**; mpv được dùng cho phần phát nhạc.
 
 ## Tính năng
 
 - **Thư viện cục bộ** — Duyệt nhạc (album/đĩa đơn), video và playlist theo lưới trực quan
-- **Phát nhạc & video** — Hỗ trợ nhiều định dạng qua mpv (MP3, FLAC, OGG, MP4, MKV…)
+- **Phát nhạc & video** — Nhạc qua mpv; video MP4, MKV… phát ngay trong app bằng Qt Multimedia
 - **Tải từ YouTube** — Tìm kiếm hoặc dán link, xuất MP3 hoặc MP4 với tuỳ chọn chất lượng
 - **Waveform seek bar** — Thanh tiến trình dạng waveform (kiểu SoundCloud), click để seek
 - **Quản lý thư viện** — Tạo thư mục, sắp xếp, đổi ảnh bìa, chỉnh metadata
@@ -17,19 +17,31 @@ Trình phát đa phương tiện cục bộ (local media player) cho Linux. Giao
 | Thành phần | Phiên bản / ghi chú |
 |---|---|
 | Python | 3.10+ |
-| mpv | Engine phát nhạc và video |
-| ffmpeg | Chuyển đổi audio, phân tích waveform, tải media |
+| mpv | Engine phát nhạc |
+| Qt Multimedia | Bề mặt phát video trong QML |
+| FFmpeg | Backend video, chuyển đổi audio, phân tích waveform, tải media |
 | PipeWire / PulseAudio | Khuyến nghị cho tích hợp desktop (MPRIS, audio) |
 
 **Fedora:**
 ```bash
-sudo dnf install mpv ffmpeg portaudio
+sudo dnf install mpv portaudio qt6-qtmultimedia
 ```
 
-**Ubuntu / Debian:**
+Nếu dùng RPM Fusion để có FFmpeg đầy đủ, cài thêm gói `ffmpeg` theo hướng dẫn của RPM Fusion. Bản Fedora thông thường vẫn cần `qt6-qtmultimedia` để QML import được `QtMultimedia`.
+
+**Arch Linux:**
 ```bash
-sudo apt install mpv ffmpeg portaudio19-dev
+sudo pacman -S mpv ffmpeg portaudio qt6-declarative qt6-multimedia qt6-multimedia-ffmpeg
 ```
+
+**Ubuntu / Linux Mint:**
+```bash
+sudo add-apt-repository universe
+sudo apt update
+sudo apt install mpv ffmpeg portaudio19-dev libqt6multimedia6 qml6-module-qtmultimedia
+```
+
+Liminal dùng module Qt có cùng runtime với PyQt6. Nếu bạn cài PyQt6 bằng `pip` mà gặp `module \"QtMultimedia\" is not installed`, ưu tiên cài PyQt6 từ package manager của distro hoặc tạo lại virtual environment sau khi đã cài các gói Qt Multimedia ở trên.
 
 ## Cài đặt
 

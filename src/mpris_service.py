@@ -229,6 +229,7 @@ class _MprisObj(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE, in_signature="s", out_signature="")
     def OpenUri(self, uri: str) -> None:
+        """Handle external OpenUri requests without ever spawning video UI."""
         from urllib.parse import unquote, urlparse
         p = urlparse(uri)
         if p.scheme == "file":

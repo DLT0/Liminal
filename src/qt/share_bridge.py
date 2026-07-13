@@ -100,8 +100,11 @@ class ShareBridge(QObject):
             if self._backend is not None:
                 self._backend.apply_shared_items(items)
                 for item in items:
-                    if str(item.get("media_type") or "") == "series":
+                    media_type = str(item.get("media_type") or "")
+                    if media_type == "series":
                         self._backend.queueInitialSharedSeriesDownloads(str(item.get("id") or ""))
+                    elif media_type == "playlist":
+                        self._backend.queueInitialSharedPlaylistDownloads(str(item.get("id") or ""))
             self.redeemSuccess.emit()
             self.sharedUpdated.emit()
         except asyncio.CancelledError:
@@ -132,6 +135,24 @@ class ShareBridge(QObject):
             return
         self._action_task = asyncio.create_task(self._create_share_from_series(path))
 
+    @pyqtSlot(str)
+    def createShareFromPlaylistPath(self, path: str) -> None:
+        if self._backend is None:
+            self.shareError.emit("Backend chưa sẵn sàng.")
+            return
+        if self._action_task and not self._action_task.done():
+            return
+        self._action_task = asyncio.create_task(self._create_share_from_playlist(path))
+
+    @pyqtSlot(str)
+    def createShareFromMusicPath(self, path: str) -> None:
+        if self._backend is None:
+            self.shareError.emit("Backend chưa sẵn sàng.")
+            return
+        if self._action_task and not self._action_task.done():
+            return
+        self._action_task = asyncio.create_task(self._create_share_from_music(path))
+
     async def _create_share_from_library(self, path: str) -> None:
         if self._backend is None:
             return
@@ -161,6 +182,36 @@ class ShareBridge(QObject):
         finally:
             self._set_loading(False)
 
+    async def _create_share_from_music(self, path: str) -> None:
+        if self._backend is None:
+            return
+        self._set_loading(True)
+        try:
+            info = self._backend.library_music_share_info(path)
+            if info is None:
+                raise ValueError("Không thể chia sẻ bài hát này.")
+            source_url = str(info.get("source_url") or "").strip()
+            if not source_url:
+                raise ValueError(
+                    "Không có link gốc (YouTube/Drive). "
+                    "Bài hát cần được tải từ trang Download trước."
+                )
+            result = await share_manager.create_share(
+                title=str(info.get("title") or "Không có tên"),
+                author=str(info.get("author") or ""),
+                source_url=source_url,
+                thumbnail_url=str(info.get("thumbnail_url") or ""),
+                media_type="music",
+            )
+            self.shareCreated.emit(str(result.get("code") or ""))
+        except ValueError as exc:
+            self.shareError.emit(str(exc))
+        except Exception:
+            logger.exception("Create music share failed")
+            self.shareError.emit("Không thể tạo mã chia sẻ bài hát.")
+        finally:
+            self._set_loading(False)
+
     async def _create_share_from_series(self, path: str) -> None:
         if self._backend is None:
             return
@@ -169,7 +220,7 @@ class ShareBridge(QObject):
             from pathlib import Path
 
             from src.series_layout import collect_series_videos, episode_share_payload, save_series_rows
-            from src.series_share import series_share_block_reason
+            from src.series_share import series_share_block_reason, series_share_no_source_message
             from src import share_manager
 
             info = self._backend.library_series_share_info(path)
@@ -188,14 +239,14 @@ class ShareBridge(QObject):
                     row["source_url"] = recovered
             block_reason = series_share_block_reason(rows)
             if info is None:
-                raise ValueError(block_reason or "Không thể chia sẻ phim bộ này.")
+                raise ValueError(block_reason or series_share_no_source_message(len(rows)))
 
             shareable = [
                 row for row in rows
                 if share_manager.is_allowed_share_url(str(row.get("source_url") or ""))
             ]
             if not shareable:
-                raise ValueError(block_reason or "Không có tập nào có link gốc để chia sẻ.")
+                raise ValueError(block_reason or series_share_no_source_message(len(rows)))
 
             title = str(info.get("title") or "Phim bộ")
             try:
@@ -213,7 +264,7 @@ class ShareBridge(QObject):
                 if share_manager.is_allowed_share_url(str(row.get("source_url") or ""))
             ]
             if not episodes:
-                raise ValueError(block_reason or "Không có tập nào có link gốc để chia sẻ.")
+                raise ValueError(block_reason or series_share_no_source_message(len(rows)))
             result = await share_manager.create_series_share(
                 title=title,
                 author=str(info.get("author") or ""),
@@ -226,6 +277,62 @@ class ShareBridge(QObject):
         except Exception:
             logger.exception("Create series share failed")
             self.shareError.emit("Không thể tạo mã chia sẻ phim bộ.")
+        finally:
+            self._set_loading(False)
+
+    async def _create_share_from_playlist(self, path: str) -> None:
+        if self._backend is None:
+            return
+        self._set_loading(True)
+        try:
+            from pathlib import Path
+
+            from src import share_manager
+            from src.metadata_store import resolve_source_url
+            from src.playlist_layout import collect_playlist_tracks, track_share_payload
+            from src.playlist_share import playlist_share_block_reason
+
+            if str(path or "").strip().startswith("__liminal__:"):
+                raise ValueError("Không thể chia sẻ All Musics.")
+
+            info = self._backend.library_playlist_share_info(path)
+            resolved = Path(path)
+            try:
+                folder = resolved.resolve() if resolved.is_dir() else resolved.parent.resolve()
+            except OSError:
+                folder = resolved
+            rows = collect_playlist_tracks(folder)
+            for row in rows:
+                track_path = str(row.get("path") or "").strip()
+                if not track_path:
+                    continue
+                recovered = resolve_source_url(track_path, cache=True)
+                if recovered:
+                    row["source_url"] = recovered
+            block_reason = playlist_share_block_reason(rows)
+            if info is None:
+                raise ValueError(block_reason or "Không thể chia sẻ playlist này.")
+
+            tracks = [
+                track_share_payload(row)
+                for row in rows
+                if share_manager.is_allowed_share_url(str(row.get("source_url") or ""))
+            ]
+            if not tracks:
+                raise ValueError(block_reason or "Không có bài nào có link gốc để chia sẻ.")
+
+            result = await share_manager.create_playlist_share(
+                title=str(info.get("title") or "Playlist"),
+                author=str(info.get("author") or ""),
+                thumbnail_url=str(info.get("thumbnail_url") or ""),
+                tracks=tracks,
+            )
+            self.shareCreated.emit(str(result.get("code") or ""))
+        except ValueError as exc:
+            self.shareError.emit(str(exc))
+        except Exception:
+            logger.exception("Create playlist share failed")
+            self.shareError.emit("Không thể tạo mã chia sẻ playlist.")
         finally:
             self._set_loading(False)
 

@@ -119,6 +119,75 @@ def _entry_to_result(item: dict, media_type: str) -> dict | None:
     }
 
 
+def _normalize_video_quality(quality: str) -> str:
+    """Accept legacy UI keys (1440/2160/best) and canonical labels (2K/4K/Max)."""
+    aliases = {
+        "1440": "2K",
+        "2160": "4K",
+        "best": "Max",
+    }
+    return aliases.get(quality.strip(), quality.strip())
+
+
+def _video_format_for_quality(quality: str) -> str:
+    """Map the user-facing quality label to a yt-dlp format string.
+
+    Do not restrict to mp4: YouTube's highest streams are often VP9/AV1 in
+    webm/mkv.  yt-dlp merges them with ffmpeg without re-encoding.
+    """
+    quality = _normalize_video_quality(quality)
+    mapping = {
+        "480": "bestvideo[height<=480]+bestaudio/best[height<=480]",
+        "720": "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+        "2K": "bestvideo[height<=1440]+bestaudio/best[height<=1440]",
+        "4K": "bestvideo[height<=2160]+bestaudio/best[height<=2160]",
+        "Max": "bestvideo*+bestaudio/best",
+    }
+    return mapping.get(quality, mapping["1080"])
+
+
+_VIDEO_YTDLP_OPTS: dict = {
+    "merge_output_format": "mkv",
+    "format_sort": [
+        "res",
+        "fps",
+        "hdr:12",
+        "codec:av01",
+        "codec:av1",
+        "codec:vp9.2",
+        "codec:vp9",
+        "codec:h265",
+        "codec:h264",
+        "size",
+    ],
+    "format_sort_force": True,
+    "concurrent_fragment_downloads": 4,
+    "retries": 10,
+    "fragment_retries": 10,
+    "writethumbnail": True,
+    "writeinfojson": True,
+    "postprocessors": [
+        {"key": "FFmpegMetadata"},
+        {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
+    ],
+}
+
+
+def _resolved_download_path(prepared: Path, media_type: str) -> Path:
+    if media_type == "music":
+        mp3 = prepared.with_suffix(".mp3")
+        return mp3 if mp3.exists() else prepared
+    if prepared.exists():
+        return prepared
+    stem = prepared.with_suffix("")
+    for ext in (".mkv", ".webm", ".mp4", ".m4v", ".mov"):
+        candidate = stem.with_suffix(ext)
+        if candidate.exists():
+            return candidate
+    return prepared
+
+
 class Downloader:
     """Run the blocking yt-dlp Python API in executor worker threads."""
 
@@ -131,7 +200,7 @@ class Downloader:
         if yt_dlp is None:
             return "Chưa cài yt-dlp. Hãy chạy: pip install -r requirements.txt"
         if require_ffmpeg and shutil.which("ffmpeg") is None:
-            return "Không tìm thấy ffmpeg. Cần cài ffmpeg để chuyển âm thanh sang MP3."
+            return "Không tìm thấy ffmpeg. Cần cài ffmpeg để tải/ghi media."
         return None
 
     async def search(self, query: str, media_type: str, limit: int = 10) -> list[dict]:
@@ -262,8 +331,9 @@ class Downloader:
         media_type: str,
         progress_hook: Callable[[dict], None],
         output_subdir: str | None = None,
+        quality: str = "1080",
     ) -> tuple[str, str]:
-        error = self.availability_error(require_ffmpeg=media_type == "music")
+        error = self.availability_error(require_ffmpeg=media_type in {"music", "video"})
         if error:
             raise DownloadFailed(error)
         if media_type not in {"music", "video"}:
@@ -282,8 +352,11 @@ class Downloader:
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
-            "format": "bestaudio/best" if media_type == "music" else "best[ext=mp4]/best",
         }
+        if media_type == "music":
+            opts["format"] = "bestaudio/best"
+        else:
+            opts["format"] = _video_format_for_quality(quality)
         if media_type == "music":
             opts.update({
                 # EmbedThumbnail consumes the downloaded thumbnail file after
@@ -300,16 +373,7 @@ class Downloader:
                 ],
             })
         else:
-            opts.update({
-                # Keep a JPEG sidecar next to the video. The library scanner
-                # resolves this file by matching the video's stem.
-                "writethumbnail": True,
-                "writeinfojson": True,
-                "postprocessors": [
-                    {"key": "FFmpegMetadata"},
-                    {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
-                ],
-            })
+            opts.update(_VIDEO_YTDLP_OPTS)
 
         loop = asyncio.get_running_loop()
 
@@ -326,7 +390,7 @@ class Downloader:
                     info = ydl.extract_info(target, download=True)
                     video_id = str((info or {}).get("id") or url_or_id)
                     prepared = Path(ydl.prepare_filename(info))
-                    final_path = prepared.with_suffix(".mp3") if media_type == "music" else prepared
+                    final_path = _resolved_download_path(prepared, media_type)
                     return video_id, str(final_path.resolve())
             except GoogleDriveError as exc:
                 text = str(exc)

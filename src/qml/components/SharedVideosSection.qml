@@ -4,6 +4,7 @@ import Liminal 1.0
 
 Item {
     id: root
+    clip: true
 
     property alias model: grid.model
     property int gridColumns: Theme.gridColumns

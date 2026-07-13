@@ -36,7 +36,7 @@ DEFAULT_COLORS: dict[str, str] = {
 }
 
 DEFAULT_UI: dict = {
-    "window": {"custom_title_bar": True},
+    "window": {"custom_title_bar": True, "opacity": 1.0},
     "colors": deepcopy(DEFAULT_COLORS),
     "sidebar": {"width": 220, "visible": True},
     "search": {"width": 340, "placeholder": "Tìm trong thư viện…"},
@@ -112,6 +112,14 @@ def _normalize_bool(value: object, fallback: bool) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return fallback
+
+
+def _normalize_float(value: object, fallback: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(minimum, min(maximum, number))
 
 
 def _camel_to_snake(name: str) -> str:
@@ -264,6 +272,11 @@ def resolve_ui_config(settings: dict | None = None) -> dict:
 
     overrides = _deep_merge(overrides, _collect_dotted_overrides(document))
     overrides = _deep_merge(overrides, _collect_legacy_sections(document))
+
+    top_level_opacity = document.get("window_opacity") or document.get("windowOpacity")
+    if top_level_opacity is not None:
+        overrides.setdefault("window", {})["opacity"] = top_level_opacity
+
     return normalize_ui_config(overrides)
 
 
@@ -279,6 +292,12 @@ def normalize_ui_config(data: dict | None) -> dict:
     window["custom_title_bar"] = _normalize_bool(
         window.get("custom_title_bar"),
         DEFAULT_UI["window"]["custom_title_bar"],
+    )
+    window["opacity"] = _normalize_float(
+        window.get("opacity"),
+        DEFAULT_UI["window"]["opacity"],
+        minimum=0.1,
+        maximum=1.0,
     )
 
     sidebar = merged.setdefault("sidebar", {})
@@ -424,6 +443,10 @@ class UiConfigBridge(QObject):
     @pyqtProperty(bool, constant=True)
     def customTitleBar(self) -> bool:
         return bool(self._config["window"]["custom_title_bar"])
+
+    @pyqtProperty(float, constant=True)
+    def windowOpacity(self) -> float:
+        return float(self._config["window"]["opacity"])
 
     @pyqtProperty(int, constant=True)
     def sidebarWidth(self) -> int:

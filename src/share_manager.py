@@ -26,6 +26,7 @@ _AI_SORT_TIMEOUT = 45
 _THUMB_TIMEOUT = 15
 _MAX_REDIRECTS = 5
 _SERIES_INITIAL_DOWNLOADS = 3
+_PLAYLIST_INITIAL_DOWNLOADS = 3
 
 SHARED_ITEMS_FILE = CONFIG_DIR / "shared_items.json"
 SHARED_THUMB_DIR = Path(
@@ -142,6 +143,11 @@ def _http_error_message(exc: urllib.error.HTTPError, *, series: bool = False) ->
             "Máy chủ chia sẻ chưa hỗ trợ phim bộ. "
             "Cần deploy bản mới của 2FA-SHARE-HMD lên hoangminhduong.top."
         )
+    if detail == "mediaType không hợp lệ":
+        return (
+            "Máy chủ chia sẻ chưa hỗ trợ loại nội dung này. "
+            "Cần deploy bản mới của 2FA-SHARE-HMD lên hoangminhduong.top."
+        )
     if detail:
         return f"Không thể tạo mã chia sẻ: {detail}"
     return f"Không thể tạo mã chia sẻ (HTTP {exc.code})."
@@ -223,12 +229,12 @@ def _normalize_item(raw: dict) -> dict | None:
         return None
 
     media_type = str(raw.get("media_type") or "video").strip().lower()
-    if media_type not in {"music", "video", "series"}:
+    if media_type not in {"music", "video", "series", "playlist"}:
         media_type = "video"
 
     episodes = _parse_episodes(raw.get("episodes") or raw.get("episodes_json"))
     source_url = str(raw.get("source_url") or "").strip()
-    if media_type == "series":
+    if media_type in {"series", "playlist"}:
         if not episodes:
             return None
         if not source_url:
@@ -496,6 +502,66 @@ async def create_series_share(
     return {"code": code, "id": str(payload.get("id") or "")}
 
 
+async def create_playlist_share(
+    *,
+    title: str,
+    author: str,
+    thumbnail_url: str,
+    tracks: list[dict],
+) -> dict:
+    if not tracks:
+        raise ValueError("Playlist cần ít nhất một bài có link gốc.")
+    device_id = get_device_id()
+    loop = asyncio.get_running_loop()
+    payload_tracks = [
+        {
+            "index": int(track.get("index") or i + 1),
+            "season": 1,
+            "episode": int(track.get("episode") or track.get("index") or i + 1),
+            "title": str(track.get("title") or f"Bài {i + 1}").strip(),
+            "sourceUrl": str(track.get("source_url") or "").strip(),
+            "thumbnailUrl": str(track.get("thumbnail_url") or "").strip(),
+        }
+        for i, track in enumerate(tracks)
+        if is_allowed_share_url(str(track.get("source_url") or ""))
+    ]
+    if not payload_tracks:
+        raise ValueError("Không có bài nào có link gốc để chia sẻ.")
+
+    try:
+        payload = await loop.run_in_executor(
+            None,
+            lambda: _request_json(
+                "POST",
+                "/api/media-share",
+                body={
+                    "deviceId": device_id,
+                    "title": title.strip(),
+                    "author": author.strip(),
+                    "thumbnailUrl": thumbnail_url.strip(),
+                    "sourceUrl": payload_tracks[0]["sourceUrl"],
+                    "mediaType": "playlist",
+                    "episodes": payload_tracks,
+                },
+            ),
+        )
+    except urllib.error.HTTPError as exc:
+        raise ValueError(_http_error_message(exc, series=True)) from exc
+    except urllib.error.URLError as exc:
+        raise ValueError("Không thể kết nối máy chủ chia sẻ.") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("Phản hồi máy chủ không hợp lệ.") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("Phản hồi máy chủ không hợp lệ.")
+
+    code = str(payload.get("code") or "").strip()
+    if not code:
+        raise ValueError("Máy chủ không trả về mã chia sẻ.")
+
+    return {"code": code, "id": str(payload.get("id") or "")}
+
+
 def initial_series_download_episodes(episodes: list[dict], *, limit: int = _SERIES_INITIAL_DOWNLOADS) -> list[dict]:
     """Return the first N episodes to prefetch after redeeming a series share."""
     if not episodes:
@@ -507,6 +573,14 @@ def initial_series_download_episodes(episodes: list[dict], *, limit: int = _SERI
             int(ep.get("episode") or ep.get("index") or 0),
         ),
     )
+    return list(ordered[: max(1, limit)])
+
+
+def initial_playlist_download_tracks(tracks: list[dict], *, limit: int = _PLAYLIST_INITIAL_DOWNLOADS) -> list[dict]:
+    """Return the first N tracks to prefetch after redeeming a playlist share."""
+    if not tracks:
+        return []
+    ordered = sorted(tracks, key=lambda track: int(track.get("index") or track.get("episode") or 0))
     return list(ordered[: max(1, limit)])
 
 

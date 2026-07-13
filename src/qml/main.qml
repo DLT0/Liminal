@@ -13,7 +13,7 @@ ApplicationWindow {
     height: 780
     minimumWidth: 1000
     minimumHeight: 680
-    visible: true
+    visible: false
     title: "Liminal"
     color: "transparent"
     flags: uiConfig.customTitleBar
@@ -21,8 +21,9 @@ ApplicationWindow {
         : Qt.Window
 
     property string searchQuery: ""
+    property int visibilityBeforeFullScreen: Window.Windowed
 
-    onVisibilityChanged: {
+    onVisibilityChanged: function(visibility) {
         if (visibility === Window.Minimized) {
             backend.minimizeToTray()
         }
@@ -30,11 +31,7 @@ ApplicationWindow {
 
     onClosing: function(close) {
         close.accepted = false
-        if (backend.closeActionTray) {
-            backend.minimizeToTray()
-        } else {
-            backend.quitApp()
-        }
+        backend.quitApp()
     }
 
     Shortcut {
@@ -53,6 +50,11 @@ ApplicationWindow {
 
     ShareCreatedDialog {
         id: shareCreatedDialog
+        parent: Overlay.overlay
+    }
+
+    ShareErrorDialog {
+        id: shareErrorDialog
         parent: Overlay.overlay
     }
 
@@ -95,8 +97,12 @@ ApplicationWindow {
             shareCreatedDialog.showCode(code)
         }
         function onShareError(message) {
-            shareToast.text = message
-            shareToast.open()
+            if (message.indexOf("\n") >= 0 || message.length > 72) {
+                shareErrorDialog.showError(message)
+            } else {
+                shareToast.text = message
+                shareToast.open()
+            }
         }
         function onRedeemSuccess() {
             shareToast.text = "Đã thêm vào danh sách chia sẻ. Tập 1–3 sẽ được tải tự động."
@@ -115,13 +121,25 @@ ApplicationWindow {
             contentHeader.currentPage = backend.currentPage
             contentHeader.updateForPage(backend.currentPage)
         }
+        function onFullScreenChanged() {
+            if (backend.isFullScreen) {
+                root.visibilityBeforeFullScreen = root.visibility
+                root.showFullScreen()
+            } else if (root.visibilityBeforeFullScreen === Window.Maximized) {
+                root.showMaximized()
+            } else {
+                root.showNormal()
+            }
+        }
     }
 
     Rectangle {
         id: windowBg
         anchors.fill: parent
-        color: Theme.bgElevated
-        radius: 16
+        color: backend.inFocusMode && mpvVideo.geometryMode
+            ? "transparent"
+            : Theme.bgElevated
+        radius: backend.inFocusMode && mpvVideo.geometryMode ? 0 : 16
         clip: true
 
         ColumnLayout {
@@ -131,10 +149,10 @@ ApplicationWindow {
         TitleBar {
             id: titleBar
             Layout.fillWidth: true
-            visible: uiConfig.customTitleBar
+            visible: uiConfig.customTitleBar && root.visibility !== Window.FullScreen
 
             onCloseRequested: root.close()
-            onMinimizeRequested: root.showMinimized()
+            onMinimizeRequested: backend.minimizeToTray()
             onMaximizeRequested: {
                 root.visibility === Window.Maximized
                     ? root.showNormal()
@@ -150,7 +168,7 @@ ApplicationWindow {
             Sidebar {
                 id: sidebar
                 Layout.fillHeight: true
-                visible: uiConfig.sidebarVisible
+                visible: uiConfig.sidebarVisible && !backend.inFocusMode
                 currentPage: backend.currentPage
                 onPageSelected: function(page, again) {
                     backend.setCurrentPage(page, again === true)
@@ -174,6 +192,7 @@ ApplicationWindow {
                     id: contentHeader
                     Layout.fillWidth: true
                     Layout.preferredHeight: 72
+                    visible: !backend.inFocusMode
                     pageTitle: backend.pageTitle
                     currentPage: backend.currentPage
 
@@ -210,7 +229,7 @@ ApplicationWindow {
                         Item {
                             id: musicContent
                             width: musicPage.width
-                            height: backend.inCollectionView
+                            height: backend.inCollectionView || backend.inSharedPlaylistView
                                 ? musicPage.height
                                 : backend.musicSearchActive
                                     ? musicSearchPage.y + musicSearchPage.height + Theme.contentPadding
@@ -220,31 +239,88 @@ ApplicationWindow {
                             readonly property real musicCellWidth: Math.floor(
                                 (width - 2 * Theme.contentPadding - (musicColumns - 1) * Theme.cardGap) / musicColumns
                             )
-                            readonly property real musicCellHeight: musicCellWidth + 60
+                            readonly property real musicCellHeight: Math.ceil(musicCellWidth + 52) + 8
+                            readonly property real musicRowHoverPad: Math.ceil(musicCellWidth * (Theme.hoverScale - 1.0))
                             readonly property real albumsHeight: Math.max(
                                 180,
-                                Math.ceil((Number(backend.musicAlbumsModel.count) || 0) / musicColumns) * musicCellHeight + 16
+                                Math.ceil((Number(backend.musicAlbumsModel.count) || 0) / musicColumns)
+                                    * (musicCellHeight + musicRowHoverPad) + 16
                             )
                             readonly property real singlesHeight: Math.max(
                                 180,
-                                Math.ceil((Number(backend.musicSinglesModel.count) || 0) / musicColumns) * musicCellHeight + 16
+                                Math.ceil((Number(backend.musicSinglesModel.count) || 0) / musicColumns)
+                                    * (musicCellHeight + musicRowHoverPad) + 16
                             )
                             readonly property real searchHeight: Math.max(
                                 180,
-                                Math.ceil((Number(backend.musicSearchModel.count) || 0) / musicColumns) * musicCellHeight + 16
+                                Math.ceil((Number(backend.musicSearchModel.count) || 0) / musicColumns)
+                                    * (musicCellHeight + musicRowHoverPad) + 16
                             )
+                            readonly property real sharedHeight: Math.max(
+                                180,
+                                Math.ceil((Number(backend.musicSharedModel.count) || 0) / musicColumns)
+                                    * (musicCellHeight + musicRowHoverPad) + 16
+                            )
+                            readonly property bool showShared: backend.musicSharedModel.count > 0
+                            readonly property bool inMusicDetail: backend.inMusicDetailView
 
-                            Text {
-                                id: albumsTitle
+                            SectionHeader {
+                                id: musicSharedTitle
                                 x: Theme.contentPadding
                                 y: Theme.contentPadding
                                 width: parent.width - 2 * Theme.contentPadding
+                                text: "Được chia sẻ với tôi"
+                                visible: !musicContent.inMusicDetail && !backend.musicSearchActive && musicContent.showShared
+                            }
+
+                            SharedVideosSection {
+                                id: musicSharedSection
+                                objectName: "musicSharedSection"
+                                x: 0
+                                y: musicSharedTitle.y + musicSharedTitle.height + 4
+                                width: parent.width
+                                height: musicContent.sharedHeight
+                                visible: !musicContent.inMusicDetail && !backend.musicSearchActive && musicContent.showShared
+                                gridColumns: musicContent.musicColumns
+                                emptyTitle: "Chưa có playlist chia sẻ"
+                                emptyMessage: "Nhập mã chia sẻ từ bạn bè để nghe playlist hoặc đĩa đơn tại đây."
+                                model: backend.musicSharedModel
+                                onPlayRequested: function(index) { backend.playMusicShared(index) }
+                                onDownloadRequested: function(index) { backend.downloadMusicSharedItem(index) }
+                                onDismissRequested: function(index) { backend.dismissMusicSharedItem(index) }
+                            }
+
+                            CollectionDetailView {
+                                id: sharedPlaylistDetailView
+                                objectName: "sharedPlaylistDetailView"
+                                z: 20
+                                x: 0
+                                y: 0
+                                width: parent.width
+                                height: parent.height
+                                visible: backend.inSharedPlaylistView
+                                model: backend.musicModel
+                                showDownloadState: true
+                                bannerTitle: backend.collectionBannerTitle
+                                bannerSubtitle: backend.collectionBannerSubtitle
+                                bannerImage: backend.collectionBannerImage
+                                hasPlayableTracks: backend.collectionHasPlayableTracks
+                                isPlaying: backend.isPlaying
+                                onPlayRequested: function(index) { backend.playSharedPlaylistTrack(index) }
+                                onDownloadEpisodeRequested: function(index) { backend.downloadSharedPlaylistTrack(index) }
+                                onPlayAllRequested: backend.togglePlayCollection()
+                                onShufflePlayRequested: backend.playCollectionShuffled()
+                            }
+
+                            SectionHeader {
+                                id: albumsTitle
+                                x: Theme.contentPadding
+                                y: musicContent.showShared
+                                    ? musicSharedSection.y + musicSharedSection.height + 8
+                                    : Theme.contentPadding
+                                width: parent.width - 2 * Theme.contentPadding
                                 text: "Playlist của tôi"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 24
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.musicSearchActive
+                                visible: !musicContent.inMusicDetail && !backend.musicSearchActive
                             }
 
                             LibraryPage {
@@ -254,9 +330,16 @@ ApplicationWindow {
                                 y: backend.inCollectionView ? 0 : albumsTitle.y + albumsTitle.height + 4
                                 width: parent.width
                                 height: backend.inCollectionView ? parent.height : musicContent.albumsHeight
-                                visible: backend.inCollectionView || !backend.musicSearchActive
+                                visible: (backend.inCollectionView || !backend.musicSearchActive) && !backend.inSharedPlaylistView
                                 model: backend.musicAlbumsModel
                                 useVinylStyle: true
+                                showShareAction: true
+                                showPlaylistShare: backend.inCollectionView
+                                    && backend.currentPlaylistFolderPath.length > 0
+                                    && !backend.currentPlaylistFolderPath.startsWith("__liminal__:")
+                                showTrackShare: backend.inCollectionView
+                                    && backend.currentPlaylistFolderPath.length > 0
+                                    && !backend.currentPlaylistFolderPath.startsWith("__liminal__:")
                                 showScrollBar: false
                                 scrollEnabled: false
                                 verticalContentMargin: 8
@@ -277,17 +360,13 @@ ApplicationWindow {
                                 onShufflePlayRequested: backend.playCollectionShuffled()
                             }
 
-                            Text {
+                            SectionHeader {
                                 id: singlesTitle
                                 x: Theme.contentPadding
                                 y: musicAlbumsPage.y + musicAlbumsPage.height + 8
                                 width: parent.width - 2 * Theme.contentPadding
                                 text: "Đĩa đơn"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 24
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
-                                visible: !backend.inCollectionView && !backend.musicSearchActive
+                                visible: !musicContent.inMusicDetail && !backend.musicSearchActive
                             }
 
                             LibraryPage {
@@ -322,6 +401,7 @@ ApplicationWindow {
                                 visible: !backend.inCollectionView && !backend.musicSearchActive
                                 model: backend.musicSinglesModel
                                 useVinylStyle: true
+                                showShareAction: true
                                 showScrollBar: false
                                 scrollEnabled: false
                                 verticalContentMargin: 8
@@ -373,40 +453,41 @@ ApplicationWindow {
                                 (width - 2 * Theme.contentPadding - (videoColumns - 1) * Theme.cardGap) / videoColumns
                             )
                             readonly property real videoCellHeight: Math.ceil(videoCellWidth / Theme.videoPosterAspect + 62) + 8
+                            readonly property real videoRowHoverPad: Math.ceil(videoCellWidth * (Theme.hoverScale - 1.0))
 
                             readonly property real sharedHeight: Math.max(
                                 180,
-                                Math.ceil((Number(backend.videoSharedModel.count) || 0) / videoColumns) * videoCellHeight + 16
+                                Math.ceil((Number(backend.videoSharedModel.count) || 0) / videoColumns)
+                                    * (videoCellHeight + videoRowHoverPad) + 16
                             )
                             readonly property real seriesHeight: videoContent.showSeries
                                 ? Math.max(
                                     180,
-                                    Math.ceil((Number(backend.videoSeriesModel.count) || 0) / videoColumns) * videoCellHeight + 16
+                                    Math.ceil((Number(backend.videoSeriesModel.count) || 0) / videoColumns)
+                                        * (videoCellHeight + videoRowHoverPad) + 16
                                   )
                                 : 0
                             readonly property real myMoviesHeight: Math.max(
                                 180,
-                                Math.ceil((Number(backend.videoMyMoviesModel.count) || 0) / videoColumns) * videoCellHeight + 16
+                                Math.ceil((Number(backend.videoMyMoviesModel.count) || 0) / videoColumns)
+                                    * (videoCellHeight + videoRowHoverPad) + 16
                             )
                             readonly property bool showSeries: backend.videoSeriesModel.count > 0
                             readonly property real searchHeight: Math.max(
                                 180,
-                                Math.ceil((Number(backend.videoSearchModel.count) || 0) / videoColumns) * videoCellHeight + 16
+                                Math.ceil((Number(backend.videoSearchModel.count) || 0) / videoColumns)
+                                    * (videoCellHeight + videoRowHoverPad) + 16
                             )
 
 
                             readonly property bool showShared: backend.videoSharedModel.count > 0
 
-                            Text {
+                            SectionHeader {
                                 id: sharedTitle
                                 x: Theme.contentPadding
                                 y: Theme.contentPadding
                                 width: parent.width - 2 * Theme.contentPadding
                                 text: "Được chia sẻ với tôi"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 24
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
                                 visible: !videoContent.inVideoDetail && !backend.videoSearchActive && videoContent.showShared
                             }
 
@@ -423,32 +504,6 @@ ApplicationWindow {
                                 onPlayRequested: function(index) { backend.playVideoShared(index) }
                                 onDownloadRequested: function(index) { backend.downloadSharedItem(index) }
                                 onDismissRequested: function(index) { backend.dismissSharedItem(index) }
-                            }
-
-                            CollectionDetailView {
-                                id: localSeriesDetailView
-                                objectName: "localSeriesDetailView"
-                                z: 20
-                                x: 0
-                                y: 0
-                                width: parent.width
-                                height: parent.height
-                                visible: backend.inCollectionView
-                                model: backend.videoModel
-                                useSeriesStyle: true
-                                bannerTitle: backend.collectionBannerTitle
-                                bannerSubtitle: backend.collectionBannerSubtitle
-                                bannerImage: backend.collectionBannerImage
-                                bannerDescription: backend.collectionBannerDescription
-                                hasPlayableTracks: backend.collectionHasPlayableTracks
-                                isPlaying: backend.isPlaying
-                                onPlayRequested: function(index) { backend.playMedia(index) }
-                                onPlayAllRequested: backend.togglePlayCollection()
-                                onShufflePlayRequested: backend.playCollectionShuffled()
-                                onSeriesShareRequested: {
-                                    if (backend.currentSeriesFolderPath)
-                                        shareBridge.createShareFromSeriesPath(backend.currentSeriesFolderPath)
-                                }
                             }
 
                             CollectionDetailView {
@@ -494,7 +549,7 @@ ApplicationWindow {
                                 onPlayAllRequested: backend.playMovieDetail()
                             }
 
-                            Text {
+                            SectionHeader {
                                 id: myMoviesTitle
                                 x: Theme.contentPadding
                                 y: videoContent.showShared
@@ -502,10 +557,6 @@ ApplicationWindow {
                                     : Theme.contentPadding
                                 width: parent.width - 2 * Theme.contentPadding
                                 text: "Phim của tôi"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 24
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
                                 visible: !videoContent.inVideoDetail && !backend.videoSearchActive
                             }
 
@@ -534,16 +585,12 @@ ApplicationWindow {
                                 onPlayRequested: function(index) { backend.openVideoMyMovie(index) }
                             }
 
-                            Text {
+                            SectionHeader {
                                 id: seriesTitle
                                 x: Theme.contentPadding
                                 y: videoMyMoviesPage.y + videoMyMoviesPage.height + 8
                                 width: parent.width - 2 * Theme.contentPadding
                                 text: "Phim bộ"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 24
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
                                 visible: videoContent.showSeries
                                     && !videoContent.inVideoDetail
                                     && !backend.videoSearchActive
@@ -553,13 +600,7 @@ ApplicationWindow {
                                 id: videoSeriesPage
                                 objectName: "videoSeriesPage"
                                 x: 0
-                                y: seriesTitle.y + seriesTitle.height + 4
-                                width: parent.width
-                            LibraryPage {
-                                id: videoSeriesPage
-                                objectName: "videoSeriesPage"
-                                x: 0
-                                y: seriesTitle.y + seriesTitle.height + 4
+                                y: backend.inCollectionView ? 0 : seriesTitle.y + seriesTitle.height + 4
                                 width: parent.width
                                 height: backend.inCollectionView ? parent.height : videoContent.seriesHeight
                                 visible: (videoContent.showSeries && !videoContent.inVideoDetail)
@@ -579,6 +620,7 @@ ApplicationWindow {
                                 bannerTitle: backend.collectionBannerTitle
                                 bannerSubtitle: backend.collectionBannerSubtitle
                                 bannerImage: backend.collectionBannerImage
+                                bannerDescription: backend.collectionBannerDescription
                                 hasPlayableTracks: backend.collectionHasPlayableTracks
                                 isPlaying: backend.isPlaying
                                 emptyTitle: "Chưa có phim bộ"
@@ -587,6 +629,10 @@ ApplicationWindow {
                                 onOpenCollectionRequested: function(index) { backend.openVideoSeries(index) }
                                 onPlayAllRequested: backend.togglePlayCollection()
                                 onShufflePlayRequested: backend.playCollectionShuffled()
+                                onSeriesShareRequested: {
+                                    if (backend.currentSeriesFolderPath)
+                                        shareBridge.createShareFromSeriesPath(backend.currentSeriesFolderPath)
+                                }
                             }
 
                             LibraryPage {
@@ -761,8 +807,25 @@ ApplicationWindow {
                 onSettingsClicked: backend.setCurrentPage(5)
             }
         }
+
+    }
+
+    FocusModeScreen {
+        id: focusModeScreen
+        anchors.fill: parent
+    }
+
+    Connections {
+        target: focusModeScreen
+        function onVideoPlaybackStateChanged(isPlaying) {
+            backend.onVideoPlaybackStateChanged(isPlaying)
+        }
+        function onVideoPositionChanged(positionMs) {
+            backend.onVideoPositionChanged(positionMs)
+        }
+        function onVideoDurationChanged(durationMs) {
+            backend.onVideoDurationChanged(durationMs)
+        }
     }
 }
-
-
 }

@@ -4,6 +4,7 @@ import Liminal 1.0
 
 Item {
     id: root
+    clip: true
 
     property alias model: grid.model
     property string emptyTitle: "Thư viện trống"
@@ -26,6 +27,8 @@ Item {
     property bool showScrollBar: true
     property bool scrollEnabled: true
     property bool showShareAction: false
+    property bool showPlaylistShare: false
+    property bool showTrackShare: false
     property int gridColumns: Theme.gridColumns
     // Allows compact embedded library sections without changing full-page views.
     property int contentMargin: Theme.contentPadding
@@ -37,13 +40,14 @@ Item {
     signal createFolderRequested()
     signal playAllRequested()
     signal shufflePlayRequested()
+    signal seriesShareRequested()
 
     CreateFolderDialog {
         id: createFolderDialog
         parent: Overlay.overlay
         onFolderCreated: {
             if (contextMenu.itemPath)
-                populateMoveTargets(contextMenu.itemPath)
+                moveTargetsPopup.sourcePath = contextMenu.itemPath
         }
     }
 
@@ -52,17 +56,28 @@ Item {
         parent: Overlay.overlay
     }
 
-    ListModel {
-        id: moveTargetsModel
+    MoveTargetsPopup {
+        id: moveTargetsPopup
+        parent: Overlay.overlay
+        videoMode: root.useVideoStyle
+        onCreateFolderRequested: createFolderDialog.openDialog(root.useVideoStyle)
+        onTargetSelected: function(path) {
+            backend.moveMediaToFolder(contextMenu.itemPath, path)
+        }
     }
 
-    function populateMoveTargets(sourcePath) {
-        moveTargetsModel.clear()
-        if (!sourcePath)
+    function openMoveTargetsSubmenu(entryItem) {
+        if (!contextMenu.itemPath)
             return
-        var folders = backend.foldersForMove(sourcePath)
-        for (var i = 0; i < folders.length; i++)
-            moveTargetsModel.append(folders[i])
+        moveTargetsPopup.sourcePath = contextMenu.itemPath
+        if (entryItem) {
+            var pt = entryItem.mapToItem(Overlay.overlay, entryItem.width, 0)
+            contextMenu.moveSubmenuPos = Qt.point(pt.x, pt.y)
+        }
+        moveTargetsPopup.x = contextMenu.moveSubmenuPos.x
+        moveTargetsPopup.y = contextMenu.moveSubmenuPos.y
+        moveTargetsPopup.refreshTargets()
+        moveTargetsPopup.open()
     }
 
     function openContextMenu(index, isCollection, title, artist, itemPath, anchorItem, x, y) {
@@ -75,13 +90,14 @@ Item {
             ? backend.mediaCanMoveToSeries(itemPath)
             : backend.mediaCanMoveToPlaylist(itemPath)
         if (!isCollection && contextMenu.canMoveToCollection)
-            populateMoveTargets(itemPath)
+            moveTargetsPopup.sourcePath = itemPath
         else
-            moveTargetsModel.clear()
+            moveTargetsPopup.sourcePath = ""
         contextMenu.popup(anchorItem, x, y)
     }
 
     function openEmptyContextMenu(anchorItem, x, y) {
+        if (root.useVideoStyle) return
         emptyContextMenu.popup(anchorItem, x, y)
     }
 
@@ -103,6 +119,7 @@ Item {
         property string itemArtist: ""
         property string itemPath: ""
         property bool canMoveToCollection: true
+        property point moveSubmenuPos: Qt.point(0, 0)
         readonly property bool showMoveToCollectionMenu: root.allowMoveToCollection
             && !contextMenu.isCollection
             && contextMenu.canMoveToCollection
@@ -126,7 +143,17 @@ Item {
             enabled: contextMenu.showMoveToCollectionMenu
             iconName: "drive_file_move"
             text: root.useVideoStyle ? "Phân loại vào phim bộ" : "Thêm vào playlist khác"
-            onTriggered: moveToFolderMenu.popup(moveToCollectionEntry, moveToCollectionEntry.width, 0)
+            showSubmenuArrow: true
+            onHoveredChanged: {
+                if (hovered)
+                    openMoveTargetsSubmenu(moveToCollectionEntry)
+            }
+            onPressed: {
+                // Lưu tọa độ trước khi menu đóng (onTriggered gọi sau khi menu đã đóng)
+                var pt = moveToCollectionEntry.mapToItem(Overlay.overlay, moveToCollectionEntry.width, 0)
+                contextMenu.moveSubmenuPos = Qt.point(pt.x, pt.y)
+            }
+            onTriggered: openMoveTargetsSubmenu(null)
         }
         StyledMenuItem {
             iconName: "image"
@@ -143,10 +170,16 @@ Item {
             )
         }
         StyledMenuItem {
-            visible: root.showShareAction && !contextMenu.isCollection
+            visible: root.showShareAction && !contextMenu.isCollection && root.useVideoStyle
             iconName: "share"
             text: "Chia sẻ"
             onTriggered: shareBridge.createShareFromLibraryPath(contextMenu.itemPath)
+        }
+        StyledMenuItem {
+            visible: root.showShareAction && !contextMenu.isCollection && root.useVinylStyle
+            iconName: "share"
+            text: "Chia sẻ"
+            onTriggered: shareBridge.createShareFromMusicPath(contextMenu.itemPath)
         }
         StyledMenuItem {
             visible: root.showShareAction && contextMenu.isCollection && root.useVideoStyle
@@ -154,66 +187,19 @@ Item {
             text: "Chia sẻ phim bộ"
             onTriggered: shareBridge.createShareFromSeriesPath(contextMenu.itemPath)
         }
+        StyledMenuItem {
+            visible: root.showShareAction && contextMenu.isCollection && root.useVinylStyle
+                && !contextMenu.itemPath.startsWith("__liminal__:")
+            iconName: "share"
+            text: "Chia sẻ playlist"
+            onTriggered: shareBridge.createShareFromPlaylistPath(contextMenu.itemPath)
+        }
         StyledMenuSeparator {}
         StyledMenuItem {
             iconName: "delete"
             destructive: true
             text: "Xóa khỏi thư viện"
             onTriggered: backend.deleteMediaByPath(contextMenu.itemPath)
-        }
-    }
-
-    Menu {
-        id: moveToFolderMenu
-        parent: Overlay.overlay
-        topPadding: 8
-        bottomPadding: 8
-        leftPadding: 8
-        rightPadding: 8
-
-        background: Rectangle {
-            radius: 10
-            color: Theme.glassStrong
-            border.width: 1
-            border.color: Theme.glassStrongBorder
-        }
-
-        StyledMenuItem {
-            visible: !root.useVideoStyle
-            iconName: "create_new_folder"
-            text: "Tạo playlist mới"
-            onTriggered: createFolderDialog.openDialog(false)
-        }
-        StyledMenuSeparator {
-            visible: !root.useVideoStyle
-        }
-
-        StyledMenuItem {
-            visible: root.useVideoStyle
-            iconName: "create_new_folder"
-            text: "Tạo phim bộ mới"
-            onTriggered: createFolderDialog.openDialog(true)
-        }
-        StyledMenuSeparator {
-            visible: root.useVideoStyle
-        }
-
-        Instantiator {
-            model: moveTargetsModel
-            delegate: StyledMenuItem {
-                iconName: "folder"
-                required property string title
-                required property string path
-                text: title
-                onTriggered: backend.moveMediaToFolder(contextMenu.itemPath, path)
-            }
-            onObjectAdded: function(index, object) { moveToFolderMenu.addItem(object) }
-            onObjectRemoved: function(index, object) { moveToFolderMenu.removeItem(object) }
-        }
-        StyledMenuItem {
-            visible: moveTargetsModel.count === 0
-            enabled: false
-            text: root.useVideoStyle ? "Chưa có phim bộ khác" : "Không còn playlist khác"
         }
     }
 
@@ -230,10 +216,17 @@ Item {
         hasPlayableTracks: root.hasPlayableTracks
         isPlaying: root.isPlaying
         useSeriesStyle: root.useVideoStyle && root.inCollectionView
+        showPlaylistShare: root.showPlaylistShare && root.inCollectionView && root.useVinylStyle
+        showTrackShare: root.showTrackShare && root.inCollectionView && root.useVinylStyle
         onPlayRequested: function(index) { root.playRequested(index) }
         onOpenCollectionRequested: function(index) { root.openCollectionRequested(index) }
         onPlayAllRequested: function() { root.playAllRequested() }
         onShufflePlayRequested: function() { root.shufflePlayRequested() }
+        onPlaylistShareRequested: {
+            if (backend.currentPlaylistFolderPath)
+                shareBridge.createShareFromPlaylistPath(backend.currentPlaylistFolderPath)
+        }
+        onSeriesShareRequested: root.seriesShareRequested()
     }
 
     // Lobby grid
@@ -320,6 +313,7 @@ Item {
                 id: cell
                 width: grid.cellWidth - Theme.cardGap
                 height: grid.cellHeight - 8
+                clip: true
 
                 property bool isFolder: model.isCollection
                 property bool showVinyl: !isFolder && root.useVinylStyle && model.audioOnly

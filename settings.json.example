@@ -3,6 +3,7 @@
   "media_root": "~/Media/Liminal",
   "volume": 100,
   "muted": false,
+  "video_playback_backend": "inapp",
   "download_quality": "1080",
 
   "youtube_auth_mode": "oauth",

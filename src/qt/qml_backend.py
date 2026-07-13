@@ -24,8 +24,14 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QDesktopServices, QGuiApplication, QWindow
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
-from src.config import AUDIO_EXTS, VIDEO_EXTS
-from src.downloader import Downloader, Download403Failed, DownloadFailed, extract_youtube_id
+from src.config import AUDIO_EXTS, VIDEO_EXTS, mpv_audio_gain_factor
+from src.downloader import (
+    Downloader,
+    Download403Failed,
+    DownloadFailed,
+    _normalize_video_quality,
+    extract_youtube_id,
+)
 from src.folder_order import write_order
 from src.media_links import (
     add_track_to_album,
@@ -56,6 +62,11 @@ from src.scanner import (
     find_folder_track_thumbnails,
     scan_directory,
     scan_library_folder,
+)
+from src.playlist_layout import (
+    collect_playlist_tracks,
+    playlist_download_subdir,
+    track_share_payload,
 )
 from src.series_layout import (
     apply_tap_assignments,
@@ -131,6 +142,23 @@ def _normalize_artist(value: str) -> str:
     if artist.lower() in {"", "unknown artist", "video", "unknown", "music"}:
         return ""
     return artist
+
+
+@dataclass(frozen=True)
+class _FolderStackEntry:
+    path: Path
+    inode: tuple[int, int] | None = None
+
+
+def _folder_inode(path: Path) -> tuple[int, int] | None:
+    try:
+        resolved = path.resolve()
+        if not resolved.exists():
+            return None
+        stat = resolved.stat()
+        return (stat.st_dev, stat.st_ino)
+    except OSError:
+        return None
 
 
 def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict:
@@ -317,6 +345,7 @@ class _DownloadJob:
     url: str
     media_type: str
     output_subdir: str
+    quality: str = "1080"
     retry_403: bool = False
 
 
@@ -333,6 +362,7 @@ class AppBackend(QObject):
     trackThumbnailChanged = pyqtSignal()
     isPlayingChanged = pyqtSignal()
     volumeChanged = pyqtSignal()
+    videoPlaybackModeChanged = pyqtSignal()
     currentPageChanged = pyqtSignal()
     positionChanged = pyqtSignal()
     durationChanged = pyqtSignal()
@@ -370,6 +400,9 @@ class AppBackend(QObject):
     seriesAiSortLoadingChanged = pyqtSignal()
     seriesAiSortFinished = pyqtSignal(list)
     seriesAiSortError = pyqtSignal(str)
+    focusModeChanged = pyqtSignal()
+    fullScreenChanged = pyqtSignal()
+    videoStateChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -416,9 +449,13 @@ class AppBackend(QObject):
 
         raw = load_raw_settings()
         state = load_raw_state()
-        self._download_quality: str = str(raw.get("download_quality", "1080"))
+        self._download_quality: str = _normalize_video_quality(
+            str(raw.get("download_quality", "1080"))
+        )
         self._volume = max(0, min(100, int(raw.get("volume", 100))))
         self._muted = bool(raw.get("muted", False))
+        playback_mode = str(raw.get("video_playback_backend", "inapp")).strip().lower()
+        self._video_playback_mode = playback_mode if playback_mode in {"inapp", "mpv"} else "inapp"
         self._player_bar_always_visible = bool(
             self._ui_config.get("player_bar", {}).get("always_visible", False)
         )
@@ -489,6 +526,7 @@ class AppBackend(QObject):
         self._all_video_movies: list[dict] = []
         self._all_video_my_movies: list[dict] = []
         self._all_video_shared: list[dict] = []
+        self._all_music_shared: list[dict] = []
         self._all_video_tracks: list[dict] = []
         self._music_track_infos: list[MediaInfo] | None = None
         self._video_track_infos: list[MediaInfo] | None = None
@@ -496,11 +534,22 @@ class AppBackend(QObject):
         self._video_library_loaded = False
         self._music_source_ids_ready = False
         self._video_source_ids_ready = False
-        self._music_folder_stack: list[Path] = []
-        self._video_folder_stack: list[Path] = []
+        self._music_folder_stack: list[_FolderStackEntry] = []
+        self._video_folder_stack: list[_FolderStackEntry] = []
         self._shared_series_index = -1
+        self._shared_playlist_index = -1
         self._movie_detail_index = -1
         self._shared_movie_detail_index = -1
+        self._in_focus_mode = False
+        self._focus_mode_title = ""
+        self._focus_mode_source = ""
+        self._is_full_screen = False
+        self._video_is_playing = False
+        self._video_position = 0
+        self._video_duration = 0
+        self._current_episode_list: list[dict] = []
+        self._current_episode_index = -1
+        self._current_episode_series_key = ""
         self._series_ai_loading = False
         self._playlist_order_undo: dict[str, list[str]] = {}
         self._music_source_ids: set[str] = set()
@@ -510,6 +559,7 @@ class AppBackend(QObject):
         self._music_singles_model = MediaListModel(self)
         self._music_albums_model = MediaListModel(self)
         self._music_search_model = MediaListModel(self)
+        self._music_shared_model = MediaListModel(self)
         self._music_section = "singles"
         self._video_model = MediaListModel(self)
         self._video_series_model = MediaListModel(self)
@@ -569,6 +619,10 @@ class AppBackend(QObject):
     @pyqtProperty(QObject, constant=True)
     def musicSearchModel(self) -> MediaListModel:
         return self._music_search_model
+
+    @pyqtProperty(QObject, constant=True)
+    def musicSharedModel(self) -> MediaListModel:
+        return self._music_shared_model
 
     @pyqtProperty(bool, notify=musicSearchChanged)
     def musicSearchActive(self) -> bool:
@@ -630,6 +684,14 @@ class AppBackend(QObject):
     def volume(self) -> int:
         return self._volume
 
+    @pyqtProperty(str, notify=videoPlaybackModeChanged)
+    def videoPlaybackMode(self) -> str:
+        return self._video_playback_mode
+
+    @pyqtProperty(float, constant=True)
+    def audioGainFactor(self) -> float:
+        return mpv_audio_gain_factor()
+
     @pyqtProperty(int, notify=currentPageChanged)
     def currentPage(self) -> int:
         return self._current_page
@@ -670,6 +732,22 @@ class AppBackend(QObject):
     def mediaRoot(self) -> str:
         return self._media_root
 
+    @pyqtProperty(float, notify=mediaRootChanged)
+    def freeDiskSpaceGB(self) -> float:
+        import shutil
+        try:
+            path = self._media_root
+            if not path:
+                return 0.0
+            p = Path(path).expanduser().resolve()
+            while not p.exists() and p.parent != p:
+                p = p.parent
+            usage = shutil.disk_usage(str(p))
+            return usage.free / (1024 ** 3)
+        except Exception:
+            return 0.0
+
+
     @pyqtProperty(str, notify=musicDirChanged)
     def musicDir(self) -> str:
         return self._music_dir
@@ -699,6 +777,14 @@ class AppBackend(QObject):
         return self._shared_series_index >= 0
 
     @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def inSharedPlaylistView(self) -> bool:
+        return self._shared_playlist_index >= 0
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def inMusicDetailView(self) -> bool:
+        return (self._current_page == 2 and self.inCollectionView) or self.inSharedPlaylistView
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
     def inMovieDetailView(self) -> bool:
         return self._movie_detail_index >= 0 or self._shared_movie_detail_index >= 0
 
@@ -710,13 +796,69 @@ class AppBackend(QObject):
     def movieDetailIsShared(self) -> bool:
         return self._shared_movie_detail_index >= 0
 
+    @pyqtProperty(bool, notify=focusModeChanged)
+    def inFocusMode(self) -> bool:
+        return self._in_focus_mode
+
+    @pyqtProperty(str, notify=focusModeChanged)
+    def focusModeTitle(self) -> str:
+        return self._focus_mode_title
+
+    @pyqtProperty(str, notify=focusModeChanged)
+    def focusModeSource(self) -> str:
+        return self._focus_mode_source
+
+    @pyqtProperty(bool, notify=fullScreenChanged)
+    def isFullScreen(self) -> bool:
+        return self._is_full_screen
+
+    @pyqtProperty(bool, notify=videoStateChanged)
+    def videoIsPlaying(self) -> bool:
+        return self._video_is_playing
+
+    @pyqtProperty(int, notify=videoStateChanged)
+    def videoPosition(self) -> int:
+        return self._video_position
+
+    @pyqtProperty(int, notify=videoStateChanged)
+    def videoDuration(self) -> int:
+        return self._video_duration
+
+    @pyqtProperty(bool, notify=videoStateChanged)
+    def hasNextEpisode(self) -> bool:
+        return (
+            self._current_episode_index >= 0
+            and self._current_episode_index < len(self._current_episode_list) - 1
+        )
+
+    @pyqtProperty(bool, notify=videoStateChanged)
+    def hasPreviousEpisode(self) -> bool:
+        return self._current_episode_index > 0
+
+    @pyqtProperty(str, notify=videoStateChanged)
+    def currentEpisodeLabel(self) -> str:
+        if self._current_episode_index < 0 or self._current_episode_index >= len(self._current_episode_list):
+            return ""
+        episode = self._current_episode_list[self._current_episode_index]
+        season = int(episode.get("season") or 1)
+        number = int(episode.get("episode") or 1)
+        return f"S{season:02d}E{number:02d}"
+
+    @pyqtProperty(list, notify=videoStateChanged)
+    def currentEpisodeList(self) -> list[dict]:
+        return self._current_episode_list
+
+    @pyqtProperty(int, notify=videoStateChanged)
+    def currentEpisodeIndex(self) -> int:
+        return self._current_episode_index
+
     @pyqtProperty(bool, notify=libraryNavigationChanged)
     def inCollectionView(self) -> bool:
         return bool(self._folder_stack_for_page(self._current_page))
 
     @pyqtProperty(bool, notify=libraryNavigationChanged)
     def libraryCanGoBack(self) -> bool:
-        if self.inMovieDetailView:
+        if self.inMovieDetailView or self.inSharedPlaylistView:
             return True
         return bool(self._folder_stack_for_page(self._current_page))
 
@@ -739,12 +881,25 @@ class AppBackend(QObject):
         if self.inSharedSeriesView:
             item = self._video_shared_model.item_at(self._shared_series_index)
             return str(item.get("title") or "") if item else ""
+        if self.inSharedPlaylistView:
+            item = self._music_shared_model.item_at(self._shared_playlist_index)
+            return str(item.get("title") or "") if item else ""
         if not self.inCollectionView:
             return ""
         stack = self._folder_stack_for_page(self._current_page)
-        if stack and self._is_all_musics_virtual(stack[-1]):
+        if stack and self._is_all_musics_virtual(stack[-1].path):
             return ALL_MUSICS_TITLE
-        return self._current_library_folder().name
+        folder = self._current_library_folder()
+        try:
+            folder_key = str(folder.resolve())
+        except OSError:
+            folder_key = str(folder)
+        display = resolve_display(
+            folder_key,
+            default_title=folder.name,
+            default_image=find_folder_preview_image(folder) if folder.exists() else "",
+        )
+        return display["title"]
 
     @pyqtProperty(str, notify=libraryNavigationChanged)
     def collectionBannerSubtitle(self) -> str:
@@ -756,9 +911,6 @@ class AppBackend(QObject):
             duration = str(item.get("duration") or "").strip()
             if duration and duration != "--:--":
                 parts.append(duration)
-            subtitle = str(item.get("subtitle") or "").strip()
-            if subtitle:
-                parts.append(subtitle)
             if self.movieDetailIsShared:
                 if item.get("download_status") == "done" or self._shared_item_in_library(item):
                     parts.append("Đã tải")
@@ -766,7 +918,7 @@ class AppBackend(QObject):
                     parts.append(f"Đang tải {int(item.get('download_percent') or 0)}%")
                 else:
                     parts.append("Chưa tải")
-            return " · ".join(parts) if parts else "Phim lẻ"
+            return " · ".join(parts) if parts else ""
         if self.inSharedSeriesView:
             item = self._video_shared_model.item_at(self._shared_series_index)
             if item is None:
@@ -777,6 +929,16 @@ class AppBackend(QObject):
             if total:
                 return f"{downloaded}/{total} tập đã tải"
             return "Phim bộ"
+        if self.inSharedPlaylistView:
+            item = self._music_shared_model.item_at(self._shared_playlist_index)
+            if item is None:
+                return ""
+            tracks = list(item.get("episodes") or [])
+            downloaded = sum(1 for track in tracks if self._shared_track_in_library(track))
+            total = len(tracks)
+            if total:
+                return f"{downloaded}/{total} bài đã tải"
+            return "Playlist"
         if self.inCollectionView and self._current_page == 3 and self._video_section == "series":
             root = self._series_root_folder() or self._current_library_folder()
             rows = collect_series_videos(root)
@@ -817,6 +979,9 @@ class AppBackend(QObject):
         if self.inSharedSeriesView:
             item = self._video_shared_model.item_at(self._shared_series_index)
             return str(item.get("image") or "") if item else ""
+        if self.inSharedPlaylistView:
+            item = self._music_shared_model.item_at(self._shared_playlist_index)
+            return str(item.get("image") or "") if item else ""
         if not self.inCollectionView:
             return ""
         return find_folder_preview_image(self._current_library_folder())
@@ -827,8 +992,14 @@ class AppBackend(QObject):
             item = self._current_movie_detail_item()
             if item is None:
                 return ""
-            subtitle = str(item.get("subtitle") or "").strip()
-            return subtitle
+            artist = _normalize_artist(str(item.get("artist") or ""))
+            if artist:
+                return artist
+            path = str(item.get("canonical_path") or item.get("path") or "")
+            if path:
+                display = resolve_display(path, default_title=str(item.get("title") or ""))
+                return _normalize_artist(display.get("artist") or "")
+            return ""
         if self.inSharedSeriesView or (self.inCollectionView and self._current_page == 3 and self._video_section == "series"):
             root = self._series_root_folder() or self._current_library_folder()
             if self.inSharedSeriesView:
@@ -897,6 +1068,15 @@ class AppBackend(QObject):
                 ep for ep in episodes
                 if ep.get("download_status") == "done" or self._episode_in_library(ep)
             ]
+        if self.inSharedPlaylistView:
+            playlist = self._music_shared_model.item_at(self._shared_playlist_index)
+            if playlist is None:
+                return []
+            tracks = self._shared_playlist_track_items(playlist)
+            return [
+                track for track in tracks
+                if track.get("download_status") == "done" or self._shared_track_in_library(track)
+            ]
         return self._collection_media_items()
 
     def _current_path_under(self, directory: Path) -> bool:
@@ -953,6 +1133,11 @@ class AppBackend(QObject):
             if item is None:
                 return False
             return any(self._episode_in_library(ep) for ep in item.get("episodes") or [])
+        if self.inSharedPlaylistView:
+            item = self._music_shared_model.item_at(self._shared_playlist_index)
+            if item is None:
+                return False
+            return any(self._shared_track_in_library(track) for track in item.get("episodes") or [])
         return bool(self._collection_media_items())
 
     @pyqtProperty(bool, notify=libraryNavigationChanged)
@@ -996,6 +1181,16 @@ class AppBackend(QObject):
             self.optimizeMemory()
 
     @pyqtSlot()
+    def restoreFromTray(self) -> None:
+        if self._main_window is None:
+            return
+        # show() alone leaves a window that was minimized before hide() stuck
+        # in Minimized visibility — use showNormal() so the window actually appears.
+        self._main_window.showNormal()
+        self._main_window.raise_()
+        self._main_window.requestActivate()
+
+    @pyqtSlot()
     def optimizeMemory(self) -> None:
         """Optimizes memory when running in background (Linux malloc_trim & garbage collection)."""
         import gc
@@ -1007,11 +1202,15 @@ class AppBackend(QObject):
         gc.collect()
         try:
             import ctypes
-            libc = ctypes.CDLL("libc.so.6")
-            libc.malloc_trim(0)
-            logger.info("Memory optimization completed successfully via malloc_trim.")
-        except Exception as e:
-            logger.warning("Failed to call malloc_trim: %s", e)
+            import ctypes.util
+            libc_name = ctypes.util.find_library("c")
+            if libc_name:
+                libc = ctypes.CDLL(libc_name)
+                if hasattr(libc, "malloc_trim"):
+                    libc.malloc_trim(0)
+                    logger.debug("Memory optimization completed via malloc_trim.")
+        except Exception:
+            pass
 
     # ── Slots ──
 
@@ -1138,12 +1337,161 @@ class AppBackend(QObject):
 
     @pyqtSlot(int)
     def openVideoMyMovie(self, index: int) -> None:
-        if self._video_my_movies_model.item_at(index) is None:
+        item = self._video_my_movies_model.item_at(index)
+        if item is None:
             return
         self._video_section = "movies"
+        self._video_model.set_items(self._video_my_movies_model._items)
         self._movie_detail_index = index
         self._shared_movie_detail_index = -1
         self.libraryNavigationChanged.emit()
+
+    @pyqtSlot(str, str)
+    def enterFocusMode(self, path: str, title: str = "") -> None:
+        episode_list, episode_index, series_key = self._episode_context_for_path(path)
+        if series_key != self._current_episode_series_key:
+            self._current_episode_list = episode_list
+            self._current_episode_series_key = series_key
+        self._current_episode_index = episode_index
+        self._focus_mode_title = title or Path(path).stem
+        self._focus_mode_source = (
+            path if path.startswith(("http://", "https://", "file://"))
+            else QUrl.fromLocalFile(str(Path(path).expanduser().resolve())).toString()
+        )
+        self._in_focus_mode = True
+        self._player_bar_visible = False
+        self.videoStateChanged.emit()
+        self.focusModeChanged.emit()
+        self.playerBarVisibleChanged.emit()
+        # Video playback always starts in fullscreen. QML owns the actual
+        # window operation and reacts to this signal in main.qml.
+        if not self._is_full_screen:
+            self._is_full_screen = True
+            self.fullScreenChanged.emit()
+        # FocusModeScreen uses Qt Multimedia's portable QML backend.
+
+    def _episode_context_for_path(self, path: str) -> tuple[list[dict], int, str]:
+        if not path:
+            return [], -1, ""
+
+        candidates: list[Path] = []
+        if self.inSharedSeriesView:
+            series = self._video_shared_model.item_at(self._shared_series_index)
+            if series is not None:
+                items = self._shared_series_episode_items(series)
+                playable = [
+                    item for item in items
+                    if item.get("download_status") == "done" or self._episode_in_library(item)
+                ]
+                for index, item in enumerate(playable):
+                    if self._path_matches_item(path, item):
+                        return playable, index, f"shared:{self._shared_series_index}"
+
+        if _is_remote(path):
+            return [], -1, ""
+
+        if self._current_page == 3 and self._video_section == "series":
+            root = self._series_root_folder()
+            if root is not None:
+                candidates.append(root)
+
+        for item in self._all_video_series:
+            root_value = item.get("path") or ""
+            if root_value:
+                candidates.append(Path(root_value))
+
+        seen: set[str] = set()
+        for root in candidates:
+            try:
+                root_key = str(root.resolve())
+            except OSError:
+                root_key = str(root)
+            if root_key in seen:
+                continue
+            seen.add(root_key)
+            if not self._current_path_under(root) and not self._path_matches_item(path, {"path": root_key}):
+                try:
+                    current = Path(path).resolve()
+                    if root.resolve() not in current.parents:
+                        continue
+                except OSError:
+                    continue
+            items = self._load_video_series_items(root)
+            for index, item in enumerate(items):
+                if self._path_matches_item(path, item):
+                    return items, index, root_key
+        return [], -1, ""
+
+    @pyqtSlot()
+    def nextVideoEpisode(self) -> None:
+        if not self.hasNextEpisode:
+            return
+        self._current_episode_index += 1
+        episode = self._current_episode_list[self._current_episode_index]
+        path = str(episode.get("path") or episode.get("url") or "")
+        self._set_current_path(path)
+        self._current_audio_only = False
+        self.enterFocusMode(path, episode.get("title", ""))
+
+    @pyqtSlot()
+    def previousVideoEpisode(self) -> None:
+        if not self.hasPreviousEpisode:
+            return
+        self._current_episode_index -= 1
+        episode = self._current_episode_list[self._current_episode_index]
+        path = str(episode.get("path") or episode.get("url") or "")
+        self._set_current_path(path)
+        self._current_audio_only = False
+        self.enterFocusMode(path, episode.get("title", ""))
+
+    @pyqtSlot(int)
+    def playEpisodeAtIndex(self, index: int) -> None:
+        if index < 0 or index >= len(self._current_episode_list):
+            return
+        episode = self._current_episode_list[index]
+        path = str(episode.get("path") or episode.get("url") or "")
+        if not path:
+            return
+        self._current_episode_index = index
+        self._set_current_path(path)
+        self._current_audio_only = False
+        self.enterFocusMode(path, episode.get("title", ""))
+
+    @pyqtSlot()
+    def toggleFullScreen(self) -> None:
+        self._is_full_screen = not self._is_full_screen
+        self.fullScreenChanged.emit()
+
+    @pyqtSlot(bool)
+    def onVideoPlaybackStateChanged(self, is_playing: bool) -> None:
+        self._video_is_playing = is_playing
+        self.videoStateChanged.emit()
+
+    @pyqtSlot(int)
+    def onVideoPositionChanged(self, position_ms: int) -> None:
+        self._video_position = position_ms
+        self.videoStateChanged.emit()
+
+    @pyqtSlot(int)
+    def onVideoDurationChanged(self, duration_ms: int) -> None:
+        self._video_duration = duration_ms
+        self.videoStateChanged.emit()
+
+    @pyqtSlot()
+    def exitFocusMode(self) -> None:
+        self._in_focus_mode = False
+        self._focus_mode_title = ""
+        self._focus_mode_source = ""
+        self._current_episode_list = []
+        self._current_episode_index = -1
+        self._current_episode_series_key = ""
+        self._player_bar_visible = self._player_bar_always_visible
+        self.videoStateChanged.emit()
+        self.focusModeChanged.emit()
+        self.playerBarVisibleChanged.emit()
+        if self._is_full_screen:
+            self._is_full_screen = False
+            self.fullScreenChanged.emit()
 
     @pyqtSlot(int)
     def playVideoMyMovie(self, index: int) -> None:
@@ -1220,6 +1568,46 @@ class AppBackend(QObject):
             "thumbnail_url": thumbnail_url,
         }
 
+    def library_music_share_info(self, path: str) -> dict | None:
+        """Build share payload from a music file (title, artist, source URL, thumbnail)."""
+        resolved = _resolve_metadata_path(path)
+        if not resolved or resolved.startswith("__liminal__:"):
+            return None
+
+        file_path = Path(resolved)
+        if not file_path.is_file() or file_path.suffix.lower() not in AUDIO_EXTS:
+            return None
+
+        meta_path = str(file_path.resolve())
+        display = resolve_display(
+            meta_path,
+            default_title=file_path.stem,
+            default_image="",
+        )
+        image = display["image"] or ""
+        if not image:
+            embedded = read_embedded_metadata(file_path)
+            image = str(embedded.get("image") or "").strip()
+
+        source_url = resolve_source_url(meta_path)
+        thumbnail_url = ""
+        yt_id = extract_youtube_id(source_url) or extract_youtube_id(resolve_source_id(meta_path))
+        if yt_id:
+            thumbnail_url = f"https://i.ytimg.com/vi/{yt_id}/hqdefault.jpg"
+        elif image.startswith(("http://", "https://")):
+            thumbnail_url = image
+        else:
+            stored_thumb = str(get_metadata(meta_path).get("thumbnail_url") or "").strip()
+            if stored_thumb.startswith(("http://", "https://")):
+                thumbnail_url = stored_thumb
+
+        return {
+            "title": display["title"],
+            "author": display["artist"],
+            "source_url": source_url,
+            "thumbnail_url": thumbnail_url,
+        }
+
     @pyqtProperty(str, notify=libraryNavigationChanged)
     def currentSeriesFolderPath(self) -> str:
         if self._current_page != 3 or not self.inCollectionView or self._video_section != "series":
@@ -1228,6 +1616,18 @@ class AppBackend(QObject):
             return str((self._series_root_folder() or self._current_library_folder()).resolve())
         except OSError:
             return str(self._series_root_folder() or self._current_library_folder())
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def currentPlaylistFolderPath(self) -> str:
+        if self._current_page != 2 or not self.inCollectionView or self._music_section != "albums":
+            return ""
+        stack = self._music_folder_stack
+        if not stack or self._is_all_musics_virtual(stack[-1].path):
+            return ""
+        try:
+            return str(self._current_library_folder().resolve())
+        except OSError:
+            return str(self._current_library_folder())
 
     def library_series_share_info(self, path: str) -> dict | None:
         """Build a series share payload from a video collection folder."""
@@ -1270,6 +1670,47 @@ class AppBackend(QObject):
             "episodes": episodes,
         }
 
+    def library_playlist_share_info(self, path: str) -> dict | None:
+        """Build a playlist share payload from a music album folder."""
+        from src import share_manager
+
+        resolved = _resolve_metadata_path(path)
+        if not resolved or resolved.startswith("__liminal__:"):
+            return None
+
+        folder = Path(resolved)
+        if not folder.is_dir():
+            return None
+
+        tracks = [
+            track_share_payload(row)
+            for row in collect_playlist_tracks(folder)
+            if share_manager.is_allowed_share_url(str(row.get("source_url") or ""))
+        ]
+        for index, track in enumerate(tracks, start=1):
+            track["index"] = index
+
+        if not tracks:
+            return None
+
+        folder_display = resolve_display(
+            str(folder.resolve()),
+            default_title=folder.name,
+            default_image=find_folder_preview_image(folder),
+        )
+        thumbnail_url = folder_display["image"] or ""
+        if thumbnail_url and not thumbnail_url.startswith(("http://", "https://")):
+            yt_id = extract_youtube_id(tracks[0].get("source_url") or "")
+            if yt_id:
+                thumbnail_url = f"https://i.ytimg.com/vi/{yt_id}/hqdefault.jpg"
+
+        return {
+            "title": folder_display["title"],
+            "author": folder_display["artist"],
+            "thumbnail_url": thumbnail_url if thumbnail_url.startswith(("http://", "https://")) else "",
+            "tracks": tracks,
+        }
+
     @pyqtSlot(int)
     def playVideoShared(self, index: int) -> None:
         item = self._video_shared_model.item_at(index)
@@ -1292,7 +1733,7 @@ class AppBackend(QObject):
 
     def _series_root_folder(self) -> Path | None:
         stack = self._video_folder_stack
-        return stack[0] if stack else None
+        return stack[0].path if stack else None
 
     def _episode_row_to_media_item(self, row: dict, index: int) -> dict:
         path = str(row.get("path") or "")
@@ -1546,31 +1987,187 @@ class AppBackend(QObject):
             ep_folder = self._series_download_folder(series, episode)
             self._queue_shared_episode_download(series, episode, ep_folder)
 
+    @pyqtSlot(int)
+    def playMusicShared(self, index: int) -> None:
+        item = self._music_shared_model.item_at(index)
+        if item is None:
+            return
+        if item.get("is_playlist"):
+            self.openMusicSharedPlaylist(index)
+            return
+        if self._shared_music_item_in_library(item):
+            self._play_shared_music_item(item)
+            return
+        self.downloadMusicSharedItem(index)
+
+    @pyqtSlot(int)
+    def downloadMusicSharedItem(self, index: int) -> None:
+        item = self._music_shared_model.item_at(index)
+        if item is None:
+            return
+        if item.get("is_playlist"):
+            self.openMusicSharedPlaylist(index)
+            return
+        if self._shared_music_item_in_library(item):
+            return
+        source_url = str(item.get("url") or "").strip()
+        if not source_url:
+            self.downloadError.emit("", "Mục chia sẻ thiếu link tải.")
+            return
+        self._mark_music_shared_downloading(item, percent=0.0)
+        self.downloadMedia(source_url, "music", "")
+
+    def _play_shared_music_item(self, item: dict) -> None:
+        play_item = dict(item)
+        track_id = str(item.get("track_id") or "")
+        local_path = self._find_music_path_by_source_id(track_id)
+        if local_path:
+            play_item["path"] = local_path
+            play_item["is_remote"] = False
+            play_item["audio_only"] = True
+        self._music_model.set_items([play_item])
+        self._set_playback_queue([play_item])
+        self._play_item(play_item)
+
+    @pyqtSlot(int)
+    def openMusicSharedPlaylist(self, index: int) -> None:
+        item = self._music_shared_model.item_at(index)
+        if item is None or not item.get("is_playlist"):
+            return
+        raw = self._find_shared_playlist_raw(str(item.get("share_id") or ""))
+        if raw is not None:
+            item = {**item, "episodes": list(raw.get("episodes") or [])}
+            self._all_music_shared[index] = self._shared_item_to_model(
+                {**raw, **item},
+                index,
+                pool="music",
+            )
+        self._shared_playlist_index = index
+        model_item = self._music_shared_model.item_at(index) or item
+        self._music_model.set_items(self._shared_playlist_track_items(model_item))
+        self.libraryNavigationChanged.emit()
+
+    @pyqtSlot()
+    def goBackSharedPlaylist(self) -> None:
+        if self._shared_playlist_index < 0:
+            return
+        self._shared_playlist_index = -1
+        self.libraryNavigationChanged.emit()
+
+    @pyqtSlot(int)
+    def playSharedPlaylistTrack(self, index: int) -> None:
+        if self._shared_playlist_index < 0:
+            return
+        playlist = self._music_shared_model.item_at(self._shared_playlist_index)
+        if playlist is None:
+            return
+        tracks = self._shared_playlist_track_items(playlist)
+        if index < 0 or index >= len(tracks):
+            return
+        item = tracks[index]
+        if item.get("download_status") != "done" and not self._shared_track_in_library(item):
+            return
+        play_item = dict(item)
+        track_id = str(item.get("track_id") or "")
+        local_path = self._find_music_path_by_source_id(track_id)
+        if local_path:
+            play_item["path"] = local_path
+            play_item["is_remote"] = False
+        playable = [
+            track for track in tracks
+            if track.get("download_status") == "done" or self._shared_track_in_library(track)
+        ]
+        self._music_model.set_items(tracks)
+        self._set_playback_queue(playable)
+        self._play_item(play_item)
+
+    @pyqtSlot(int)
+    def downloadSharedPlaylistTrack(self, index: int) -> None:
+        if self._shared_playlist_index < 0:
+            return
+        playlist = self._music_shared_model.item_at(self._shared_playlist_index)
+        if playlist is None:
+            return
+        tracks = list(playlist.get("episodes") or [])
+        if index < 0 or index >= len(tracks):
+            return
+        track = tracks[index]
+        if self._shared_track_in_library(track):
+            return
+        folder = self._playlist_download_folder(playlist)
+        self._queue_shared_track_download(playlist, track, folder)
+
+    def queueInitialSharedPlaylistDownloads(self, share_id: str) -> None:
+        playlist = self._find_shared_playlist_raw(share_id)
+        if playlist is None:
+            return
+        from src import share_manager
+
+        folder = self._playlist_download_folder(playlist)
+        for track in share_manager.initial_playlist_download_tracks(list(playlist.get("episodes") or [])):
+            if self._shared_track_in_library(track):
+                continue
+            status = str(track.get("download_status") or "pending")
+            if status == "downloading":
+                continue
+            self._queue_shared_track_download(playlist, track, folder)
+
     def apply_shared_items(self, items: list[dict]) -> None:
-        """Convert API/cache rows into the shared videos model."""
+        """Convert API/cache rows into shared video and music models."""
         self._ensure_source_ids("video")
-        visible_items = []
+        self._ensure_source_ids("music")
+
+        video_items: list[dict] = []
+        music_items: list[dict] = []
         for item in items:
-            if str(item.get("media_type") or "") == "series":
+            media_type = str(item.get("media_type") or "video").strip().lower()
+            if media_type == "series":
                 if not self._shared_series_in_library(item):
-                    visible_items.append(item)
+                    video_items.append(item)
+                continue
+            if media_type == "playlist":
+                if not self._shared_playlist_in_library(item):
+                    music_items.append(item)
+                continue
+            if media_type == "music":
+                if not self._shared_music_item_in_library({
+                    "track_id": str(item.get("video_id") or ""),
+                    "url": str(item.get("source_url") or item.get("url") or ""),
+                }):
+                    music_items.append(item)
                 continue
             if not self._shared_item_in_library({
                 "track_id": str(item.get("video_id") or ""),
                 "url": str(item.get("source_url") or item.get("url") or ""),
             }):
-                visible_items.append(item)
-        model_items = [
-            self._shared_item_to_model(item, index)
-            for index, item in enumerate(visible_items)
+                video_items.append(item)
+
+        self._all_video_shared = [
+            self._shared_item_to_model(item, index, pool="video")
+            for index, item in enumerate(video_items)
         ]
-        self._all_video_shared = model_items
-        if self._current_page == 3 and not self.inCollectionView:
+        self._all_music_shared = [
+            self._shared_item_to_model(item, index, pool="music")
+            for index, item in enumerate(music_items)
+        ]
+        if self._current_page == 3 and not self.inCollectionView and not self.inSharedSeriesView:
             self._apply_library_filter(self._all_video_shared, self._video_shared_model)
+        if self._current_page == 2 and not self.inCollectionView and not self.inSharedPlaylistView:
+            self._apply_library_filter(self._all_music_shared, self._music_shared_model)
 
     @pyqtSlot(int)
     def dismissSharedItem(self, index: int) -> None:
         item = self._video_shared_model.item_at(index)
+        if item is None:
+            return
+        share_id = str(item.get("share_id") or "").strip()
+        if not share_id:
+            return
+        asyncio.create_task(self._dismiss_shared_item(share_id))
+
+    @pyqtSlot(int)
+    def dismissMusicSharedItem(self, index: int) -> None:
+        item = self._music_shared_model.item_at(index)
         if item is None:
             return
         share_id = str(item.get("share_id") or "").strip()
@@ -1598,8 +2195,14 @@ class AppBackend(QObject):
             item for item in self._all_video_shared
             if str(item.get("share_id") or "") != needle
         ]
-        if self._current_page == 3 and not self.inCollectionView:
+        self._all_music_shared = [
+            item for item in self._all_music_shared
+            if str(item.get("share_id") or "") != needle
+        ]
+        if self._current_page == 3 and not self.inCollectionView and not self.inSharedSeriesView:
             self._apply_library_filter(self._all_video_shared, self._video_shared_model)
+        if self._current_page == 2 and not self.inCollectionView and not self.inSharedPlaylistView:
+            self._apply_library_filter(self._all_music_shared, self._music_shared_model)
 
     async def _dismiss_shared_after_download(self, share_id: str) -> None:
         from src import share_manager
@@ -1616,9 +2219,18 @@ class AppBackend(QObject):
         self._ensure_source_ids("video")
         return bool(track_id and track_id in self._video_source_ids)
 
-    def _shared_item_to_model(self, item: dict, index: int) -> dict:
+    def _shared_music_item_in_library(self, item: dict) -> bool:
+        track_id = str(item.get("track_id") or "").strip()
+        if not track_id:
+            track_id = extract_youtube_id(str(item.get("url") or ""))
+        self._ensure_source_ids("music")
+        return bool(track_id and track_id in self._music_source_ids)
+
+    def _shared_item_to_model(self, item: dict, index: int, *, pool: str = "video") -> dict:
         media_type = str(item.get("media_type") or "video").strip().lower()
         is_series = media_type == "series"
+        is_playlist = media_type == "playlist"
+        is_collection = is_series or is_playlist
         episodes = list(item.get("episodes") or [])
         source_url = str(item.get("source_url") or item.get("url") or "").strip()
         video_id = str(item.get("video_id") or "").strip()
@@ -1644,6 +2256,39 @@ class AppBackend(QObject):
             subtitle = f"{total} tập" if total else "Phim bộ"
             if total and not in_library:
                 subtitle = f"{downloaded}/{total} tập"
+        elif is_playlist:
+            downloaded = sum(1 for track in episodes if self._shared_track_in_library(track))
+            total = len(episodes)
+            in_library = total > 0 and downloaded == total
+            if in_library:
+                download_status = "done"
+                download_percent = 100.0
+                is_downloading = False
+            else:
+                active = [
+                    track for track in episodes
+                    if str(track.get("download_status") or "") == "downloading" or track.get("is_downloading")
+                ]
+                download_status = "downloading" if active else str(item.get("download_status") or "pending")
+                download_percent = (downloaded / total * 100.0) if total else 0.0
+                is_downloading = bool(active)
+            subtitle = f"{total} bài" if total else "Playlist"
+            if total and not in_library:
+                subtitle = f"{downloaded}/{total} bài"
+        elif pool == "music":
+            in_library = self._shared_music_item_in_library({
+                "track_id": video_id,
+                "url": source_url,
+            })
+            subtitle = str(item.get("author") or "Chia sẻ")
+            if in_library:
+                download_status = "done"
+                download_percent = 100.0
+                is_downloading = False
+            else:
+                download_status = str(item.get("download_status") or "pending")
+                download_percent = float(item.get("download_percent") or 0.0)
+                is_downloading = bool(item.get("is_downloading"))
         else:
             in_library = self._shared_item_in_library({
                 "track_id": video_id,
@@ -1670,10 +2315,11 @@ class AppBackend(QObject):
             "track_id": video_id,
             "share_id": str(item.get("id") or ""),
             "share_code": str(item.get("code") or ""),
-            "audio_only": False,
+            "audio_only": pool == "music" or media_type == "music",
             "is_remote": True,
-            "is_collection": is_series,
+            "is_collection": is_collection,
             "is_series": is_series,
+            "is_playlist": is_playlist,
             "episodes": episodes,
             "duration": "",
             "accent": ACCENT_COLORS[index % len(ACCENT_COLORS)],
@@ -1681,7 +2327,7 @@ class AppBackend(QObject):
             "download_status": download_status,
             "is_downloading": is_downloading,
             "in_library": in_library,
-            "child_count": len(episodes) if is_series else 0,
+            "child_count": len(episodes) if is_collection else 0,
         }
 
     def _episode_in_library(self, episode: dict) -> bool:
@@ -1699,6 +2345,158 @@ class AppBackend(QObject):
         if not episodes:
             return False
         return all(self._episode_in_library(ep) for ep in episodes)
+
+    def _shared_track_in_library(self, track: dict) -> bool:
+        source_url = str(track.get("source_url") or track.get("url") or "").strip()
+        track_id = extract_youtube_id(source_url) or source_url
+        if not track_id:
+            return False
+        self._ensure_source_ids("music")
+        if track_id in self._music_source_ids:
+            return True
+        return bool(self._find_music_path_by_source_id(track_id))
+
+    def _shared_playlist_in_library(self, item: dict) -> bool:
+        tracks = list(item.get("episodes") or [])
+        if not tracks:
+            return False
+        return all(self._shared_track_in_library(track) for track in tracks)
+
+    def _find_music_path_by_source_id(self, source_id: str) -> str:
+        needle = (source_id or "").strip()
+        if not needle:
+            return ""
+        self._ensure_music_library_loaded()
+        if self._music_track_infos is not None:
+            for info in self._music_track_infos:
+                if resolve_source_id(info.path) == needle:
+                    return info.path
+        for item in self._all_music_tracks:
+            path = str(item.get("path") or "")
+            if path and resolve_source_id(path) == needle:
+                return path
+        return ""
+
+    def _playlist_download_folder(self, playlist: dict) -> str:
+        title = str(playlist.get("title") or "Playlist").strip() or "Playlist"
+        return playlist_download_subdir(title)
+
+    def _shared_playlist_track_items(self, playlist: dict) -> list[dict]:
+        share_id = str(playlist.get("share_id") or playlist.get("id") or "")
+        playlist_title = str(playlist.get("title") or "Playlist")
+        tracks = list(playlist.get("episodes") or [])
+        tracks.sort(key=lambda track: int(track.get("index") or track.get("episode") or 0))
+        items: list[dict] = []
+        for index, track in enumerate(tracks):
+            source_url = str(track.get("source_url") or "").strip()
+            track_id = extract_youtube_id(source_url) or source_url
+            in_library = self._shared_track_in_library(track)
+            if in_library:
+                download_status = "done"
+                download_percent = 100.0
+                is_downloading = False
+            else:
+                download_status = str(track.get("download_status") or "pending")
+                download_percent = float(track.get("download_percent") or 0.0)
+                is_downloading = bool(track.get("is_downloading"))
+            local_path = self._find_music_path_by_source_id(track_id)
+            track_no = int(track.get("index") or track.get("episode") or index + 1)
+            items.append({
+                "title": str(track.get("title") or f"Bài {track_no}"),
+                "subtitle": playlist_title,
+                "artist": playlist_title,
+                "image": str(track.get("thumbnail_url") or playlist.get("image") or ""),
+                "path": local_path or f"__liminal__:share_track:{share_id}:{track.get('index') or index + 1}",
+                "url": source_url,
+                "track_id": track_id,
+                "share_id": share_id,
+                "track_index": track_no,
+                "audio_only": True,
+                "is_remote": not bool(local_path),
+                "is_collection": False,
+                "is_playlist": False,
+                "duration": "",
+                "accent": ACCENT_COLORS[index % len(ACCENT_COLORS)],
+                "download_percent": download_percent,
+                "download_status": download_status,
+                "is_downloading": is_downloading,
+                "in_library": in_library,
+            })
+        return items
+
+    def _find_shared_playlist_raw(self, share_id: str) -> dict | None:
+        needle = (share_id or "").strip()
+        if not needle:
+            return None
+        from src import share_manager
+
+        for item in share_manager.get_cached_items():
+            if str(item.get("id") or "") == needle:
+                return item
+        for item in self._all_music_shared:
+            if str(item.get("share_id") or "") == needle:
+                return item
+        return None
+
+    def _queue_shared_track_download(self, playlist: dict, track: dict, folder: str) -> None:
+        source_url = str(track.get("source_url") or "").strip()
+        if not source_url or self._shared_track_in_library(track):
+            return
+        track["is_downloading"] = True
+        track["download_status"] = "downloading"
+        track["download_percent"] = float(track.get("download_percent") or 0.0)
+        self._persist_shared_playlist_state(playlist)
+        self._refresh_shared_playlist_model(playlist)
+        self.downloadMedia(source_url, "music", folder)
+
+    def _persist_shared_playlist_state(self, playlist: dict) -> None:
+        from src import share_manager
+
+        share_id = str(playlist.get("share_id") or playlist.get("id") or "").strip()
+        if not share_id:
+            return
+        tracks = list(playlist.get("episodes") or [])
+        items = share_manager.get_cached_items()
+        changed = False
+        for item in items:
+            if str(item.get("id") or "") != share_id:
+                continue
+            item["episodes"] = tracks
+            changed = True
+            break
+        if changed:
+            from src.share_manager import _read_local_file, _write_local_file
+            from src.device_store import get_device_id
+            import time
+
+            data = _read_local_file()
+            _write_local_file({
+                "device_id": data.get("device_id") or get_device_id(),
+                "fetched_at": time.time(),
+                "items": items,
+            })
+
+    def _refresh_shared_playlist_model(self, playlist: dict) -> None:
+        share_id = str(playlist.get("share_id") or playlist.get("id") or "")
+        raw = self._find_shared_playlist_raw(share_id)
+        source = raw or playlist
+        for index, item in enumerate(self._all_music_shared):
+            if str(item.get("share_id") or "") != share_id:
+                continue
+            updated = self._shared_item_to_model(
+                {**source, **item, "episodes": list(source.get("episodes") or [])},
+                index,
+                pool="music",
+            )
+            self._all_music_shared[index] = updated
+            if self._current_page == 2 and not self.inCollectionView and self._shared_playlist_index < 0:
+                self._apply_library_filter(self._all_music_shared, self._music_shared_model)
+            if self._shared_playlist_index >= 0:
+                model_item = self._music_shared_model.item_at(self._shared_playlist_index)
+                if model_item is not None and str(model_item.get("share_id") or "") == share_id:
+                    self._music_model.set_items(self._shared_playlist_track_items(updated))
+            self.libraryNavigationChanged.emit()
+            break
 
     def _series_download_folder(self, series: dict, episode: dict | None = None) -> str:
         title = str(series.get("title") or "Phim bộ").strip() or "Phim bộ"
@@ -1849,6 +2647,16 @@ class AppBackend(QObject):
                 continue
             if item.get("track_id") == needle or item.get("url") == needle:
                 return item
+        for item in self._all_music_shared:
+            if item.get("is_playlist"):
+                for track in item.get("episodes") or []:
+                    source_url = str(track.get("source_url") or "").strip()
+                    track_id = extract_youtube_id(source_url) or source_url
+                    if track_id == needle or source_url == needle:
+                        return item
+                continue
+            if item.get("track_id") == needle or item.get("url") == needle:
+                return item
         return None
 
     def _find_shared_episode(self, key: str) -> tuple[dict, dict] | None:
@@ -1865,23 +2673,44 @@ class AppBackend(QObject):
                     return item, episode
         return None
 
+    def _find_shared_playlist_track(self, key: str) -> tuple[dict, dict] | None:
+        needle = (key or "").strip()
+        if not needle:
+            return None
+        for item in self._all_music_shared:
+            if not item.get("is_playlist"):
+                continue
+            for track in item.get("episodes") or []:
+                source_url = str(track.get("source_url") or "").strip()
+                track_id = extract_youtube_id(source_url) or source_url
+                if track_id == needle or source_url == needle:
+                    return item, track
+        return None
+
     def _mark_shared_downloading(self, item: dict, *, percent: float) -> None:
         item["is_downloading"] = True
         item["download_status"] = "downloading"
         item["download_percent"] = percent
-        self._emit_shared_item_changed(item)
+        self._emit_shared_item_changed(item, pool="video")
 
-    def _emit_shared_item_changed(self, item: dict) -> None:
+    def _mark_music_shared_downloading(self, item: dict, *, percent: float) -> None:
+        item["is_downloading"] = True
+        item["download_status"] = "downloading"
+        item["download_percent"] = percent
+        self._emit_shared_item_changed(item, pool="music")
+
+    def _emit_shared_item_changed(self, item: dict, *, pool: str = "video") -> None:
         track_id = str(item.get("track_id") or "")
         url = str(item.get("url") or "")
-        self._video_shared_model.update_download_state(
+        model = self._music_shared_model if pool == "music" else self._video_shared_model
+        model.update_download_state(
             track_id,
             percent=item.get("download_percent"),
             status=item.get("download_status"),
             is_downloading=item.get("is_downloading"),
         )
         if url and url != track_id:
-            self._video_shared_model.update_download_state(
+            model.update_download_state(
                 url,
                 percent=item.get("download_percent"),
                 status=item.get("download_status"),
@@ -1897,10 +2726,21 @@ class AppBackend(QObject):
             self._persist_shared_series_state(series)
             self._refresh_shared_series_model(series)
             return
-        item = self._find_shared_item(key)
-        if item is None or item.get("is_series"):
+        playlist_match = self._find_shared_playlist_track(key)
+        if playlist_match is not None:
+            playlist, track = playlist_match
+            track["is_downloading"] = True
+            track["download_status"] = "downloading"
+            self._persist_shared_playlist_state(playlist)
+            self._refresh_shared_playlist_model(playlist)
             return
-        self._mark_shared_downloading(item, percent=float(item.get("download_percent") or 0.0))
+        item = self._find_shared_item(key)
+        if item is None or item.get("is_series") or item.get("is_playlist"):
+            return
+        if item.get("audio_only"):
+            self._mark_music_shared_downloading(item, percent=float(item.get("download_percent") or 0.0))
+        else:
+            self._mark_shared_downloading(item, percent=float(item.get("download_percent") or 0.0))
 
     def _on_shared_download_progress(self, key: str, percent: float) -> None:
         match = self._find_shared_episode(key)
@@ -1912,13 +2752,23 @@ class AppBackend(QObject):
             self._persist_shared_series_state(series)
             self._refresh_shared_series_model(series)
             return
+        playlist_match = self._find_shared_playlist_track(key)
+        if playlist_match is not None:
+            playlist, track = playlist_match
+            track["download_percent"] = percent
+            track["download_status"] = "downloading"
+            track["is_downloading"] = True
+            self._persist_shared_playlist_state(playlist)
+            self._refresh_shared_playlist_model(playlist)
+            return
         item = self._find_shared_item(key)
-        if item is None or item.get("is_series"):
+        if item is None or item.get("is_series") or item.get("is_playlist"):
             return
         item["download_percent"] = percent
         item["download_status"] = "downloading"
         item["is_downloading"] = True
-        self._emit_shared_item_changed(item)
+        pool = "music" if item.get("audio_only") else "video"
+        self._emit_shared_item_changed(item, pool=pool)
 
     def _on_shared_download_finished(self, video_id: str, file_path: str) -> None:
         match = self._find_shared_episode(video_id)
@@ -1942,8 +2792,29 @@ class AppBackend(QObject):
                     asyncio.create_task(self._dismiss_shared_after_download(share_id))
             return
 
+        playlist_match = self._find_shared_playlist_track(video_id)
+        if playlist_match is not None:
+            playlist, track = playlist_match
+            track["is_downloading"] = False
+            track["download_status"] = "done"
+            track["download_percent"] = 100.0
+            if file_path:
+                set_metadata(
+                    file_path,
+                    source_id=video_id,
+                    source_url=str(track.get("source_url") or "").strip(),
+                )
+            self._persist_shared_playlist_state(playlist)
+            self._refresh_shared_playlist_model(playlist)
+            if self._shared_playlist_in_library(playlist):
+                share_id = str(playlist.get("share_id") or "").strip()
+                self._remove_shared_item_by_id(share_id)
+                if share_id:
+                    asyncio.create_task(self._dismiss_shared_after_download(share_id))
+            return
+
         item = self._find_shared_item(video_id)
-        if item is None or item.get("is_series"):
+        if item is None or item.get("is_series") or item.get("is_playlist"):
             return
         share_id = str(item.get("share_id") or "").strip()
         self._remove_shared_item_by_id(share_id)
@@ -1965,12 +2836,21 @@ class AppBackend(QObject):
             self._persist_shared_series_state(series)
             self._refresh_shared_series_model(series)
             return
+        playlist_match = self._find_shared_playlist_track(key)
+        if playlist_match is not None:
+            playlist, track = playlist_match
+            track["is_downloading"] = False
+            track["download_status"] = "pending"
+            self._persist_shared_playlist_state(playlist)
+            self._refresh_shared_playlist_model(playlist)
+            return
         item = self._find_shared_item(key)
-        if item is None or item.get("is_series"):
+        if item is None or item.get("is_series") or item.get("is_playlist"):
             return
         item["is_downloading"] = False
         item["download_status"] = "pending"
-        self._emit_shared_item_changed(item)
+        pool = "music" if item.get("audio_only") else "video"
+        self._emit_shared_item_changed(item, pool=pool)
 
     @pyqtSlot()
     def playCollection(self) -> None:
@@ -1982,6 +2862,21 @@ class AppBackend(QObject):
             playable = [
                 ep for ep in episodes
                 if ep.get("download_status") == "done" or self._episode_in_library(ep)
+            ]
+            if not playable:
+                return
+            resume = self._resume_item_in_collection(playable)
+            self._set_playback_queue(playable)
+            self._play_item(resume or playable[0])
+            return
+        if self.inSharedPlaylistView:
+            playlist = self._music_shared_model.item_at(self._shared_playlist_index)
+            if playlist is None:
+                return
+            tracks = self._shared_playlist_track_items(playlist)
+            playable = [
+                track for track in tracks
+                if track.get("download_status") == "done" or self._shared_track_in_library(track)
             ]
             if not playable:
                 return
@@ -2026,13 +2921,18 @@ class AppBackend(QObject):
             self._music_section = "albums"
         elif self._current_page == 3:
             self._video_section = "series"
-        self._folder_stack_for_page(self._current_page).append(Path(item["path"]))
+        self._folder_stack_for_page(self._current_page).append(
+            self._make_folder_stack_entry(Path(item["path"]))
+        )
         self._reload_library_view(self._current_page)
 
     @pyqtSlot()
     def goBackLibrary(self) -> None:
         if self._shared_series_index >= 0:
             self.goBackSharedSeries()
+            return
+        if self._shared_playlist_index >= 0:
+            self.goBackSharedPlaylist()
             return
         if self._movie_detail_index >= 0 or self._shared_movie_detail_index >= 0:
             self._movie_detail_index = -1
@@ -2049,6 +2949,8 @@ class AppBackend(QObject):
     def goBack(self) -> None:
         if self._current_page == 3 and self.inSharedSeriesView:
             self.goBackSharedSeries()
+        elif self._current_page == 2 and self.inSharedPlaylistView:
+            self.goBackSharedPlaylist()
         elif self._current_page == 3 and self.inMovieDetailView:
             self.goBackLibrary()
         elif self._current_page in {2, 3} and self._folder_stack_for_page(self._current_page):
@@ -2119,7 +3021,7 @@ class AppBackend(QObject):
         if item is None or item.get("is_collection"):
             return
         src = Path(item["path"])
-        if self._is_all_musics_virtual(stack[-1]):
+        if self._is_all_musics_virtual(stack[-1].path):
             try:
                 album_dir = src.parent.resolve()
             except OSError:
@@ -2128,7 +3030,7 @@ class AppBackend(QObject):
             if album_dir == music_root:
                 return
         else:
-            album_dir = stack[-1]
+            album_dir = stack[-1].path
         if src.suffix.lower() in AUDIO_EXTS and self._current_page == 2:
             if not remove_track_from_album(src, album_dir, Path(self._music_dir)):
                 return
@@ -2220,7 +3122,7 @@ class AppBackend(QObject):
         if from_index == to_index:
             return
         stack = self._folder_stack_for_page(self._current_page)
-        if stack and self._is_all_musics_virtual(stack[-1]):
+        if stack and self._is_all_musics_virtual(stack[-1].path):
             return
         model = self._collection_list_model() if self.inCollectionView else self._model_for_page(self._current_page)
         paths = model.item_paths()
@@ -2370,6 +3272,13 @@ class AppBackend(QObject):
 
     def set_main_window(self, window: QWindow | None) -> None:
         self._main_window = window
+
+    def show_main_window(self) -> None:
+        if self._main_window is None:
+            return
+        self._main_window.setVisible(True)
+        self._main_window.raise_()
+        self._main_window.requestActivate()
 
     def _pick_image_file(self, title: str, start_dir: str = "") -> str:
         initial = start_dir or str(Path.home())
@@ -2542,7 +3451,7 @@ class AppBackend(QObject):
             self.downloadError.emit(value, "Loại media không được hỗ trợ.")
             return
         subdir = output_subdir.strip()
-        self._enqueue_download(_DownloadJob(value, media_type, subdir))
+        self._enqueue_download(_DownloadJob(value, media_type, subdir, self._download_quality))
 
     @pyqtSlot(str, str)
     def queueLink(self, url: str, media_type: str) -> None:
@@ -2576,7 +3485,7 @@ class AppBackend(QObject):
         for item in downloadable:
             item_url = str(item.get("url") or item.get("id") or "").strip()
             if item_url:
-                self._enqueue_download(_DownloadJob(item_url, kind, folder))
+                self._enqueue_download(_DownloadJob(item_url, kind, folder, self._download_quality))
         self.playlistQueued.emit(folder, media_type, downloadable)
 
     def _ensure_download_worker(self) -> asyncio.Queue[_DownloadJob]:
@@ -2637,6 +3546,7 @@ class AppBackend(QObject):
                     job.url,
                     job.media_type,
                     job.output_subdir,
+                    job.quality,
                 )
             except Download403Failed as exc:
                 if job.retry_403:
@@ -2728,6 +3638,7 @@ class AppBackend(QObject):
         url: str,
         media_type: str,
         output_subdir: str = "",
+        quality: str = "1080",
     ) -> tuple[str, str]:
         active_id = url
 
@@ -2752,6 +3663,7 @@ class AppBackend(QObject):
             media_type,
             hook,
             output_subdir=output_subdir or None,
+            quality=quality,
         )
 
     @pyqtSlot()
@@ -2760,6 +3672,7 @@ class AppBackend(QObject):
 
     @pyqtSlot(str)
     def setDownloadQuality(self, quality: str) -> None:
+        quality = _normalize_video_quality(quality)
         if self._download_quality != quality:
             self._download_quality = quality
             self.downloadQualityChanged.emit()
@@ -2901,6 +3814,17 @@ class AppBackend(QObject):
     def _persist_volume_prefs(self) -> None:
         save_raw_settings({"volume": self._volume, "muted": self._muted})
 
+    @pyqtSlot(str)
+    def setVideoPlaybackMode(self, mode: str) -> None:
+        mode = str(mode or "inapp").strip().lower()
+        if mode not in {"inapp", "mpv"}:
+            mode = "inapp"
+        if self._video_playback_mode == mode:
+            return
+        self._video_playback_mode = mode
+        self.videoPlaybackModeChanged.emit()
+        save_raw_settings({"video_playback_backend": mode})
+
     @pyqtSlot(float)
     def setVolume(self, vol: float) -> None:
         self._touch_player_bar()
@@ -2960,11 +3884,72 @@ class AppBackend(QObject):
             return self._video_model
         return self._music_model
 
-    def _folder_stack_for_page(self, page: int) -> list[Path]:
+    def _folder_stack_for_page(self, page: int) -> list[_FolderStackEntry]:
         return {
             2: self._music_folder_stack,
             3: self._video_folder_stack,
         }.get(page, self._music_folder_stack)
+
+    def _make_folder_stack_entry(self, path: Path) -> _FolderStackEntry:
+        if self._is_all_musics_virtual(path):
+            return _FolderStackEntry(path=path, inode=None)
+        resolved = path.resolve() if path.exists() else path
+        return _FolderStackEntry(path=resolved, inode=_folder_inode(resolved))
+
+    def _resolve_stack_entry(self, entry: _FolderStackEntry, page: int) -> _FolderStackEntry:
+        if self._is_all_musics_virtual(entry.path):
+            return entry
+        path = entry.path
+        if path.exists():
+            resolved = path.resolve()
+            return _FolderStackEntry(resolved, _folder_inode(resolved) or entry.inode)
+        if entry.inode is None:
+            return entry
+
+        root = self._root_dir_for_page(page)
+        search_roots: list[Path] = []
+        try:
+            parent = path.parent
+            if parent.is_dir():
+                search_roots.append(parent)
+        except OSError:
+            pass
+        if root.is_dir() and root not in search_roots:
+            search_roots.append(root)
+
+        for search_in in search_roots:
+            try:
+                children = list(search_in.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                try:
+                    stat = child.stat()
+                except OSError:
+                    continue
+                if (stat.st_dev, stat.st_ino) != entry.inode:
+                    continue
+                new_path = child.resolve()
+                old_name = path.name
+                migrate_metadata(str(path), str(new_path))
+                meta = get_metadata(str(new_path))
+                if str(meta.get("title") or "").strip() == old_name:
+                    set_metadata(str(new_path), title=None)
+                return _FolderStackEntry(new_path, entry.inode)
+        return entry
+
+    def _reconcile_folder_stack(self, page: int) -> None:
+        stack = self._folder_stack_for_page(page)
+        changed = False
+        for index, entry in enumerate(stack):
+            resolved = self._resolve_stack_entry(entry, page)
+            if resolved.path != entry.path:
+                stack[index] = resolved
+                changed = True
+        if changed:
+            self.libraryNavigationChanged.emit()
 
     def _root_dir_for_page(self, page: int) -> Path:
         return {
@@ -2972,15 +3957,15 @@ class AppBackend(QObject):
             3: Path(self._video_dir),
         }.get(page, Path(self._music_dir))
 
-    def _breadcrumb_for_stack(self, stack: list[Path]) -> str:
+    def _breadcrumb_for_stack(self, stack: list[_FolderStackEntry]) -> str:
         if not stack:
             return ""
         parts: list[str] = []
         for entry in stack:
-            if self._is_all_musics_virtual(entry):
+            if self._is_all_musics_virtual(entry.path):
                 parts.append(ALL_MUSICS_TITLE)
             else:
-                parts.append(entry.name)
+                parts.append(entry.path.name)
         return " / ".join(parts)
 
     def _is_all_musics_virtual(self, path: Path | str) -> bool:
@@ -3088,7 +4073,11 @@ class AppBackend(QObject):
         """Refresh visible models from cached data without rescanning disk."""
         if page == 2:
             stack = self._music_folder_stack
-            if stack:
+            if self.inSharedPlaylistView:
+                playlist = self._music_shared_model.item_at(self._shared_playlist_index)
+                if playlist is not None:
+                    self._music_model.set_items(self._shared_playlist_track_items(playlist))
+            elif stack:
                 active = (
                     self._music_albums_model
                     if self._music_section == "albums"
@@ -3099,6 +4088,7 @@ class AppBackend(QObject):
             else:
                 self._sync_music_root_view()
                 self._music_model.set_items(self._music_singles_model._items)
+                self._apply_library_filter(self._all_music_shared, self._music_shared_model)
             self.musicSearchChanged.emit()
         elif page == 3:
             stack = self._video_folder_stack
@@ -3106,6 +4096,8 @@ class AppBackend(QObject):
                 self._apply_library_filter(self._all_video_items, self.videoModel)
             else:
                 self._sync_video_root_view()
+                if not self.inSharedSeriesView:
+                    self._apply_library_filter(self._all_video_shared, self._video_shared_model)
             self.videoSearchChanged.emit()
         self.libraryNavigationChanged.emit()
 
@@ -3113,9 +4105,13 @@ class AppBackend(QObject):
         stack = self._folder_stack_for_page(self._current_page)
         if stack:
             top = stack[-1]
-            if self._is_all_musics_virtual(top):
+            if not self._is_all_musics_virtual(top.path) and not top.path.exists():
+                self._reconcile_folder_stack(self._current_page)
+                stack = self._folder_stack_for_page(self._current_page)
+                top = stack[-1]
+            if self._is_all_musics_virtual(top.path):
                 return self._root_dir_for_page(self._current_page)
-            return top
+            return top.path
         return self._root_dir_for_page(self._current_page)
 
     def _library_infos_to_items(self, infos: list[MediaInfo]) -> list[dict]:
@@ -3240,8 +4236,9 @@ class AppBackend(QObject):
         self._video_search_model.set_items(filtered)
 
     def _reload_library_view(self, page: int) -> None:
+        self._reconcile_folder_stack(page)
         stack = self._folder_stack_for_page(page)
-        if page == 2 and stack and self._is_all_musics_virtual(stack[-1]):
+        if page == 2 and stack and self._is_all_musics_virtual(stack[-1].path):
             self._rebuild_music_root_catalog(push_to_models=False)
             items = self._library_infos_to_items(self._scan_all_music_tracks())
             self._all_music_items = items
@@ -3249,7 +4246,7 @@ class AppBackend(QObject):
             self._apply_library_filter(self._all_music_items, active)
             self._music_model.set_items(active._items)
         else:
-            folder = stack[-1] if stack else self._root_dir_for_page(page)
+            folder = stack[-1].path if stack else self._root_dir_for_page(page)
             infos = scan_library_folder(folder)
             items = self._library_infos_to_items(infos)
             if page == 2:
@@ -3288,7 +4285,7 @@ class AppBackend(QObject):
         if self._current_page != 2 or not self.inCollectionView:
             return False
         stack = self._folder_stack_for_page(self._current_page)
-        if stack and self._is_all_musics_virtual(stack[-1]):
+        if stack and self._is_all_musics_virtual(stack[-1].path):
             return False
         return self._collection_list_model().rowCount() >= 2
 
@@ -3649,9 +4646,16 @@ class AppBackend(QObject):
         artist: str = "",
         start_pos: float = 0.0,
     ) -> None:
+        # This is a final guard for every backend call path (including resume
+        # from the player bar): video must never be delegated to an external
+        # mpv window.  It is rendered by FocusModeScreen in the main QML window.
+        if not audio_only:
+            self._set_current_path(path)
+            self._current_audio_only = False
+            self.enterFocusMode(path, title)
+            return
         self._player.play(
             path,
-            audio_only=audio_only,
             title=title,
             artist=artist,
             volume=self._volume,
@@ -3666,6 +4670,13 @@ class AppBackend(QObject):
         audio_only = item.get("audio_only", True)
         title = item.get("title", "")
         artist = item.get("subtitle", "")
+
+        # Qt Multimedia owns all video rendering inside the QML window.
+        if not audio_only:
+            self._set_current_path(path)
+            self._current_audio_only = False
+            self._start_playback(path, audio_only=False, title=title)
+            return
 
         self._sync_player_bar_for_media(audio_only)
 
@@ -3785,6 +4796,9 @@ class AppBackend(QObject):
 
     def _on_track_ended(self) -> None:
         if not self._current_path:
+            return
+        if self._in_focus_mode:
+            self.exitFocusMode()
             return
         if self._loop_mode == 2:
             self._play_path(self._current_path)
@@ -3986,4 +5000,3 @@ class AppBackend(QObject):
     def _set_current_path(self, path: str) -> None:
         if self._current_path != path:
             self._current_path = path
-

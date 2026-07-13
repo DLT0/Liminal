@@ -15,6 +15,11 @@ Item {
     signal searchSubmitted(string text)
     signal redeemShareClicked()
 
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.bgElevated
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: Theme.contentPadding
@@ -35,7 +40,7 @@ Item {
             }
 
             Rectangle {
-                visible: root.currentPage === 3
+                visible: root.currentPage === 2 || root.currentPage === 3
                 Layout.preferredHeight: 32
                 Layout.preferredWidth: redeemLabel.implicitWidth + 24
                 radius: 8

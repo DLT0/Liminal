@@ -8,6 +8,7 @@ MenuItem {
 
     property string iconName: ""
     property bool destructive: false
+    property bool showSubmenuArrow: false
 
     implicitWidth: 204
     implicitHeight: 40
@@ -21,7 +22,7 @@ MenuItem {
         name: "chevron_right"
         color: Theme.textMuted
         font.pixelSize: 18
-        visible: control.subMenu !== null
+        visible: control.subMenu !== null || control.showSubmenuArrow
     }
 
     indicator: Item {
