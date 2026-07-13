@@ -12,8 +12,6 @@ Trình phát đa phương tiện cục bộ cho Linux. Giao diện desktop xây 
 - **Series** — Tự nhận diện mùa/tập từ tên file, sắp xếp thứ tự tập, chia sẻ cả series
 - **Quản lý thư viện** — Tạo thư mục, sắp xếp, đổi ảnh bìa, chỉnh metadata
 - **Tuỳ chỉnh giao diện** — Màu sắc, sidebar, layout qua `settings.json` (key `liminal.*` kiểu VS Code)
-- **MPRIS** — Điều khiển phát nhạc bằng phím media và tích hợp desktop (tuỳ chọn)
-- **System tray** — Thu nhỏ xuống khay hệ thống, chỉ một instance mỗi phiên
 
 > **Đang phát triển:** Podcast, Book
 
@@ -81,7 +79,7 @@ pip install -r requirements.txt
 ./scripts/install-desktop.sh
 ```
 
-*(Sử dụng `--system-site-packages` để ứng dụng nhận diện và sử dụng gói `dbus`/`gobject` hệ thống cho tính năng phím Media/MPRIS).*
+*(Có thể dùng `--system-site-packages` nếu môi trường hệ thống của bạn yêu cầu các thư viện Qt bổ sung.)*
 
 ## Chạy ứng dụng
 
@@ -232,7 +230,6 @@ Liminal/
     ├── settings_store.py        # settings.json
     ├── state_store.py           # state.json — phiên phát
     ├── ui_config.py             # Resolve key liminal.* cho QML
-    ├── mpris_service.py         # Tích hợp MPRIS (tuỳ chọn)
     ├── config.py                # Extension, browser cookies, mpv
     ├── qml/
     │   ├── main.qml

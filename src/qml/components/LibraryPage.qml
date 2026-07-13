@@ -309,6 +309,24 @@ Item {
                 return w * 1.05 + 8
             }
 
+            // Keep wheel scrolling reliable with both X11 and Wayland input
+            // backends.  Some Linux Qt builds do not forward the native wheel
+            // event to GridView's Flickable implementation consistently.
+            WheelHandler {
+                target: grid
+                onWheel: function(event) {
+                    var delta = event.pixelDelta.y
+                    if (delta === 0)
+                        delta = event.angleDelta.y / 2
+                    if (delta === 0 || !grid.interactive)
+                        return
+
+                    var maximum = Math.max(0, grid.contentHeight - grid.height)
+                    grid.contentY = Math.max(0, Math.min(maximum, grid.contentY - delta))
+                    event.accepted = true
+                }
+            }
+
             delegate: Item {
                 id: cell
                 width: grid.cellWidth - Theme.cardGap

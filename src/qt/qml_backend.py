@@ -389,8 +389,6 @@ class AppBackend(QObject):
     videoSearchChanged = pyqtSignal()
     searchQueryChanged = pyqtSignal()
     playlistOrderUndoChanged = pyqtSignal()
-    rememberCloseActionChanged = pyqtSignal(bool)
-    closeActionTrayChanged = pyqtSignal(bool)
     searchResults = pyqtSignal(list)
     searchError = pyqtSignal(str)
     playlistLinkReady = pyqtSignal(str, list)
@@ -429,8 +427,6 @@ class AppBackend(QObject):
         self._app_icon_url = QUrl.fromLocalFile(str(APP_ICON_PATH.resolve())).toString()
         self._main_window: QWindow | None = None
         self._settings = QSettings("Liminal", "MediaApp")
-        self._remember_close_action = self._settings.value("remember_close_action", False, type=bool)
-        self._close_action_tray = self._settings.value("close_action_tray", True, type=bool)
         self._engine = None
 
         settings = load_settings()
@@ -1198,66 +1194,6 @@ class AppBackend(QObject):
 
     def set_engine(self, engine) -> None:
         self._engine = engine
-
-    @pyqtProperty(bool, notify=rememberCloseActionChanged)
-    def rememberCloseAction(self) -> bool:
-        return self._remember_close_action
-
-    @rememberCloseAction.setter
-    def rememberCloseAction(self, val: bool) -> None:
-        if self._remember_close_action != val:
-            self._remember_close_action = val
-            self._settings.setValue("remember_close_action", val)
-            self.rememberCloseActionChanged.emit(val)
-
-    @pyqtProperty(bool, notify=closeActionTrayChanged)
-    def closeActionTray(self) -> bool:
-        return self._close_action_tray
-
-    @closeActionTray.setter
-    def closeActionTray(self, val: bool) -> None:
-        if self._close_action_tray != val:
-            self._close_action_tray = val
-            self._settings.setValue("close_action_tray", val)
-            self.closeActionTrayChanged.emit(val)
-
-    @pyqtSlot()
-    def minimizeToTray(self) -> None:
-        if self._main_window is not None:
-            self._main_window.hide()
-            self.optimizeMemory()
-
-    @pyqtSlot()
-    def restoreFromTray(self) -> None:
-        if self._main_window is None:
-            return
-        # show() alone leaves a window that was minimized before hide() stuck
-        # in Minimized visibility — use showNormal() so the window actually appears.
-        self._main_window.showNormal()
-        self._main_window.raise_()
-        self._main_window.requestActivate()
-
-    @pyqtSlot()
-    def optimizeMemory(self) -> None:
-        """Optimizes memory when running in background (Linux malloc_trim & garbage collection)."""
-        import gc
-        if self._engine is not None:
-            try:
-                self._engine.trimComponentCache()
-            except Exception as e:
-                logger.warning("Failed to trim component cache: %s", e)
-        gc.collect()
-        try:
-            import ctypes
-            import ctypes.util
-            libc_name = ctypes.util.find_library("c")
-            if libc_name:
-                libc = ctypes.CDLL(libc_name)
-                if hasattr(libc, "malloc_trim"):
-                    libc.malloc_trim(0)
-                    logger.debug("Memory optimization completed via malloc_trim.")
-        except Exception:
-            pass
 
     # ── Slots ──
 
@@ -3661,7 +3597,7 @@ class AppBackend(QObject):
 
     @pyqtSlot(str, str)
     def queueLink(self, url: str, media_type: str) -> None:
-        """Resolve a link in the background and enqueue all items (video or playlist)."""
+        """Resolve a link asynchronously and enqueue all items (video or playlist)."""
         asyncio.create_task(self._queue_link(url, media_type))
 
     async def _queue_link(self, url: str, media_type: str) -> None:

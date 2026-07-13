@@ -28,32 +28,32 @@ case "$OS" in
     fedora|nobara)
         PKG_MANAGER="dnf"
         INSTALL_CMD="sudo dnf install -y"
-        SYS_PACKAGES="mpv ffmpeg qt6-qtmultimedia python3-dbus python3-gobject"
+        SYS_PACKAGES="mpv ffmpeg qt6-qtmultimedia"
         ;;
     ubuntu|debian|pop|linuxmint)
         PKG_MANAGER="apt"
         INSTALL_CMD="sudo apt update && sudo apt install -y"
-        SYS_PACKAGES="mpv ffmpeg libqt6multimedia6 qml6-module-qtmultimedia python3-dbus python3-gi"
+        SYS_PACKAGES="mpv ffmpeg libqt6multimedia6 qml6-module-qtmultimedia"
         ;;
     arch|manjaro|endeavouros)
         PKG_MANAGER="pacman"
         INSTALL_CMD="sudo pacman -S --noconfirm"
-        SYS_PACKAGES="mpv ffmpeg qt6-multimedia python-dbus python-gobject"
+        SYS_PACKAGES="mpv ffmpeg qt6-multimedia"
         ;;
     *)
         # Fallback detection using ID_LIKE
         if [[ "$OS_LIKE" =~ "debian" || "$OS_LIKE" =~ "ubuntu" ]]; then
             PKG_MANAGER="apt"
             INSTALL_CMD="sudo apt update && sudo apt install -y"
-            SYS_PACKAGES="mpv ffmpeg libqt6multimedia6 qml6-module-qtmultimedia python3-dbus python3-gi"
+            SYS_PACKAGES="mpv ffmpeg libqt6multimedia6 qml6-module-qtmultimedia"
         elif [[ "$OS_LIKE" =~ "fedora" || "$OS_LIKE" =~ "rhel" ]]; then
             PKG_MANAGER="dnf"
             INSTALL_CMD="sudo dnf install -y"
-            SYS_PACKAGES="mpv ffmpeg qt6-qtmultimedia python3-dbus python3-gobject"
+            SYS_PACKAGES="mpv ffmpeg qt6-qtmultimedia"
         elif [[ "$OS_LIKE" =~ "arch" ]]; then
             PKG_MANAGER="pacman"
             INSTALL_CMD="sudo pacman -S --noconfirm"
-            SYS_PACKAGES="mpv ffmpeg qt6-multimedia python-dbus python-gobject"
+            SYS_PACKAGES="mpv ffmpeg qt6-multimedia"
         fi
         ;;
 esac
@@ -63,7 +63,7 @@ if [ -n "$PKG_MANAGER" ]; then
     echo -e "${YELLOW}Đang cài đặt các gói phụ thuộc hệ thống bằng $PKG_MANAGER...${NC}"
     eval "$INSTALL_CMD $SYS_PACKAGES"
 else
-    echo -e "${YELLOW}Hệ điều hành chưa hỗ trợ cài đặt tự động. Vui lòng cài đặt thủ công các gói: mpv, ffmpeg, qt6 multimedia, python-dbus, python-gobject.${NC}"
+    echo -e "${YELLOW}Hệ điều hành chưa hỗ trợ cài đặt tự động. Vui lòng cài đặt thủ công các gói: mpv, ffmpeg, Qt6 Multimedia.${NC}"
 fi
 
 # 4. Set up python virtual environment

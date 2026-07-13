@@ -424,6 +424,22 @@ Item {
 
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+            WheelHandler {
+                target: musicListView
+                onWheel: function(event) {
+                    var delta = event.pixelDelta.y
+                    if (delta === 0)
+                        delta = event.angleDelta.y / 2
+                    if (delta === 0 || !musicListView.interactive)
+                        return
+
+                    var maximum = Math.max(0, musicListView.contentHeight - musicListView.height)
+                    musicListView.contentY = Math.max(0, Math.min(maximum,
+                        musicListView.contentY - delta))
+                    event.accepted = true
+                }
+            }
+
             delegate: Rectangle {
                 width: musicListView.width
                 height: 56
@@ -595,6 +611,22 @@ Item {
         interactive: contentHeight > height
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        WheelHandler {
+            target: netflixScroll
+            onWheel: function(event) {
+                var delta = event.pixelDelta.y
+                if (delta === 0)
+                    delta = event.angleDelta.y / 2
+                if (delta === 0 || !netflixScroll.interactive)
+                    return
+
+                var maximum = Math.max(0, netflixScroll.contentHeight - netflixScroll.height)
+                netflixScroll.contentY = Math.max(0, Math.min(maximum,
+                    netflixScroll.contentY - delta))
+                event.accepted = true
+            }
+        }
 
         Item {
             id: netflixHero

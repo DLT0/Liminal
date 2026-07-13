@@ -18,18 +18,6 @@ from src.qt.qml_app import prepare_qml_app, show_qml_app
 ICON_PATH = Path(__file__).resolve().parent / "src" / "qt" / "liminal.png"
 
 
-def _create_mpris_service(player: PlayerBridge):
-    """Register MPRIS when dbus/gi are available (pip or distro packages)."""
-    try:
-        from src.mpris_service import MprisService
-    except ImportError:
-        return None
-    try:
-        return MprisService(player)
-    except Exception:
-        return None
-
-
 def _configure_platform() -> None:
     """Prefer xcb on XWayland so mpv --wid embedding works on GNOME Wayland."""
     if (
@@ -83,8 +71,6 @@ def main() -> None:
     asyncio.set_event_loop(loop)
 
     player = PlayerBridge()
-    mpris = _create_mpris_service(player)
-
     # Preload QML during intro so the main window appears as soon as intro ends.
     from src.qt.intro_splash import IntroSplash
 
@@ -109,13 +95,11 @@ def main() -> None:
 
     def _on_qml_prepared() -> None:
         nonlocal backend_ref, qml_ready
-        backend_ref = prepare_qml_app(app, player, mpris)
+        backend_ref = prepare_qml_app(app, player)
         qml_ready = True
         _try_show_main()
 
     intro.finished.connect(_on_intro_finished)
-    if mpris is not None:
-        app.aboutToQuit.connect(mpris.shutdown)
     intro.start()
     QTimer.singleShot(0, _on_qml_prepared)
 
@@ -126,7 +110,7 @@ def main() -> None:
                 nonlocal client
                 data = client.readAll().data()
                 if b"show" in data and backend_ref:
-                    backend_ref.restoreFromTray()
+                    backend_ref.show_main_window()
             client.readyRead.connect(read_data)
 
     server.newConnection.connect(handle_new_connection)
