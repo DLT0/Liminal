@@ -223,6 +223,7 @@ Item {
             visible: root.showTrackShare && !rowContextMenu.isCollection
             iconName: "share"
             text: "Chia sẻ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromMusicPath(rowContextMenu.itemPath)
         }
         StyledMenuSeparator {}
@@ -409,6 +410,8 @@ Item {
                 width: 40
                 height: 40
                 visible: root.showPlaylistShare && !root.showDownloadState
+                opacity: shareBridge.shareBusy ? 0.45 : 1
+                enabled: !shareBridge.shareBusy
                 onClicked: root.playlistShareRequested()
             }
         }
@@ -839,6 +842,8 @@ Item {
                     width: 44
                     height: 44
                     visible: root.useSeriesStyle && !root.showDownloadState
+                    opacity: shareBridge.shareBusy ? 0.45 : 1
+                    enabled: !shareBridge.shareBusy
                     onClicked: root.seriesShareRequested()
                 }
             }

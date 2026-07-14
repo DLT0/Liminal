@@ -15,6 +15,7 @@ ApplicationWindow {
     minimumHeight: 680
     visible: false
     title: "Liminal"
+    opacity: uiConfig.windowOpacity
     color: "transparent"
     flags: uiConfig.customTitleBar
         ? (Qt.Window | Qt.FramelessWindowHint)
@@ -52,10 +53,18 @@ ApplicationWindow {
         parent: Overlay.overlay
     }
 
+    ShareLoadingDialog {
+        id: shareLoadingDialog
+        parent: Overlay.overlay
+    }
+
     RedeemShareDialog {
         id: redeemShareDialog
         parent: Overlay.overlay
-        onAccepted: shareBridge.redeemCode(codeField.text)
+        onAccepted: {
+            if (!shareBridge.shareBusy)
+                shareBridge.redeemCode(codeField.text)
+        }
     }
 
     Popup {
@@ -102,6 +111,12 @@ ApplicationWindow {
             shareToast.text = message
             shareToast.open()
         }
+        function onShareBusyChanged() {
+            if (shareBridge.shareBusy)
+                shareLoadingDialog.open()
+            else
+                shareLoadingDialog.close()
+        }
     }
 
     Connections {
@@ -124,6 +139,13 @@ ApplicationWindow {
             } else {
                 root.showNormal()
             }
+        }
+    }
+
+    Connections {
+        target: uiConfig
+        function onConfigChanged() {
+            contentHeader.updateForPage(backend.currentPage)
         }
     }
 

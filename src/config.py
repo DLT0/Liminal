@@ -16,7 +16,7 @@ BOOK_EXTS = {".pdf", ".epub", ".mobi", ".azw3", ".fb2", ".djvu", ".cbr", ".cbz"}
 MPV_IPC_SOCKET = "/tmp/liminal-mpv.sock"
 
 # Extra loudness for mpv/Qt players (0 = off). ~3 dB is a modest boost at max volume.
-MPV_AUDIO_GAIN_DB = 0
+MPV_AUDIO_GAIN_DB = 3
 
 
 def mpv_audio_gain_factor() -> float:

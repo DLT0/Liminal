@@ -47,7 +47,7 @@ def prepare_qml_app(
     app: QApplication,
     player: PlayerBridge,
 ) -> AppBackend:
-    """Load QML and backend while intro may still be playing. Window stays hidden."""
+    """Load QML engine and backend. Window stays hidden until show_qml_app."""
     global _engine
 
     _register_theme()
@@ -76,6 +76,7 @@ def prepare_qml_app(
     _engine.rootContext().setContextProperty("mpvVideo", mpv_video)
     _engine.rootContext().setContextProperty("shareBridge", share_bridge)
     _engine.rootContext().setContextProperty("uiConfig", ui_bridge)
+    ui_bridge.settingsFileChanged.connect(backend.reload_app_settings_from_disk)
 
     _engine.load(QUrl.fromLocalFile(str((QML_DIR / "main.qml").resolve())))
 
@@ -88,6 +89,7 @@ def prepare_qml_app(
         backend.set_main_window(root)
         mpv_video.setMainWindow(root)
 
+    QTimer.singleShot(0, backend.preload_libraries)
     QTimer.singleShot(0, backend.load_initial_page)
     QTimer.singleShot(0, share_bridge.emit_cached_shared)
     QTimer.singleShot(0, share_bridge.refreshShared)
@@ -101,7 +103,7 @@ def prepare_qml_app(
 
 
 def show_qml_app(backend: AppBackend) -> None:
-    """Reveal the main window after intro (or other splash) completes."""
+    """Reveal the main window."""
     backend.show_main_window()
 
 

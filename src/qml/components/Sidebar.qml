@@ -23,7 +23,7 @@ GlassPanel {
         { icon: "podcasts", label: "Podcast", page: 6 },
         { icon: "menu_book", label: "Book", page: 7 },
         { icon: "download", label: "Download", page: 4 },
-        { icon: "settings", label: "Settings", page: 5 }
+        { icon: "settings", label: "Cài đặt", page: 5 }
     ]
 
     ColumnLayout {

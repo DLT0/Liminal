@@ -16,297 +16,385 @@ Item {
     signal openUiConfigDir()
     signal updateYtDlpRequested()
 
-    ScrollView {
+    readonly property var categories: [
+        { id: "general", label: "Chung", icon: "tune" },
+        { id: "appearance", label: "Giao diện", icon: "palette" },
+        { id: "playback", label: "Phát media", icon: "movie" },
+        { id: "library", label: "Thư viện", icon: "folder" },
+        { id: "advanced", label: "Nâng cao", icon: "build" }
+    ]
+
+    readonly property bool useSideNav: width >= 720
+    readonly property bool compactContent: contentFlickable.width < 480
+
+    property int currentCategory: 0
+
+    onCurrentCategoryChanged: contentFlickable.contentY = 0
+
+    function reloadStatusDescription() {
+        switch (uiConfig.reloadState) {
+        case "reloading": return uiConfig.reloadMessage
+        case "ok": return uiConfig.reloadMessage
+        case "error": return uiConfig.reloadMessage
+        case "disabled": return "Bật lại để tự động áp dụng thay đổi từ settings.json."
+        default: return "Theo dõi thay đổi từ settings.json và áp dụng ngay lập tức."
+        }
+    }
+
+    function reloadStatusColor() {
+        switch (uiConfig.reloadState) {
+        case "ok": return Theme.trafficGreen
+        case "error": return Theme.trafficRed
+        case "reloading": return Theme.accent
+        default: return Theme.textSecondary
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.bgBase
+    }
+
+    RowLayout {
         anchors.fill: parent
         anchors.margins: Theme.contentPadding
-        clip: true
+        anchors.topMargin: 0
+        spacing: 0
+
+        // ── Category navigation ──
+        Rectangle {
+            Layout.preferredWidth: root.useSideNav ? 196 : 0
+            Layout.fillHeight: true
+            visible: root.useSideNav
+            color: "transparent"
+            clip: true
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.topMargin: 4
+                spacing: 4
+
+                Repeater {
+                    model: root.categories
+
+                    SettingsNavItem {
+                        Layout.fillWidth: true
+                        label: modelData.label
+                        iconName: modelData.icon
+                        active: root.currentCategory === index
+                        onClicked: root.currentCategory = index
+                    }
+                }
+
+                Item { Layout.fillHeight: true }
+            }
+
+            Rectangle {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 1
+                color: Theme.settingsCardBorder
+            }
+        }
 
         ColumnLayout {
-            width: parent.width
-            spacing: 20
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 12
 
-            Text {
-                text: "Cài đặt"
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.pageTitleSize
-                font.weight: Font.Bold
-                color: Theme.textPrimary
+            // Mobile / narrow: category picker
+            StyledComboBox {
+                Layout.fillWidth: true
+                visible: !root.useSideNav
+                model: root.categories.map(function(item) { return item.label })
+                currentIndex: root.currentCategory
+                onActivated: root.currentCategory = index
             }
 
-            // ── General Settings ──
-
-            Text {
+            Flickable {
+                id: contentFlickable
                 Layout.fillWidth: true
-                text: "Vị trí lưu trữ: Chọn thư mục gốc cho thư viện của bạn. Liminal sẽ tự động quản lý và phân loại các tệp âm nhạc và video bên trong."
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.bodySize
-                color: Theme.textMuted
-                wrapMode: Text.WordWrap
-            }
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: width
+                contentHeight: categoryPanel.implicitHeight + 8
+                boundsBehavior: Flickable.StopAtBounds
+                interactive: contentHeight > height
 
-            GlassPanel {
-                Layout.fillWidth: true
-                Layout.preferredHeight: rootPanel.implicitHeight + 24
-                radius: Theme.cardRadius
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                WheelHandler {
+                    target: contentFlickable
+                    onWheel: function(event) {
+                        var delta = event.pixelDelta.y
+                        if (delta === 0)
+                            delta = event.angleDelta.y / 2
+                        if (delta === 0 || !contentFlickable.interactive)
+                            return
+                        var maximum = Math.max(0, contentFlickable.contentHeight - contentFlickable.height)
+                        contentFlickable.contentY = Math.max(0, Math.min(maximum,
+                            contentFlickable.contentY - delta))
+                        event.accepted = true
+                    }
+                }
 
                 ColumnLayout {
-                    id: rootPanel
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 10
+                    id: categoryPanel
+                    width: contentFlickable.width
+                    spacing: 16
 
-                    Text {
+                    // ── Chung ──
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        text: "Đường dẫn mặc định: ~/Media/Liminal (Linux) hoặc C:\\Users\\<tên_người_dùng>\\Media\\Liminal (Windows)"
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.captionSize
-                        color: Theme.textMuted
-                        wrapMode: Text.WordWrap
-                    }
+                        spacing: 16
+                        visible: root.currentCategory === 0
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 10
-
-                        Rectangle {
+                        SettingsSection {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 40
-                            radius: 8
-                            color: Theme.inputBg
-                            border.color: Theme.inputBorder
+                            iconName: "tune"
+                            title: "Thiết lập chung"
+                            subtitle: "Các tuỳ chọn hoạt động và đồng bộ cấu hình của ứng dụng."
+
+                            SettingsToggleRow {
+                                Layout.fillWidth: true
+                                label: "Tự động áp dụng cấu hình"
+                                description: root.reloadStatusDescription()
+                                checked: uiConfig.autoReloadEnabled
+                                interactive: true
+                                onToggled: uiConfig.setAutoReloadEnabled(checked)
+                            }
 
                             Text {
-                                anchors.fill: parent
-                                anchors.margins: 10
-                                text: root.mediaRoot || "Đang thiết lập mặc định…"
+                                Layout.fillWidth: true
+                                Layout.topMargin: 4
+                                text: uiConfig.reloadMessage
                                 font.family: Theme.fontFamily
-                                font.pixelSize: Theme.bodySize
-                                color: Theme.textSecondary
-                                elide: Text.ElideMiddle
-                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: Theme.settingsSubtitleSize
+                                color: root.reloadStatusColor()
+                                wrapMode: Text.WordWrap
+                                visible: uiConfig.reloadState === "reloading"
+                                    || uiConfig.reloadState === "ok"
+                                    || uiConfig.reloadState === "error"
                             }
                         }
-
-                        IconButton {
-                            Layout.preferredWidth: 40
-                            Layout.preferredHeight: 40
-                            icon: "folder"
-                            iconSize: 20
-                            bordered: true
-                            onClicked: root.pickMediaRoot()
-                        }
                     }
 
-                    RowLayout {
+                    // ── Giao diện ──
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 8
-                        visible: root.mediaRoot !== ""
-                        Layout.topMargin: 4
+                        spacing: 16
+                        visible: root.currentCategory === 1
 
-                        AppIcon {
-                            name: backend.freeDiskSpaceGB < 10 ? "warning" : "info"
-                            font.pixelSize: 16
-                            color: backend.freeDiskSpaceGB < 10 ? Theme.trafficYellow : Theme.textMuted
-                        }
-
-                        Text {
+                        SettingsSection {
                             Layout.fillWidth: true
-                            text: backend.freeDiskSpaceGB < 10
-                                ? "Dung lượng trống còn lại: " + backend.freeDiskSpaceGB.toFixed(1) + " GB. Cảnh báo: Ổ đĩa sắp hết dung lượng (dưới 10 GB), vui lòng chuyển ổ đĩa hoặc xóa bớt dữ liệu."
-                                : "Dung lượng trống còn lại: " + backend.freeDiskSpaceGB.toFixed(1) + " GB."
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.captionSize
-                            color: backend.freeDiskSpaceGB < 10 ? Theme.trafficYellow : Theme.textMuted
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: "Cấu hình giao diện: Thực hiện tùy chỉnh thông qua tệp settings.json. Các thay đổi sẽ có hiệu lực sau khi khởi động lại ứng dụng."
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.bodySize
-                color: Theme.textMuted
-                wrapMode: Text.WordWrap
-                Layout.topMargin: 10
-            }
-
-            GlassPanel {
-                Layout.fillWidth: true
-                Layout.preferredHeight: playbackPanel.implicitHeight + 24
-                radius: Theme.cardRadius
-
-                ColumnLayout {
-                    id: playbackPanel
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 8
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "Trình phát video"
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.bodySize
-                        font.weight: Font.Bold
-                        color: Theme.textPrimary
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "Chọn phát video trong ứng dụng hoặc bằng cửa sổ mpv riêng. Thay đổi sẽ áp dụng cho lần mở Focus Mode tiếp theo."
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.captionSize
-                        color: Theme.textMuted
-                        wrapMode: Text.WordWrap
-                    }
-
-                    StyledComboBox {
-                        Layout.fillWidth: true
-                        model: [
-                            "Trong ứng dụng (Qt Multimedia)",
-                            "mpv (cửa sổ riêng)"
-                        ]
-                        currentIndex: backend.videoPlaybackMode === "mpv" ? 1 : 0
-                        onActivated: backend.setVideoPlaybackMode(index === 1 ? "mpv" : "inapp")
-                    }
-                }
-            }
-
-            GlassPanel {
-                Layout.fillWidth: true
-                Layout.preferredHeight: uiPanel.implicitHeight + 24
-                radius: Theme.cardRadius
-
-                ColumnLayout {
-                    id: uiPanel
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 10
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "Tệp cấu hình hệ thống"
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.bodySize
-                        font.weight: Font.Bold
-                        color: Theme.textPrimary
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "Vui lòng tham khảo tệp settings.json.example để xem chi tiết các tham số cấu hình được hỗ trợ (ví dụ: liminal.colorCustomizations.accent, liminal.sidebar.width)."
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.captionSize
-                        color: Theme.textMuted
-                        wrapMode: Text.WordWrap
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 10
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 40
-                            radius: 8
-                            color: Theme.inputBg
-                            border.color: Theme.inputBorder
+                            iconName: "palette"
+                            title: "Tùy chỉnh giao diện"
+                            subtitle: "Chỉnh màu sắc, thanh điều hướng và bố cục thông qua tệp settings.json."
 
                             Text {
-                                anchors.fill: parent
-                                anchors.margins: 10
-                                text: root.uiConfigPath || "~/.config/liminal/settings.json"
+                                Layout.fillWidth: true
+                                text: "Xem tệp settings.json.example để biết danh sách tham số hỗ trợ (ví dụ: liminal.colorCustomizations.accent, liminal.sidebar.width)."
                                 font.family: Theme.fontFamily
-                                font.pixelSize: Theme.bodySize
-                                color: Theme.textSecondary
-                                elide: Text.ElideMiddle
-                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: Theme.settingsSubtitleSize
+                                color: Theme.textMuted
+                                wrapMode: Text.WordWrap
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                visible: root.compactContent
+
+                                SettingsPathField {
+                                    Layout.fillWidth: true
+                                    path: root.uiConfigPath
+                                    placeholder: "~/.config/liminal/settings.json"
+                                }
+
+                                SettingsActionButton {
+                                    Layout.fillWidth: true
+                                    label: "Mở thư mục cấu hình"
+                                    onClicked: root.openUiConfigDir()
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                visible: !root.compactContent
+
+                                SettingsPathField {
+                                    Layout.fillWidth: true
+                                    path: root.uiConfigPath
+                                    placeholder: "~/.config/liminal/settings.json"
+                                }
+
+                                SettingsActionButton {
+                                    Layout.preferredWidth: 180
+                                    label: "Mở thư mục cấu hình"
+                                    onClicked: root.openUiConfigDir()
+                                }
                             }
                         }
+                    }
 
-                        Rectangle {
-                            Layout.preferredWidth: 160
-                            Layout.preferredHeight: 40
-                            radius: 8
-                            color: Theme.glassFill
-                            border.color: Theme.glassBorder
-                            border.width: 1
+                    // ── Phát media ──
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 16
+                        visible: root.currentCategory === 2
+
+                        SettingsSection {
+                            Layout.fillWidth: true
+                            iconName: "movie"
+                            title: "Trình phát video"
+                            subtitle: "Thiết lập có hiệu lực khi bạn mở Focus Mode lần tiếp theo."
+
+                            StyledComboBox {
+                                Layout.fillWidth: true
+                                model: [
+                                    "Phát trong ứng dụng (Qt Multimedia)",
+                                    "Phát qua mpv (cửa sổ riêng)"
+                                ]
+                                currentIndex: backend.videoPlaybackMode === "mpv" ? 1 : 0
+                                onActivated: backend.setVideoPlaybackMode(index === 1 ? "mpv" : "inapp")
+                            }
+                        }
+                    }
+
+                    // ── Thư viện ──
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 16
+                        visible: root.currentCategory === 3
+
+                        SettingsSection {
+                            Layout.fillWidth: true
+                            iconName: "folder"
+                            title: "Vị trí lưu trữ"
+                            subtitle: "Chọn thư mục gốc cho thư viện nhạc, video và sách điện tử."
 
                             Text {
-                                anchors.centerIn: parent
-                                text: "Mở thư mục"
+                                Layout.fillWidth: true
+                                text: "Đường dẫn mặc định: ~/Media/Liminal (Linux), C:\\Users\\<tên người dùng>\\Media\\Liminal (Windows)"
                                 font.family: Theme.fontFamily
-                                font.pixelSize: Theme.bodySize
-                                font.weight: Font.Bold
-                                color: Theme.textSecondary
+                                font.pixelSize: Theme.settingsSubtitleSize
+                                color: Theme.textMuted
+                                wrapMode: Text.WordWrap
                             }
 
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.openUiConfigDir()
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                SettingsPathField {
+                                    Layout.fillWidth: true
+                                    path: root.mediaRoot
+                                    placeholder: "Đang khởi tạo đường dẫn mặc định…"
+                                }
+
+                                IconButton {
+                                    Layout.preferredWidth: 40
+                                    Layout.preferredHeight: 40
+                                    icon: "folder"
+                                    iconSize: 20
+                                    bordered: true
+                                    onClicked: root.pickMediaRoot()
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                visible: root.mediaRoot !== ""
+
+                                AppIcon {
+                                    name: backend.freeDiskSpaceGB < 10 ? "warning" : "info"
+                                    font.pixelSize: 16
+                                    color: backend.freeDiskSpaceGB < 10 ? Theme.trafficYellow : Theme.textMuted
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    text: backend.freeDiskSpaceGB < 10
+                                        ? "Dung lượng trống: " + backend.freeDiskSpaceGB.toFixed(1) + " GB. Cảnh báo: dung lượng dưới 10 GB — vui lòng giải phóng dung lượng hoặc chuyển sang thư mục khác."
+                                        : "Dung lượng trống: " + backend.freeDiskSpaceGB.toFixed(1) + " GB."
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.settingsSubtitleSize
+                                    color: backend.freeDiskSpaceGB < 10 ? Theme.trafficYellow : Theme.textSecondary
+                                    wrapMode: Text.WordWrap
+                                }
                             }
                         }
                     }
-                }
-            }
 
-            // ── Advanced Settings ──
-            Text {
-                text: "Nâng cao"
-                font.family: Theme.fontFamily
-                font.pixelSize: 18
-                font.weight: Font.Bold
-                color: Theme.textPrimary
-                Layout.topMargin: 20
-            }
+                    // ── Nâng cao ──
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 16
+                        visible: root.currentCategory === 4
 
-            Text {
-                Layout.fillWidth: true
-                text: "Cập nhật module yt-dlp: Đảm bảo khả năng tương thích và khắc phục các sự cố tải xuống khi các nền tảng trực tuyến cập nhật thuật toán."
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.bodySize
-                color: Theme.textMuted
-                wrapMode: Text.WordWrap
-            }
+                        SettingsSection {
+                            Layout.fillWidth: true
+                            iconName: "build"
+                            title: "Công cụ nâng cao"
+                            subtitle: "Cập nhật module yt-dlp để duy trì khả năng tải xuống khi các nền tảng thay đổi."
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+                                visible: !root.compactContent
 
-                Rectangle {
-                    Layout.preferredWidth: 200
-                    Layout.preferredHeight: 44
-                    radius: Theme.cardRadius
-                    color: Theme.glassFill
-                    border.color: Theme.glassBorder
-                    border.width: 1
+                                SettingsActionButton {
+                                    Layout.preferredWidth: 200
+                                    label: "Cập nhật yt-dlp"
+                                    busy: root.ytDlpUpdateStatus === "Đang cập nhật yt-dlp…"
+                                    onClicked: root.updateYtDlpRequested()
+                                }
 
-                    Text {
-                        anchors.centerIn: parent
-                        text: "Cập nhật yt-dlp"
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.bodySize
-                        font.weight: Font.Bold
-                        color: Theme.textSecondary
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    visible: root.ytDlpUpdateStatus !== ""
+                                    text: root.ytDlpUpdateStatus
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.settingsSubtitleSize
+                                    color: Theme.textSecondary
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                visible: root.compactContent
+
+                                SettingsActionButton {
+                                    Layout.fillWidth: true
+                                    label: "Cập nhật yt-dlp"
+                                    busy: root.ytDlpUpdateStatus === "Đang cập nhật yt-dlp…"
+                                    onClicked: root.updateYtDlpRequested()
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: root.ytDlpUpdateStatus !== ""
+                                    text: root.ytDlpUpdateStatus
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.settingsSubtitleSize
+                                    color: Theme.textSecondary
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+                        }
                     }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.updateYtDlpRequested()
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 8
                     }
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    text: root.ytDlpUpdateStatus
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.bodySize
-                    color: Theme.textMuted
-                    elide: Text.ElideRight
                 }
             }
         }

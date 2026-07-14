@@ -17,7 +17,7 @@
   "liminal.search.placeholder": "Tìm trong thư viện…",
   "liminal.playerBar.height": 108,
   "liminal.playerBar.alwaysVisible": false,
-  "liminal.window.customTitleBar": false,
+  "liminal.window.customTitleBar": true,
   "liminal.layout.gridColumns": 5,
   "liminal.layout.contentPadding": 24,
   "liminal.layout.cardRadius": 12,
@@ -25,7 +25,8 @@
 
   "liminal.colorCustomizations": {
     "accent": "#a855f7",
-    "bgElevated": "#121212",
+    "bgElevated": "#000000",
+    "bgCard": "#0a0a0a",
     "textPrimary": "#ffffff"
   }
 }

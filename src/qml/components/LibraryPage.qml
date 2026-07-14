@@ -173,18 +173,21 @@ Item {
             visible: root.showShareAction && !contextMenu.isCollection && root.useVideoStyle
             iconName: "share"
             text: "Chia sẻ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromLibraryPath(contextMenu.itemPath)
         }
         StyledMenuItem {
             visible: root.showShareAction && !contextMenu.isCollection && root.useVinylStyle
             iconName: "share"
             text: "Chia sẻ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromMusicPath(contextMenu.itemPath)
         }
         StyledMenuItem {
             visible: root.showShareAction && contextMenu.isCollection && root.useVideoStyle
             iconName: "share"
             text: "Chia sẻ phim bộ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromSeriesPath(contextMenu.itemPath)
         }
         StyledMenuItem {
@@ -192,6 +195,7 @@ Item {
                 && !contextMenu.itemPath.startsWith("__liminal__:")
             iconName: "share"
             text: "Chia sẻ playlist"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromPlaylistPath(contextMenu.itemPath)
         }
         StyledMenuSeparator {}

@@ -78,10 +78,11 @@ Item {
             mpvVideo.attachToItem(mpvHost)
             applyVideoVolume()
             mpvVideo.play(backend.focusModeSource)
-            return
+        } else {
+            videoPlayer.source = backend.focusModeSource
+            videoPlayer.play()
         }
-        videoPlayer.source = backend.focusModeSource
-        videoPlayer.play()
+        resumePositionTimer.restart()
     }
 
     function stopPlayback() {
@@ -300,6 +301,18 @@ Item {
         id: flashTimer
         interval: 700
         onTriggered: centerPlayPause.opacity = 0
+    }
+
+    Timer {
+        id: resumePositionTimer
+        interval: 600
+        repeat: false
+        onTriggered: {
+            if (backend.focusModeStartPositionMs > 0) {
+                root.seekTo(backend.focusModeStartPositionMs)
+                backend.focusModeStartPositionMs = 0
+            }
+        }
     }
 
     Shortcut {

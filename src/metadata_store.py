@@ -193,31 +193,37 @@ def _cover_cache_path(path: Path, extension: str = ".jpg") -> Path:
     return COVER_CACHE_DIR / f"{cache_key}{extension}"
 
 
-def read_video_thumbnail(path: Path) -> str:
-    """Find a yt-dlp sidecar, or cache a representative frame for old videos."""
+def read_video_thumbnail(path: Path, *, extract: bool = True) -> str:
+    """Find a yt-dlp sidecar, disk cache, or optionally extract a frame via ffmpeg."""
     for extension in (".jpg", ".jpeg", ".png", ".webp"):
         candidate = path.with_suffix(extension)
         if candidate.is_file():
             return str(candidate.resolve())
 
-    if shutil.which("ffmpeg") is None:
-        return ""
     try:
         target = _cover_cache_path(path)
         if target.is_file():
             return str(target.resolve())
+    except OSError:
+        return ""
+
+    if not extract or shutil.which("ffmpeg") is None:
+        return ""
+
+    try:
         COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        # One second avoids the common all-black opening frame while keeping
-        # first-time library scans reasonably quick.
+        # Seek before decode; small output keeps first-time extraction fast on Linux.
         subprocess.run(
             [
-                "ffmpeg", "-y", "-ss", "1", "-i", str(path),
-                "-frames:v", "1", "-q:v", "3", str(target),
+                "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+                "-ss", "1", "-i", str(path),
+                "-vf", "scale=320:-1",
+                "-frames:v", "1", "-q:v", "5", str(target),
             ],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=15,
+            timeout=10,
         )
         return str(target.resolve()) if target.is_file() else ""
     except (OSError, subprocess.SubprocessError):
@@ -347,8 +353,8 @@ def resolve_source_url(path: str | Path, *, cache: bool = True) -> str:
     return ""
 
 
-def read_embedded_metadata(path: Path) -> dict[str, str]:
-    """Return title, artist and cached embedded cover from an audio file."""
+def read_embedded_metadata(path: Path, *, include_cover: bool = True) -> dict[str, str]:
+    """Return title, artist and optionally cached embedded cover from an audio file."""
     if MutagenFile is None:
         return {"title": "", "artist": "", "image": ""}
     try:
@@ -357,7 +363,7 @@ def read_embedded_metadata(path: Path) -> dict[str, str]:
         title = _first_tag(tags, "TIT2", "title")
         artist = _first_tag(tags, "TPE1", "artist")
         image = ""
-        if tags and APIC is not None:
+        if include_cover and tags and APIC is not None:
             for tag in tags.values():
                 if isinstance(tag, APIC) and tag.data:
                     image = _cache_embedded_cover(path, tag.data, tag.mime or "image/jpeg")
@@ -396,3 +402,29 @@ def set_cover_image(path: str, source_image: str) -> str:
     shutil.copy2(source_image, dest)
     set_metadata(path, image=str(dest.resolve()))
     return str(dest.resolve())
+
+
+def get_watched_progress(path: str) -> tuple[float, float]:
+    """Return (position_seconds, duration_seconds) for a video, or (0, 0)."""
+    resolved = _metadata_key(path)
+    if not resolved:
+        return (0.0, 0.0)
+    meta = get_metadata(resolved)
+    pos = float(meta.get("watched_position", 0) or 0)
+    dur = float(meta.get("watched_duration", 0) or 0)
+    return (pos, dur)
+
+
+def set_watched_progress(path: str, position: float, duration: float) -> None:
+    """Persist watch progress for a video file.
+
+    Progress is reset to zero when within 120 seconds of the end
+    (treated as fully watched).
+    """
+    resolved = _metadata_key(path)
+    if not resolved or duration <= 0:
+        return
+    remaining = duration - position
+    if remaining < 120:
+        position = 0.0
+    set_metadata(resolved, watched_position=str(position), watched_duration=str(duration))

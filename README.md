@@ -242,8 +242,7 @@ Liminal/
         ├── qml_app.py           # Khởi tạo QML engine
         ├── qml_backend.py       # AppBackend — Python ↔ QML
         ├── share_bridge.py      # Bridge chia sẻ cho QML
-        ├── mpv_video_bridge.py  # Video mpv trong QML
-        └── intro_splash.py      # Màn hình intro
+        └── mpv_video_bridge.py  # Video mpv trong QML
 ```
 
 ## Giao diện TUI (tuỳ chọn)
