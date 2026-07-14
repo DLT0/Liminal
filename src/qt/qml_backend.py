@@ -26,6 +26,14 @@ from PyQt6.QtGui import QDesktopServices, QGuiApplication, QWindow
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from src.config import AUDIO_EXTS, VIDEO_EXTS, mpv_audio_gain_factor
+from src.ebook_reader import (
+    add_note as add_book_note,
+    delete_note as delete_book_note,
+    extract_text,
+    get_notes as get_book_notes,
+    get_position as get_book_position,
+    save_position as save_book_position,
+)
 from src.downloader import (
     Downloader,
     Download403Failed,
@@ -535,6 +543,7 @@ class AppBackend(QObject):
         self._all_music_albums: list[dict] = []
         self._all_music_tracks: list[dict] = []
         self._all_video_items: list[dict] = []
+        self._all_book_items: list[dict] = []
         self._all_video_series: list[dict] = []
         self._all_video_movies: list[dict] = []
         self._all_video_my_movies: list[dict] = []
@@ -578,6 +587,7 @@ class AppBackend(QObject):
         self._music_shared_model = MediaListModel(self)
         self._music_section = "singles"
         self._video_model = MediaListModel(self)
+        self._book_model = MediaListModel(self)
         self._video_series_model = MediaListModel(self)
         self._video_movies_model = MediaListModel(self)
         self._video_my_movies_model = MediaListModel(self)
@@ -602,12 +612,14 @@ class AppBackend(QObject):
 
     def load_initial_page(self) -> None:
         """Load the startup tab's library once QML is ready."""
+        self._load_book_library(refresh=True)
         if self._current_page == 2:
             self._ensure_music_library_loaded()
             self._sync_library_page_view(2)
         elif self._current_page == 3:
             self._ensure_video_library_loaded()
             self._sync_library_page_view(3)
+
 
     # ── Properties ──
 
@@ -647,6 +659,10 @@ class AppBackend(QObject):
     @pyqtProperty(QObject, constant=True)
     def videoModel(self) -> MediaListModel:
         return self._video_model
+
+    @pyqtProperty(QObject, constant=True)
+    def bookModel(self) -> MediaListModel:
+        return self._book_model
 
     @pyqtProperty(QObject, constant=True)
     def videoSeriesModel(self) -> MediaListModel:
@@ -1361,6 +1377,58 @@ class AppBackend(QObject):
             if all_items:
                 self._set_playback_queue(all_items)
         self._play_item(item)
+
+    @pyqtSlot(int, result="QVariantMap")
+    def openBook(self, index: int) -> dict:
+        """Open a book from the book model — extract text and return content."""
+        from src.ebook_reader import extract_text, get_page_count
+        item = self._book_model.item_at(index)
+        if item is None:
+            return {"title": "", "author": "", "chapters": [], "error": "No item", "path": "", "is_pdf": False, "page_count": 0}
+        path = item.get("path") or item.get("url") or ""
+        if not path:
+            return {"title": "", "author": "", "chapters": [], "error": "No path", "path": "", "is_pdf": False, "page_count": 0}
+        result = extract_text(path)
+        result["path"] = path
+        if not result.get("title"):
+            result["title"] = item.get("title", "")
+        if not result.get("author") or result["author"] == "Unknown Artist":
+            result["author"] = item.get("subtitle", item.get("artist", ""))
+        return result
+
+    @pyqtSlot(str, int, float, result=str)
+    def renderBookPage(self, path: str, page_num: int, zoom: float = 1.0) -> str:
+        """Render a PDF page as an image, return file:// URL or empty string."""
+        from src.ebook_reader import render_page
+        from pathlib import Path
+        result = render_page(path, page_num, zoom)
+        if result and Path(result).exists():
+            return "file://" + result
+        return ""
+
+    @pyqtSlot(str, result="QVariantMap")
+    def getBookPosition(self, path: str) -> dict:
+        from src.ebook_reader import get_position
+        return get_position(path)
+
+    @pyqtSlot(str, int, int, float, int)
+    def saveBookPosition(self, path: str, chapter_index: int,
+                         page_index: int, percent: float, scroll_y: int = 0) -> None:
+        from src.ebook_reader import save_position
+        save_position(path, chapter_index, page_index, percent, scroll_y)
+
+    @pyqtSlot(str, result=list)
+    def getBookNotes(self, path: str) -> list:
+        return get_book_notes(path)
+
+    @pyqtSlot(str, int, int, str, str, result="QVariantMap")
+    def addBookNote(self, path: str, chapter_index: int,
+                    char_offset: int, text: str, color: str = "#ffeb3b") -> dict:
+        return add_book_note(path, chapter_index, char_offset, text, color)
+
+    @pyqtSlot(str, str)
+    def deleteBookNote(self, path: str, note_id: str) -> None:
+        delete_book_note(path, note_id)
 
     @pyqtSlot(int)
     def playMusicSingle(self, index: int) -> None:
@@ -3458,7 +3526,6 @@ class AppBackend(QObject):
         if value:
             QGuiApplication.clipboard().setText(value)
 
-    @pyqtSlot()
     def refreshLibraries(self) -> None:
         if self._music_library_loaded:
             self._load_music_library(refresh=True)
@@ -3468,6 +3535,8 @@ class AppBackend(QObject):
             self._load_video_library(refresh=True)
             if self._current_page == 3:
                 self._sync_library_page_view(3)
+        # Always refresh books
+        self._load_book_library(refresh=True)
 
     @pyqtSlot()
     def rescanLibrary(self) -> None:
@@ -4827,6 +4896,15 @@ class AppBackend(QObject):
         self._video_library_loaded = True
         if refresh:
             self._drop_missing_current_track()
+
+    def _load_book_library(self, *, refresh: bool = False) -> None:
+        """Scan books directory and populate book model."""
+        from src.scanner import scan_library_folder
+        from src.settings_store import get_books_dir
+        infos = scan_library_folder(get_books_dir())
+        items = self._library_infos_to_items(infos)
+        self._all_book_items = items
+        self._book_model.set_items(items)
 
     def _reload_current_library(self, *, refresh: bool = True) -> None:
         if self._current_page == 2:

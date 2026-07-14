@@ -723,33 +723,46 @@ ApplicationWindow {
                         anchors.fill: parent
                         visible: backend.currentPage === 7
 
-                        Column {
-                            anchors.centerIn: parent
-                            spacing: 12
+                        property bool readerOpen: false
+                        property string readerPath: ""
+                        property string readerTitle: ""
+                        property var readerData: ({})
 
-                            AppIcon {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                name: "menu_book"
-                                font.pixelSize: 64
-                                color: Theme.textMuted
-                                opacity: 0.5
+                        // Book grid view (when reader is closed)
+                        LibraryPage {
+                            id: bookLibraryPage
+                            anchors.fill: parent
+                            visible: !bookPage.readerOpen
+                            model: backend.bookModel
+                            useVinylStyle: false
+                            widescreenPosters: false
+                            showScrollBar: true
+                            inCollectionView: false
+                            isPlaying: backend.isPlaying
+                            emptyTitle: "Chưa có sách"
+                            emptyMessage: "Thêm file sách (PDF, EPUB, TXT) vào thư mục Books."
+                            onPlayRequested: function(index) {
+                                // Open book reader
+                                var data = backend.openBook(index)
+                                bookPage.readerData = data
+                                bookPage.readerTitle = data.title || ""
+                                bookPage.readerPath = data.path || ""
+                                bookPage.readerOpen = true
                             }
+                            onOpenCollectionRequested: function(index) { backend.openCollection(index) }
+                        }
 
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Book"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.pageTitleSize
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
-                            }
-
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Tính năng đang phát triển"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.bodySize
-                                color: Theme.textMuted
+                        // Book reader view (when a book is open)
+                        BookReader {
+                            id: bookReader
+                            anchors.fill: parent
+                            visible: bookPage.readerOpen
+                            bookPath: bookPage.readerPath
+                            bookTitle: bookPage.readerTitle || ""
+                            bookAuthor: bookPage.readerData.author || ""
+                            chapters: bookPage.readerData.chapters || []
+                            onCloseRequested: {
+                                bookPage.readerOpen = false
                             }
                         }
                     }

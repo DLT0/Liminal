@@ -242,6 +242,7 @@ def _layout_to_settings(layout: dict[str, Path]) -> dict[str, str]:
         "media_root": str(layout["media_root"]),
         "music_dir": str(layout["music_dir"]),
         "video_dir": str(layout["video_dir"]),
+        "books_dir": str(layout.get("books_dir", layout["media_root"] / BOOKS_SUBDIR)),
     }
 
 

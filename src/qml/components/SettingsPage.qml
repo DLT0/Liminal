@@ -309,6 +309,7 @@ Item {
                     elide: Text.ElideRight
                 }
             }
+
         }
     }
 }

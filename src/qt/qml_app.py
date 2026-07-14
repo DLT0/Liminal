@@ -5,9 +5,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, QUrl
-from PyQt6.QtGui import QIcon, QWindow
+from PyQt6.QtCore import QByteArray, QTimer, QUrl
+from PyQt6.QtGui import QIcon, QImage, QWindow
 from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
+from PyQt6.QtQuick import QQuickImageProvider
 from PyQt6.QtWidgets import QApplication
 
 from src.player import PlayerBridge
@@ -56,6 +57,25 @@ def prepare_qml_app(
 
     _engine = QQmlApplicationEngine()
     _engine.addImportPath(str(QML_DIR.resolve()))
+
+    # Register book page image provider
+    class BookPageProvider(QQuickImageProvider):
+        def __init__(self):
+            super().__init__(QQuickImageProvider.ImageType.Image)
+        def requestImage(self, id: str, size, requestedSize):
+            from src.ebook_reader import render_page
+            parts = id.split("/")
+            path = "/".join(parts[:-2])
+            try:
+                page_num = int(parts[-2])
+                zoom = float(parts[-1])
+            except (IndexError, ValueError):
+                return QImage()
+            result = render_page(path, page_num, zoom)
+            if result:
+                return QImage(result)
+            return QImage()
+    _engine.addImageProvider("bookpage", BookPageProvider())
 
     ui_config = load_ui_config()
     ui_bridge = UiConfigBridge(ui_config)

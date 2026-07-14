@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from src.config import AUDIO_EXTS, VIDEO_EXTS
+from src.config import AUDIO_EXTS, BOOK_EXTS, VIDEO_EXTS
 from src.folder_order import apply_order
 from src.metadata_store import (
     find_cover_image,
@@ -240,6 +240,22 @@ def scan_library_folder(folder: Path) -> list[MediaInfo]:
             ext = child.suffix.lower()
             if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
                 items.append(_media_from_file(child, audio_only=ext in AUDIO_EXTS))
+            elif ext in BOOK_EXTS:
+                display = resolve_display(
+                    str(child.resolve()),
+                    default_title=child.stem,
+                    default_artist="Sách",
+                    default_image=find_folder_preview_image(child.parent),
+                )
+                items.append(
+                    MediaInfo(
+                        path=str(child.resolve()),
+                        title=display["title"],
+                        artist=display["artist"],
+                        image=display["image"],
+                        kind=MediaKind.FILE,
+                    )
+                )
 
     items = apply_order(items, folder, key=lambda item: Path(item.path).name)
 
