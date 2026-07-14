@@ -173,18 +173,21 @@ Item {
             visible: root.showShareAction && !contextMenu.isCollection && root.useVideoStyle
             iconName: "share"
             text: "Chia sẻ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromLibraryPath(contextMenu.itemPath)
         }
         StyledMenuItem {
             visible: root.showShareAction && !contextMenu.isCollection && root.useVinylStyle
             iconName: "share"
             text: "Chia sẻ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromMusicPath(contextMenu.itemPath)
         }
         StyledMenuItem {
             visible: root.showShareAction && contextMenu.isCollection && root.useVideoStyle
             iconName: "share"
             text: "Chia sẻ phim bộ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromSeriesPath(contextMenu.itemPath)
         }
         StyledMenuItem {
@@ -192,6 +195,7 @@ Item {
                 && !contextMenu.itemPath.startsWith("__liminal__:")
             iconName: "share"
             text: "Chia sẻ playlist"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromPlaylistPath(contextMenu.itemPath)
         }
         StyledMenuSeparator {}
@@ -307,6 +311,24 @@ Item {
                 if (root.useVinylStyle)
                     return Math.ceil(w + 52) + 8
                 return w * 1.05 + 8
+            }
+
+            // Keep wheel scrolling reliable with both X11 and Wayland input
+            // backends.  Some Linux Qt builds do not forward the native wheel
+            // event to GridView's Flickable implementation consistently.
+            WheelHandler {
+                target: grid
+                onWheel: function(event) {
+                    var delta = event.pixelDelta.y
+                    if (delta === 0)
+                        delta = event.angleDelta.y / 2
+                    if (delta === 0 || !grid.interactive)
+                        return
+
+                    var maximum = Math.max(0, grid.contentHeight - grid.height)
+                    grid.contentY = Math.max(0, Math.min(maximum, grid.contentY - delta))
+                    event.accepted = true
+                }
             }
 
             delegate: Item {

@@ -26,7 +26,10 @@ Dialog {
         codeField.forceActiveFocus()
     }
 
-    onAccepted: shareBridge.redeemCode(codeField.text)
+    onAccepted: {
+        if (!shareBridge.shareBusy)
+            shareBridge.redeemCode(codeField.text)
+    }
 
     contentItem: ColumnLayout {
         spacing: 12

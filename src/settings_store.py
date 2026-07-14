@@ -40,6 +40,7 @@ APP_DEFAULTS: dict = {
     "version": SETTINGS_VERSION,
     "download_quality": "1080",
     "video_playback_backend": "inapp",
+    "auto_reload_enabled": True,
     "volume": 100,
     "muted": False,
     **YOUTUBE_DEFAULTS,
@@ -133,6 +134,17 @@ def _read_settings_file() -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def read_settings_document_or_none() -> dict | None:
+    """Return parsed settings, None when JSON is invalid (e.g. mid-save)."""
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _strip_obsolete_settings(data: dict) -> dict:

@@ -32,7 +32,7 @@ Trình phát đa phương tiện cục bộ cho Linux. Giao diện desktop xây 
 Hỗ trợ các bản phân phối Fedora, Ubuntu/Debian/Mint, và Arch Linux. Lệnh này sẽ tự động cài các gói hệ thống cần thiết (mpv, ffmpeg, Qt6 Multimedia, MPRIS), tạo môi trường ảo Python và tạo shortcut desktop:
 
 ```bash
-git clone https://github.com/hmduongdl/Liminal.git
+git clone https://github.com/DLT0/Liminal.git
 cd Liminal
 ./setup.sh
 ```
@@ -242,8 +242,7 @@ Liminal/
         ├── qml_app.py           # Khởi tạo QML engine
         ├── qml_backend.py       # AppBackend — Python ↔ QML
         ├── share_bridge.py      # Bridge chia sẻ cho QML
-        ├── mpv_video_bridge.py  # Video mpv trong QML
-        └── intro_splash.py      # Màn hình intro
+        └── mpv_video_bridge.py  # Video mpv trong QML
 ```
 
 ## Giao diện TUI (tuỳ chọn)

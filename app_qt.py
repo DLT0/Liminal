@@ -7,27 +7,14 @@ import locale
 from pathlib import Path
 
 import qasync
-from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 from src.player import PlayerBridge
-from src.qt.qml_app import prepare_qml_app, show_qml_app
+from src.qt.qml_app import run_qml_app
 
 ICON_PATH = Path(__file__).resolve().parent / "src" / "qt" / "liminal.png"
-
-
-def _create_mpris_service(player: PlayerBridge):
-    """Register MPRIS when dbus/gi are available (pip or distro packages)."""
-    try:
-        from src.mpris_service import MprisService
-    except ImportError:
-        return None
-    try:
-        return MprisService(player)
-    except Exception:
-        return None
 
 
 def _configure_platform() -> None:
@@ -50,6 +37,19 @@ def _configure_multimedia_fallback() -> None:
         )
 
 
+def _prewarm_qt_multimedia(app: QApplication) -> None:
+    """Load GStreamer/Qt Multimedia plugins during startup to speed first video open."""
+    try:
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtMultimedia import QMediaPlayer
+
+        player = QMediaPlayer(app)
+        player.setSource(QUrl())
+        player.stop()
+    except Exception:
+        pass
+
+
 def main() -> None:
     _configure_platform()
     _configure_multimedia_fallback()
@@ -58,6 +58,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Liminal")
     app.setDesktopFileName("liminal")
+    _prewarm_qt_multimedia(app)
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
 
@@ -83,41 +84,7 @@ def main() -> None:
     asyncio.set_event_loop(loop)
 
     player = PlayerBridge()
-    mpris = _create_mpris_service(player)
-
-    # Preload QML during intro so the main window appears as soon as intro ends.
-    from src.qt.intro_splash import IntroSplash
-
-    intro = IntroSplash("src/qt/app_intro.mp4")
-
-    backend_ref = None
-    intro_done = False
-    qml_ready = False
-    main_shown = False
-
-    def _try_show_main() -> None:
-        nonlocal main_shown
-        if main_shown or not intro_done or not qml_ready or backend_ref is None:
-            return
-        main_shown = True
-        show_qml_app(backend_ref)
-
-    def _on_intro_finished() -> None:
-        nonlocal intro_done
-        intro_done = True
-        _try_show_main()
-
-    def _on_qml_prepared() -> None:
-        nonlocal backend_ref, qml_ready
-        backend_ref = prepare_qml_app(app, player, mpris)
-        qml_ready = True
-        _try_show_main()
-
-    intro.finished.connect(_on_intro_finished)
-    if mpris is not None:
-        app.aboutToQuit.connect(mpris.shutdown)
-    intro.start()
-    QTimer.singleShot(0, _on_qml_prepared)
+    backend_ref = run_qml_app(app, player)
 
     def handle_new_connection():
         client = server.nextPendingConnection()
@@ -126,7 +93,7 @@ def main() -> None:
                 nonlocal client
                 data = client.readAll().data()
                 if b"show" in data and backend_ref:
-                    backend_ref.restoreFromTray()
+                    backend_ref.show_main_window()
             client.readyRead.connect(read_data)
 
     server.newConnection.connect(handle_new_connection)

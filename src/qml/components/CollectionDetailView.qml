@@ -223,6 +223,7 @@ Item {
             visible: root.showTrackShare && !rowContextMenu.isCollection
             iconName: "share"
             text: "Chia sẻ"
+            enabled: !shareBridge.shareBusy
             onTriggered: shareBridge.createShareFromMusicPath(rowContextMenu.itemPath)
         }
         StyledMenuSeparator {}
@@ -409,6 +410,8 @@ Item {
                 width: 40
                 height: 40
                 visible: root.showPlaylistShare && !root.showDownloadState
+                opacity: shareBridge.shareBusy ? 0.45 : 1
+                enabled: !shareBridge.shareBusy
                 onClicked: root.playlistShareRequested()
             }
         }
@@ -423,6 +426,22 @@ Item {
             model: root.model
 
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            WheelHandler {
+                target: musicListView
+                onWheel: function(event) {
+                    var delta = event.pixelDelta.y
+                    if (delta === 0)
+                        delta = event.angleDelta.y / 2
+                    if (delta === 0 || !musicListView.interactive)
+                        return
+
+                    var maximum = Math.max(0, musicListView.contentHeight - musicListView.height)
+                    musicListView.contentY = Math.max(0, Math.min(maximum,
+                        musicListView.contentY - delta))
+                    event.accepted = true
+                }
+            }
 
             delegate: Rectangle {
                 width: musicListView.width
@@ -595,6 +614,22 @@ Item {
         interactive: contentHeight > height
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        WheelHandler {
+            target: netflixScroll
+            onWheel: function(event) {
+                var delta = event.pixelDelta.y
+                if (delta === 0)
+                    delta = event.angleDelta.y / 2
+                if (delta === 0 || !netflixScroll.interactive)
+                    return
+
+                var maximum = Math.max(0, netflixScroll.contentHeight - netflixScroll.height)
+                netflixScroll.contentY = Math.max(0, Math.min(maximum,
+                    netflixScroll.contentY - delta))
+                event.accepted = true
+            }
+        }
 
         Item {
             id: netflixHero
@@ -807,6 +842,8 @@ Item {
                     width: 44
                     height: 44
                     visible: root.useSeriesStyle && !root.showDownloadState
+                    opacity: shareBridge.shareBusy ? 0.45 : 1
+                    enabled: !shareBridge.shareBusy
                     onClicked: root.seriesShareRequested()
                 }
             }

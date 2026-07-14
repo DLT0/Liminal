@@ -112,6 +112,10 @@ Item {
                     anchors.margins: 2
                     source: root.resolvedImageSource
                     fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: true
+                    sourceSize.width: Math.max(64, Math.round(labelRing.width))
+                    sourceSize.height: Math.max(64, Math.round(labelRing.height))
                     visible: root.imageSource !== ""
                 }
 

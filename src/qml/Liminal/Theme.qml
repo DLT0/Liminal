@@ -40,6 +40,12 @@ QtObject {
     readonly property color hoverOverlay: uiConfig.hoverOverlay
     readonly property color playBorder:   "transparent"
 
+    // Spotify-style pure black surfaces (settings & elevated UI)
+    readonly property color settingsCardBg:     "#0a0a0a"
+    readonly property color settingsCardBorder: Qt.rgba(1, 1, 1, 0.06)
+    readonly property color settingsIconBg:     Qt.rgba(1, 1, 1, 0.08)
+    readonly property color settingsShadow:     Qt.rgba(0, 0, 0, 0.5)
+
     readonly property color trafficRed:    "#ef4444"
     readonly property color trafficYellow: "#eab308"
     readonly property color trafficGreen:  "#22c55e"
@@ -57,9 +63,11 @@ QtObject {
     readonly property real videoPosterAspect: 16 / 9
 
     readonly property string fontFamily: "Inter, Segoe UI, Noto Sans, sans-serif"
+    readonly property string monoFontFamily: "JetBrains Mono, Fira Code, Consolas, monospace"
     readonly property int pageTitleSize: 28
     readonly property int bodySize:      13
     readonly property int captionSize:   11
+    readonly property int settingsSubtitleSize: 12
 
     readonly property int  hoverDuration: 180
     readonly property int  colorDuration: 200

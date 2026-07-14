@@ -53,6 +53,8 @@ from src.media_links import (
 )
 from src.metadata_store import (
     delete_metadata,
+    find_cover_image,
+    get_watched_progress,
     migrate_metadata,
     get_metadata,
     read_embedded_metadata,
@@ -64,6 +66,7 @@ from src.metadata_store import (
     canonical_source_url,
     set_cover_image,
     set_metadata,
+    set_watched_progress,
 )
 from src.models import MediaInfo, MediaKind, PlaybackStatus
 from src.player import PlayerBridge
@@ -72,7 +75,11 @@ from src.scanner import (
     find_folder_track_thumbnails,
     scan_directory,
     scan_library_folder,
+    scan_music_library_bundle,
+    scan_video_library_bundle,
+    resolved_paths_in_child_folders,
 )
+from src.thumbnail_queue import get_thumbnail_queue
 from src.playlist_layout import (
     collect_playlist_tracks,
     playlist_download_subdir,
@@ -88,7 +95,7 @@ from src.series_layout import (
     format_episode_subtitle,
     save_series_rows,
 )
-from src.settings_store import load_raw_settings, load_settings, save_raw_settings, save_settings
+from src.settings_store import load_raw_settings, load_settings, read_settings_document_or_none, save_raw_settings, save_settings
 from src.state_store import load_raw_state, save_raw_state
 from src.ui_config import load_ui_config, open_config_dir
 
@@ -156,6 +163,16 @@ def _normalize_artist(value: str) -> str:
     return artist
 
 
+def _compute_watched_percent(path: str) -> float:
+    """Return 0-100 watched percentage for a video file path."""
+    if not path:
+        return 0.0
+    pos, dur = get_watched_progress(path)
+    if dur <= 0:
+        return 0.0
+    return max(0.0, min(100.0, pos / dur * 100.0))
+
+
 @dataclass(frozen=True)
 class _FolderStackEntry:
     path: Path
@@ -187,7 +204,7 @@ def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict
         "url": info.url or info.path,
         "track_id": info.track_id or canonical or info.url or info.path,
         "duration": info.duration,
-        "image": info.image or "",
+        "image": info.image or (info.preview_images[0] if is_collection and info.preview_images else ""),
         "accent": ACCENT_COLORS[index % len(ACCENT_COLORS)],
         "audio_only": audio_only,
         "is_remote": _is_remote(info.path or info.url),
@@ -198,6 +215,7 @@ def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict
         "download_percent": 0.0,
         "download_status": "",
         "is_downloading": False,
+        "watched_percent": 0.0 if audio_only else _compute_watched_percent(canonical),
     }
 
 
@@ -226,6 +244,7 @@ class MediaListModel(QAbstractListModel):
     TrackThumbnailsRole = Qt.ItemDataRole.UserRole + 18
     SeasonRole = Qt.ItemDataRole.UserRole + 19
     EpisodeRole = Qt.ItemDataRole.UserRole + 20
+    WatchedPercentRole = Qt.ItemDataRole.UserRole + 21
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -265,6 +284,7 @@ class MediaListModel(QAbstractListModel):
             self.TrackThumbnailsRole: "preview_images",
             self.SeasonRole: "season",
             self.EpisodeRole: "episode",
+            self.WatchedPercentRole: "watched_percent",
         }
         key = role_map.get(role)
         if key is None:
@@ -281,6 +301,8 @@ class MediaListModel(QAbstractListModel):
         if role == self.TrackThumbnailsRole:
             return list(value or [])
         if role == self.DownloadPercentRole:
+            return float(value or 0.0)
+        if role == self.WatchedPercentRole:
             return float(value or 0.0)
         return value
 
@@ -306,6 +328,7 @@ class MediaListModel(QAbstractListModel):
             self.TrackThumbnailsRole: b"trackThumbnails",
             self.SeasonRole: b"season",
             self.EpisodeRole: b"episode",
+            self.WatchedPercentRole: b"watchedPercent",
         }
 
     def set_items(self, items: list[dict]) -> None:
@@ -350,6 +373,46 @@ class MediaListModel(QAbstractListModel):
                 ],
             )
             break
+
+    def update_image_by_path(
+        self,
+        path: str,
+        image: str,
+        *,
+        preview_images: list[str] | None = None,
+    ) -> bool:
+        """Update card artwork for *path* without resetting the whole model."""
+        if not image:
+            return False
+        try:
+            resolved = str(Path(path).resolve())
+        except OSError:
+            resolved = path
+        candidates = {path, resolved}
+        changed = False
+        for row, item in enumerate(self._items):
+            item_path = str(item.get("canonical_path") or item.get("path") or "")
+            try:
+                item_resolved = str(Path(item_path).resolve()) if item_path else ""
+            except OSError:
+                item_resolved = item_path
+            if item_path not in candidates and item_resolved not in candidates:
+                continue
+            if item.get("image") == image and (
+                preview_images is None or item.get("preview_images") == preview_images
+            ):
+                return False
+            item["image"] = image
+            if preview_images is not None:
+                item["preview_images"] = list(preview_images)
+            idx = self.index(row, 0)
+            roles = [self.ImageSourceRole]
+            if preview_images is not None:
+                roles.append(self.TrackThumbnailsRole)
+            self.dataChanged.emit(idx, idx, roles)
+            changed = True
+            break
+        return changed
 
 
 @dataclass(frozen=True)
@@ -397,8 +460,6 @@ class AppBackend(QObject):
     videoSearchChanged = pyqtSignal()
     searchQueryChanged = pyqtSignal()
     playlistOrderUndoChanged = pyqtSignal()
-    rememberCloseActionChanged = pyqtSignal(bool)
-    closeActionTrayChanged = pyqtSignal(bool)
     searchResults = pyqtSignal(list)
     searchError = pyqtSignal(str)
     playlistLinkReady = pyqtSignal(str, list)
@@ -415,6 +476,7 @@ class AppBackend(QObject):
     focusModeChanged = pyqtSignal()
     fullScreenChanged = pyqtSignal()
     videoStateChanged = pyqtSignal()
+    focusModeStartPositionMsChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -437,8 +499,6 @@ class AppBackend(QObject):
         self._app_icon_url = QUrl.fromLocalFile(str(APP_ICON_PATH.resolve())).toString()
         self._main_window: QWindow | None = None
         self._settings = QSettings("Liminal", "MediaApp")
-        self._remember_close_action = self._settings.value("remember_close_action", False, type=bool)
-        self._close_action_tray = self._settings.value("close_action_tray", True, type=bool)
         self._engine = None
 
         settings = load_settings()
@@ -487,6 +547,10 @@ class AppBackend(QObject):
         self._shared_progress_save_timer.timeout.connect(self._flush_shared_progress_state)
         self._shared_series_pending_persist: set[str] = set()
         self._shared_playlist_pending_persist: set[str] = set()
+
+        self._video_progress_timer = QTimer(self)
+        self._video_progress_timer.setInterval(5000)
+        self._video_progress_timer.timeout.connect(self._save_video_progress)
         self._active_video_download_subdirs: dict[str, int] = {}
         self._active_music_download_subdirs: dict[str, int] = {}
 
@@ -552,8 +616,12 @@ class AppBackend(QObject):
         self._all_video_tracks: list[dict] = []
         self._music_track_infos: list[MediaInfo] | None = None
         self._video_track_infos: list[MediaInfo] | None = None
+        self._music_root_infos: list[MediaInfo] | None = None
+        self._video_root_infos: list[MediaInfo] | None = None
         self._music_library_loaded = False
         self._video_library_loaded = False
+        self._music_scan_running = False
+        self._video_scan_running = False
         self._music_source_ids_ready = False
         self._video_source_ids_ready = False
         self._music_folder_stack: list[_FolderStackEntry] = []
@@ -565,6 +633,7 @@ class AppBackend(QObject):
         self._in_focus_mode = False
         self._focus_mode_title = ""
         self._focus_mode_source = ""
+        self._focus_mode_start_position_ms = 0
         self._is_full_screen = False
         self._video_is_playing = False
         self._video_position = 0
@@ -610,16 +679,47 @@ class AppBackend(QObject):
         self.trackTitleChanged.connect(self.primaryPlayLabelChanged.emit)
         self.libraryNavigationChanged.connect(self.primaryPlayLabelChanged.emit)
 
+        queue = get_thumbnail_queue()
+        queue.setParent(self)
+        queue.thumbnailReady.connect(self._on_thumbnail_queue_ready)
+
     def load_initial_page(self) -> None:
         """Load the startup tab's library once QML is ready."""
         self._load_book_library(refresh=True)
         if self._current_page == 2:
             self._ensure_music_library_loaded()
-            self._sync_library_page_view(2)
+            if self._music_library_loaded:
+                self._sync_library_page_view(2)
         elif self._current_page == 3:
             self._ensure_video_library_loaded()
+            if self._video_library_loaded:
+                self._sync_library_page_view(3)
+
+    def _refresh_visible_library_views(self) -> None:
+        """Re-push library models after the window becomes visible."""
+        if self._music_library_loaded and self._current_page == 2:
+            self._sync_library_page_view(2)
+        if self._video_library_loaded and self._current_page == 3:
             self._sync_library_page_view(3)
 
+    def preload_libraries(self) -> None:
+        """Warm libraries at startup; scan the current tab first, defer the other."""
+        if self._current_page == 3:
+            primary = self._start_video_library_scan
+            deferred = self._deferred_music_library_scan
+        else:
+            primary = self._start_music_library_scan
+            deferred = self._deferred_video_library_scan
+        primary(refresh=False)
+        QTimer.singleShot(400, deferred)
+
+    def _deferred_music_library_scan(self) -> None:
+        if not self._music_library_loaded and not self._music_scan_running:
+            self._start_music_library_scan(refresh=False)
+
+    def _deferred_video_library_scan(self) -> None:
+        if not self._video_library_loaded and not self._video_scan_running:
+            self._start_video_library_scan(refresh=False)
 
     # ── Properties ──
 
@@ -839,6 +939,16 @@ class AppBackend(QObject):
     @pyqtProperty(str, notify=focusModeChanged)
     def focusModeSource(self) -> str:
         return self._focus_mode_source
+
+    @pyqtProperty(int, notify=focusModeStartPositionMsChanged)
+    def focusModeStartPositionMs(self) -> int:
+        return self._focus_mode_start_position_ms
+
+    @focusModeStartPositionMs.setter
+    def focusModeStartPositionMs(self, value: int) -> None:
+        if self._focus_mode_start_position_ms != value:
+            self._focus_mode_start_position_ms = value
+            self.focusModeStartPositionMsChanged.emit()
 
     @pyqtProperty(bool, notify=fullScreenChanged)
     def isFullScreen(self) -> bool:
@@ -1215,66 +1325,6 @@ class AppBackend(QObject):
     def set_engine(self, engine) -> None:
         self._engine = engine
 
-    @pyqtProperty(bool, notify=rememberCloseActionChanged)
-    def rememberCloseAction(self) -> bool:
-        return self._remember_close_action
-
-    @rememberCloseAction.setter
-    def rememberCloseAction(self, val: bool) -> None:
-        if self._remember_close_action != val:
-            self._remember_close_action = val
-            self._settings.setValue("remember_close_action", val)
-            self.rememberCloseActionChanged.emit(val)
-
-    @pyqtProperty(bool, notify=closeActionTrayChanged)
-    def closeActionTray(self) -> bool:
-        return self._close_action_tray
-
-    @closeActionTray.setter
-    def closeActionTray(self, val: bool) -> None:
-        if self._close_action_tray != val:
-            self._close_action_tray = val
-            self._settings.setValue("close_action_tray", val)
-            self.closeActionTrayChanged.emit(val)
-
-    @pyqtSlot()
-    def minimizeToTray(self) -> None:
-        if self._main_window is not None:
-            self._main_window.hide()
-            self.optimizeMemory()
-
-    @pyqtSlot()
-    def restoreFromTray(self) -> None:
-        if self._main_window is None:
-            return
-        # show() alone leaves a window that was minimized before hide() stuck
-        # in Minimized visibility — use showNormal() so the window actually appears.
-        self._main_window.showNormal()
-        self._main_window.raise_()
-        self._main_window.requestActivate()
-
-    @pyqtSlot()
-    def optimizeMemory(self) -> None:
-        """Optimizes memory when running in background (Linux malloc_trim & garbage collection)."""
-        import gc
-        if self._engine is not None:
-            try:
-                self._engine.trimComponentCache()
-            except Exception as e:
-                logger.warning("Failed to trim component cache: %s", e)
-        gc.collect()
-        try:
-            import ctypes
-            import ctypes.util
-            libc_name = ctypes.util.find_library("c")
-            if libc_name:
-                libc = ctypes.CDLL(libc_name)
-                if hasattr(libc, "malloc_trim"):
-                    libc.malloc_trim(0)
-                    logger.debug("Memory optimization completed via malloc_trim.")
-        except Exception:
-            pass
-
     # ── Slots ──
 
     @pyqtSlot(int)
@@ -1305,7 +1355,7 @@ class AppBackend(QObject):
                 2: "Music",
                 3: "Videos",
                 4: "Tải xuống",
-                5: "Settings",
+                5: "Cài đặt",
                 6: "Podcast",
                 7: "Book",
             }
@@ -1474,8 +1524,19 @@ class AppBackend(QObject):
             path if path.startswith(("http://", "https://", "file://"))
             else QUrl.fromLocalFile(str(Path(path).expanduser().resolve())).toString()
         )
+        # Load saved watch progress
+        if not _is_remote(path):
+            saved_pos, saved_dur = get_watched_progress(path)
+            if saved_pos > 0 and saved_dur > 0:
+                self._focus_mode_start_position_ms = int(saved_pos * 1000)
+            else:
+                self._focus_mode_start_position_ms = 0
+        else:
+            self._focus_mode_start_position_ms = 0
+        self.focusModeStartPositionMsChanged.emit()
         self._in_focus_mode = True
         self._player_bar_visible = False
+        self._video_progress_timer.start()
         self.videoStateChanged.emit()
         self.focusModeChanged.emit()
         self.playerBarVisibleChanged.emit()
@@ -1627,9 +1688,12 @@ class AppBackend(QObject):
 
     @pyqtSlot()
     def exitFocusMode(self) -> None:
+        self._save_video_progress()
+        self._video_progress_timer.stop()
         self._in_focus_mode = False
         self._focus_mode_title = ""
         self._focus_mode_source = ""
+        self._focus_mode_start_position_ms = 0
         self._current_episode_list = []
         self._current_episode_index = -1
         self._current_episode_series_key = ""
@@ -1643,6 +1707,21 @@ class AppBackend(QObject):
         if self._is_full_screen:
             self._is_full_screen = False
             self.fullScreenChanged.emit()
+
+    def _save_video_progress(self) -> None:
+        """Persist current video watch progress to metadata store."""
+        if (
+            not self._in_focus_mode
+            or not self._current_path
+            or _is_remote(self._current_path)
+            or self._video_duration <= 0
+        ):
+            return
+        set_watched_progress(
+            self._current_path,
+            position=self._video_position / 1000.0,
+            duration=self._video_duration / 1000.0,
+        )
 
     @pyqtSlot(int)
     def playVideoMyMovie(self, index: int) -> None:
@@ -1912,6 +1991,7 @@ class AppBackend(QObject):
             "download_percent": 0.0,
             "download_status": "",
             "is_downloading": False,
+            "watched_percent": _compute_watched_percent(path),
         }
 
     def _load_video_series_items(self, folder: Path) -> list[dict]:
@@ -2696,6 +2776,7 @@ class AppBackend(QObject):
                 "download_percent": download_percent,
                 "download_status": download_status,
                 "is_downloading": is_downloading,
+                "watched_percent": _compute_watched_percent(local_path) if local_path else 0.0,
                 "in_library": in_library,
             })
         return items
@@ -3500,6 +3581,9 @@ class AppBackend(QObject):
         self._main_window.setVisible(True)
         self._main_window.raise_()
         self._main_window.requestActivate()
+        # GridView delegates may not load thumbnails while the splash was covering
+        # the window; refresh once the main UI is actually visible.
+        QTimer.singleShot(0, self._refresh_visible_library_views)
 
     def _pick_image_file(self, title: str, start_dir: str = "") -> str:
         initial = start_dir or str(Path.home())
@@ -3730,7 +3814,7 @@ class AppBackend(QObject):
 
     @pyqtSlot(str, str)
     def queueLink(self, url: str, media_type: str) -> None:
-        """Resolve a link in the background and enqueue all items (video or playlist)."""
+        """Resolve a link asynchronously and enqueue all items (video or playlist)."""
         asyncio.create_task(self._queue_link(url, media_type))
 
     async def _queue_link(self, url: str, media_type: str) -> None:
@@ -3951,6 +4035,59 @@ class AppBackend(QObject):
     def openUiConfigDir(self) -> None:
         open_config_dir()
 
+    @pyqtSlot()
+    def reload_app_settings_from_disk(self) -> None:
+        """Apply app-level keys from settings.json after an external edit."""
+        document = read_settings_document_or_none()
+        if document is None:
+            return
+
+        raw = load_raw_settings()
+        self._ui_config = load_ui_config()
+
+        volume = max(0, min(100, int(raw.get("volume", 100))))
+        if volume != self._volume:
+            self._volume = volume
+            self.volumeChanged.emit()
+            self._player.set_volume(volume)
+
+        muted = bool(raw.get("muted", False))
+        if muted != self._muted:
+            self._muted = muted
+            self.mutedChanged.emit()
+            self._player.set_muted(muted)
+
+        playback_mode = str(raw.get("video_playback_backend", "inapp")).strip().lower()
+        if playback_mode not in {"inapp", "mpv"}:
+            playback_mode = "inapp"
+        if playback_mode != self._video_playback_mode:
+            self._video_playback_mode = playback_mode
+            self.videoPlaybackModeChanged.emit()
+
+        quality = _normalize_video_quality(str(raw.get("download_quality", "1080")))
+        if quality != self._download_quality:
+            self._download_quality = quality
+            self.downloadQualityChanged.emit()
+
+        always_visible = bool(
+            self._ui_config.get("player_bar", {}).get("always_visible", False)
+        )
+        if always_visible != self._player_bar_always_visible:
+            self._player_bar_always_visible = always_visible
+            self._sync_player_bar_for_media(self._current_audio_only)
+            self.playerBarVisibleChanged.emit()
+
+        media_root = raw.get("media_root")
+        if isinstance(media_root, str) and media_root.strip():
+            resolved = str(Path(media_root).expanduser())
+            if resolved != self._media_root:
+                try:
+                    settings = load_settings(create_if_missing=False)
+                except OSError:
+                    return
+                self._apply_storage_settings(settings)
+                self._reset_libraries_for_storage_change()
+
     @pyqtSlot(str)
     def setDownloadQuality(self, quality: str) -> None:
         quality = _normalize_video_quality(quality)
@@ -3961,10 +4098,10 @@ class AppBackend(QObject):
 
     @pyqtSlot()
     def updateYtDlp(self) -> None:
-        if self._yt_dlp_update_status == "Đang cập nhật...":
+        if self._yt_dlp_update_status == "Đang cập nhật yt-dlp…":
             return
             
-        self._yt_dlp_update_status = "Đang cập nhật..."
+        self._yt_dlp_update_status = "Đang cập nhật yt-dlp…"
         self.ytDlpUpdateStatusChanged.emit()
 
         import asyncio
@@ -3979,12 +4116,12 @@ class AppBackend(QObject):
                     capture_output=True, text=True, check=True
                 )
                 if "Requirement already satisfied" in result.stdout and "yt-dlp" in result.stdout:
-                     return "yt-dlp đã ở phiên bản mới nhất."
-                return "Cập nhật yt-dlp thành công!"
+                     return "yt-dlp đã là phiên bản mới nhất."
+                return "Cập nhật yt-dlp thành công."
             except subprocess.CalledProcessError as e:
-                return f"Lỗi cập nhật: {e.stderr}"
+                return f"Cập nhật thất bại: {e.stderr}"
             except Exception as e:
-                return f"Lỗi: {str(e)}"
+                return f"Đã xảy ra lỗi: {str(e)}"
                 
         def _on_done(future):
             self._yt_dlp_update_status = future.result()
@@ -4005,7 +4142,7 @@ class AppBackend(QObject):
 
     @pyqtSlot(result=str)
     def pickMediaRoot(self) -> str:
-        chosen = self._pick_directory("Chọn thư mục lưu trữ media", self._media_root)
+        chosen = self._pick_directory("Chọn thư mục lưu trữ thư viện", self._media_root)
         if not chosen:
             return ""
         settings = save_settings(chosen)
@@ -4259,7 +4396,7 @@ class AppBackend(QObject):
 
         seen: set[str] = set()
         tracks: list[MediaInfo] = []
-        for info in scan_directory(Path(self._music_dir), AUDIO_EXTS):
+        for info in scan_directory(Path(self._music_dir), AUDIO_EXTS, fast=True):
             key = info.canonical_path or info.path
             if key in seen:
                 continue
@@ -4273,13 +4410,36 @@ class AppBackend(QObject):
     def _build_all_musics_collection_item(self, tracks: list[MediaInfo] | None = None) -> dict:
         tracks = tracks if tracks is not None else self._scan_all_music_tracks()
         count = len(tracks)
+        preview_images: list[str] = []
+        seen: set[str] = set()
+
+        def _take(img: str) -> bool:
+            if not img or img in seen:
+                return False
+            seen.add(img)
+            preview_images.append(img)
+            return len(preview_images) >= 4
+
+        # Reuse art already discovered during the async scan — avoid another tree walk on the UI thread.
+        for info in self._music_root_infos or []:
+            if _take(info.image):
+                break
+            for thumb in info.preview_images or []:
+                if _take(thumb):
+                    break
+            if len(preview_images) >= 4:
+                break
+        if len(preview_images) < 4:
+            for info in tracks:
+                if _take(info.image):
+                    break
+
         music_root = Path(self._music_dir)
-        preview_images = find_folder_track_thumbnails(music_root, 4)
         if not preview_images:
-            folder_image = find_folder_preview_image(music_root)
-            if folder_image:
-                preview_images = [folder_image]
-        folder_image = preview_images[0] if preview_images else find_folder_preview_image(music_root)
+            folder_cover = find_cover_image(music_root)
+            if folder_cover:
+                preview_images = [folder_cover]
+        folder_image = preview_images[0] if preview_images else ""
         subtitle = f"{count} bài" if count else "Playlist trống"
         return {
             "title": ALL_MUSICS_TITLE,
@@ -4407,30 +4567,30 @@ class AppBackend(QObject):
             items.append(_media_item(info, i, audio_only=audio_only))
         return items
 
-    def _rebuild_music_root_catalog(self, *, push_to_models: bool = False) -> None:
+    def _rebuild_music_root_catalog(
+        self,
+        *,
+        push_to_models: bool = False,
+        root_infos: list[MediaInfo] | None = None,
+        tracks: list[MediaInfo] | None = None,
+    ) -> None:
         """Rescan the music root grid (album cards + singles) from disk."""
         root = Path(self._music_dir)
-        root_items = self._library_infos_to_items(scan_library_folder(root))
-        music_tracks = self._scan_all_music_tracks(refresh=True)
+        if root_infos is None:
+            root_infos = self._music_root_infos
+        if root_infos is None:
+            root_infos = scan_library_folder(root, fast=True)
+        self._music_root_infos = root_infos
+        root_items = self._library_infos_to_items(root_infos)
+        music_tracks = tracks if tracks is not None else self._scan_all_music_tracks()
         # Only seed _music_paths as a default queue when nothing is playing.
         # Otherwise a library hot-reload (e.g. during downloads) would
         # overwrite the active album/playlist queue and break auto-advance.
         if not self._music_paths:
             self._music_paths = [info.path for info in music_tracks]
 
-        # Collect canonical paths of tracks that live inside album subdirectories.
-        # A track that belongs to any album must not appear in "Đĩa đơn".
-        in_album: set[str] = set()
-        for child in root.iterdir():
-            if not child.is_dir() or child.name.startswith("."):
-                continue
-            for f in child.rglob("*"):
-                if not f.is_file() or f.suffix.lower() not in AUDIO_EXTS:
-                    continue
-                try:
-                    in_album.add(str(f.resolve()))
-                except OSError:
-                    in_album.add(str(f))
+        # Hide root singles when the same file already lives in a playlist folder.
+        in_album = resolved_paths_in_child_folders(root, AUDIO_EXTS)
 
         self._all_music_singles = [
             item for item in root_items
@@ -4451,33 +4611,34 @@ class AppBackend(QObject):
 
         seen: set[str] = set()
         tracks: list[MediaInfo] = []
-        for info in scan_directory(Path(self._video_dir), VIDEO_EXTS):
+        for info in scan_directory(Path(self._video_dir), VIDEO_EXTS, fast=True):
             key = info.canonical_path or info.path
             if key in seen:
                 continue
             seen.add(key)
             tracks.append(info)
         for i, track in enumerate(tracks, start=1):
-            track.index = i
+            track.num = str(i)
         self._video_track_infos = tracks
         return tracks
 
-    def _rebuild_video_root_catalog(self, *, push_to_models: bool = False) -> None:
+    def _rebuild_video_root_catalog(
+        self,
+        *,
+        push_to_models: bool = False,
+        root_infos: list[MediaInfo] | None = None,
+        tracks: list[MediaInfo] | None = None,
+    ) -> None:
         root = Path(self._video_dir)
-        root_items = self._library_infos_to_items(scan_library_folder(root))
-        video_tracks = self._scan_all_video_tracks(refresh=True)
+        if root_infos is None:
+            root_infos = self._video_root_infos
+        if root_infos is None:
+            root_infos = scan_library_folder(root, fast=True)
+        self._video_root_infos = root_infos
+        root_items = self._library_infos_to_items(root_infos)
+        video_tracks = tracks if tracks is not None else self._scan_all_video_tracks()
 
-        in_series: set[str] = set()
-        for child in root.iterdir():
-            if not child.is_dir() or child.name.startswith("."):
-                continue
-            for f in child.rglob("*"):
-                if not f.is_file() or f.suffix.lower() not in VIDEO_EXTS:
-                    continue
-                try:
-                    in_series.add(str(f.resolve()))
-                except OSError:
-                    in_series.add(str(f))
+        in_series = resolved_paths_in_child_folders(root, VIDEO_EXTS)
 
         self._all_video_my_movies = [
             item for item in root_items
@@ -4487,7 +4648,7 @@ class AppBackend(QObject):
         self._all_video_movies = []  # Phim lẻ (currently empty, ready for custom logic)
         self._all_video_series = [item for item in root_items if item.get("is_collection")]
         self._all_video_tracks = self._library_infos_to_items(video_tracks)
-        
+
         if push_to_models:
             self._sync_video_root_view()
 
@@ -4528,11 +4689,18 @@ class AppBackend(QObject):
             self._music_model.set_items(active._items)
         else:
             folder = stack[-1].path if stack else self._root_dir_for_page(page)
-            infos = scan_library_folder(folder)
+            root_dir = self._root_dir_for_page(page)
+            if page == 2 and not stack and self._music_root_infos is not None and folder == root_dir:
+                infos = self._music_root_infos
+            elif page == 3 and not stack and self._video_root_infos is not None and folder == root_dir:
+                infos = self._video_root_infos
+            else:
+                infos = scan_library_folder(folder, fast=True)
             items = self._library_infos_to_items(infos)
             if page == 2:
                 self._all_music_items = items
                 if stack:
+                    self._schedule_library_thumbnails(infos)
                     self._rebuild_music_root_catalog(
                         push_to_models=self._current_page == 2 and not self.inCollectionView,
                     )
@@ -4548,7 +4716,7 @@ class AppBackend(QObject):
                     self._all_video_items = items
                     self._apply_library_filter(self._all_video_items, self._video_model)
                 else:
-                    infos = scan_library_folder(folder)
+                    infos = scan_library_folder(folder, fast=True)
                     items = self._library_infos_to_items(infos)
                     self._all_video_items = items
                     if stack:
@@ -4625,7 +4793,7 @@ class AppBackend(QObject):
                 continue
             if subdir:
                 folder = root / subdir
-                new_infos = scan_directory(folder, extensions) if folder.exists() else []
+                new_infos = scan_directory(folder, extensions, fast=True) if folder.exists() else []
             elif root.exists():
                 new_infos = []
                 for f in sorted(root.iterdir()):
@@ -4635,7 +4803,7 @@ class AppBackend(QObject):
                     if ext not in extensions:
                         continue
                     new_infos.append(
-                        _media_from_file(f, audio_only=ext in AUDIO_EXTS),
+                        _media_from_file(f, audio_only=ext in AUDIO_EXTS, fast=True),
                     )
             else:
                 new_infos = []
@@ -4655,18 +4823,18 @@ class AppBackend(QObject):
         child_names: set[str],
         extensions: set[str],
     ) -> set[str]:
+        from src.scanner import _iter_media_files
+
         paths: set[str] = set()
         for child_name in child_names:
             child = root / child_name
             if not child.is_dir():
                 continue
-            for f in child.rglob("*"):
-                if not f.is_file() or f.suffix.lower() not in extensions:
-                    continue
+            for media_path in _iter_media_files(child, extensions):
                 try:
-                    paths.add(str(f.resolve()))
+                    paths.add(str(media_path.resolve()))
                 except OSError:
-                    paths.add(str(f))
+                    paths.add(str(media_path))
         return paths
 
     def _hotload_video_download_dirs(self, *, push_to_models: bool = False) -> None:
@@ -4682,7 +4850,7 @@ class AppBackend(QObject):
             extensions=VIDEO_EXTS,
             existing=self._video_track_infos,
         )
-        root_items = self._library_infos_to_items(scan_library_folder(root))
+        root_items = self._library_infos_to_items(scan_library_folder(root, fast=True))
         top_levels = {
             Path(subdir).parts[0]
             for subdir in subdirs
@@ -4718,7 +4886,7 @@ class AppBackend(QObject):
         if not self._music_paths:
             self._music_paths = [info.path for info in music_tracks]
 
-        root_items = self._library_infos_to_items(scan_library_folder(root))
+        root_items = self._library_infos_to_items(scan_library_folder(root, fast=True))
         top_levels = {
             Path(subdir).parts[0]
             for subdir in subdirs
@@ -4844,7 +5012,7 @@ class AppBackend(QObject):
             if self._music_track_infos is not None:
                 self._rebuild_music_source_ids(self._music_track_infos)
                 return
-            infos = scan_directory(Path(self._music_dir), AUDIO_EXTS)
+            infos = scan_directory(Path(self._music_dir), AUDIO_EXTS, fast=True)
             self._rebuild_music_source_ids(infos)
             return
 
@@ -4853,7 +5021,7 @@ class AppBackend(QObject):
         if self._video_track_infos is not None:
             self._rebuild_video_source_ids(self._video_track_infos)
             return
-        infos = scan_directory(Path(self._video_dir), VIDEO_EXTS)
+        infos = scan_directory(Path(self._video_dir), VIDEO_EXTS, fast=True)
         self._rebuild_video_source_ids(infos)
 
     def _ensure_music_library_loaded(self) -> None:
@@ -4862,40 +5030,296 @@ class AppBackend(QObject):
     def _ensure_video_library_loaded(self) -> None:
         self._load_video_library(refresh=False)
 
-    def _load_music_library(self, *, refresh: bool = False) -> None:
-        if self._music_library_loaded and not refresh:
+    def _start_music_library_scan(self, *, refresh: bool) -> None:
+        if self._music_scan_running:
             return
+        self._music_scan_running = True
+        music_dir = self._music_dir
+        cached = self._music_track_infos if not refresh else None
 
-        music_infos = self._scan_all_music_tracks(refresh=True)
+        def _blocking_scan():
+            return scan_music_library_bundle(
+                Path(music_dir),
+                refresh=refresh,
+                cached_tracks=cached,
+                fast=True,
+            )
+
+        loop = asyncio.get_event_loop()
+        future = loop.run_in_executor(None, _blocking_scan)
+
+        def _on_done(done_future) -> None:
+            try:
+                tracks, root_infos = done_future.result()
+            except Exception:
+                logger.exception("music library scan failed")
+                self._music_scan_running = False
+                return
+            QTimer.singleShot(
+                0,
+                lambda: self._apply_music_library_scan(tracks, root_infos, refresh=refresh),
+            )
+
+        future.add_done_callback(_on_done)
+
+    def _start_video_library_scan(self, *, refresh: bool) -> None:
+        if self._video_scan_running:
+            return
+        self._video_scan_running = True
+        video_dir = self._video_dir
+        cached = self._video_track_infos if not refresh else None
+
+        def _blocking_scan():
+            return scan_video_library_bundle(
+                Path(video_dir),
+                refresh=refresh,
+                cached_tracks=cached,
+                fast=True,
+            )
+
+        loop = asyncio.get_event_loop()
+        future = loop.run_in_executor(None, _blocking_scan)
+
+        def _on_done(done_future) -> None:
+            try:
+                tracks, root_infos = done_future.result()
+            except Exception:
+                logger.exception("video library scan failed")
+                self._video_scan_running = False
+                return
+            QTimer.singleShot(
+                0,
+                lambda: self._apply_video_library_scan(tracks, root_infos, refresh=refresh),
+            )
+
+        future.add_done_callback(_on_done)
+
+    def _apply_music_library_scan(
+        self,
+        music_infos: list[MediaInfo],
+        root_infos: list[MediaInfo],
+        *,
+        refresh: bool,
+    ) -> None:
+        self._music_scan_running = False
+        self._music_track_infos = music_infos
+        self._music_root_infos = root_infos
         if not self._music_paths:
             self._music_paths = [info.path for info in music_infos]
         self._reload_library_view(2)
+        self._music_library_loaded = True
+        self._schedule_library_thumbnails(music_infos + root_infos)
+        self._schedule_source_id_rebuild("music", music_infos)
+
+        def _finalize() -> None:
+            if self._current_page == 2:
+                self._sync_library_page_view(2)
+            if refresh:
+                self._drop_missing_current_track()
+
+        QTimer.singleShot(0, _finalize)
 
         preview_limit = 12
         self._media_music_preview = self._library_infos_to_items(music_infos)[:preview_limit]
         self.mediaMusicModel.set_items(self._media_music_preview)
-        self._rebuild_music_source_ids(music_infos)
-        self._music_library_loaded = True
-        if refresh:
-            self._drop_missing_current_track()
 
-    def _load_video_library(self, *, refresh: bool = False) -> None:
-        if self._video_library_loaded and not refresh:
-            return
-
-        video_infos = scan_directory(Path(self._video_dir), VIDEO_EXTS)
+    def _apply_video_library_scan(
+        self,
+        video_infos: list[MediaInfo],
+        root_infos: list[MediaInfo],
+        *,
+        refresh: bool,
+    ) -> None:
+        self._video_scan_running = False
         self._video_track_infos = video_infos
+        self._video_root_infos = root_infos
         self._reload_library_view(3)
-        if self._current_page == 3:
-            self._sync_library_page_view(3)
+        self._video_library_loaded = True
+        self._schedule_library_thumbnails(video_infos + root_infos)
+        self._schedule_source_id_rebuild("video", video_infos)
+
+        def _finalize() -> None:
+            if self._current_page == 3:
+                self._sync_library_page_view(3)
+            if refresh:
+                self._drop_missing_current_track()
+
+        QTimer.singleShot(0, _finalize)
 
         preview_limit = 12
         self._media_video_preview = self._library_infos_to_items(video_infos)[:preview_limit]
         self.mediaVideoModel.set_items(self._media_video_preview)
-        self._rebuild_video_source_ids(video_infos)
-        self._video_library_loaded = True
+
+    def _schedule_source_id_rebuild(self, media_type: str, infos: list[MediaInfo]) -> None:
+        """Resolve YouTube source ids off the UI thread (mutagen + metadata writes)."""
+        paths = [info.path for info in infos if info.path]
+
+        def _blocking_rebuild() -> set[str]:
+            ids: set[str] = set()
+            for path in paths:
+                source_id = resolve_source_id(path, cache=True)
+                if source_id:
+                    ids.add(source_id)
+            return ids
+
+        loop = asyncio.get_event_loop()
+        future = loop.run_in_executor(None, _blocking_rebuild)
+
+        def _on_done(done_future) -> None:
+            try:
+                ids = done_future.result()
+            except Exception:
+                logger.debug("source id rebuild failed for %s", media_type, exc_info=True)
+                return
+
+            def _apply() -> None:
+                if media_type == "music":
+                    self._music_source_ids = ids
+                    self._music_source_ids_ready = True
+                else:
+                    self._video_source_ids = ids
+                    self._video_source_ids_ready = True
+
+            QTimer.singleShot(0, _apply)
+
+        future.add_done_callback(_on_done)
+
+    def _on_thumbnail_queue_ready(self, path: str, image: str, is_folder: bool) -> None:
+        preview = [image] if is_folder else None
+        self._apply_library_thumbnail(path, image, preview_images=preview)
+        if is_folder:
+            self._refresh_root_collection_grids()
+
+    def _refresh_root_collection_grids(self) -> None:
+        """Re-bind root playlist/series grids after artwork arrives."""
+        if self._current_page == 2 and not self.inCollectionView and not self.inSharedPlaylistView:
+            self._apply_library_filter(
+                self._all_music_albums,
+                self._music_albums_model,
+                pin_first=True,
+            )
+        elif self._current_page == 3 and not self.inCollectionView and not self.inSharedSeriesView:
+            self._apply_library_filter(
+                self._all_video_series,
+                self._video_series_model,
+                pin_first=False,
+            )
+
+    def _schedule_library_thumbnails(self, infos: list[MediaInfo]) -> None:
+        """Fill missing card artwork in the background after a fast scan.
+
+        Collections (albums/series) are queued first so the root grid paints covers
+        before individual track thumbnails compete for workers.
+        """
+        queue = get_thumbnail_queue()
+        scheduled: set[str] = set()
+
+        def _submit(info: MediaInfo) -> None:
+            path = info.canonical_path or info.path
+            if not path or path in scheduled:
+                return
+            if info.kind != MediaKind.FILE:
+                if info.image:
+                    return
+                scheduled.add(path)
+                queue.submit_folder_preview(path)
+                return
+            if info.image:
+                return
+            ext = Path(path).suffix.lower()
+            if not ext:
+                return
+            scheduled.add(path)
+            queue.submit(path, is_video=ext in VIDEO_EXTS)
+
+        for info in infos:
+            if info.kind != MediaKind.FILE:
+                _submit(info)
+        for info in infos:
+            if info.kind == MediaKind.FILE:
+                _submit(info)
+
+    def _apply_library_thumbnail(
+        self,
+        path: str,
+        image: str,
+        *,
+        preview_images: list[str] | None = None,
+    ) -> None:
+        try:
+            resolved = str(Path(path).resolve())
+        except OSError:
+            resolved = path
+        path_keys = {path, resolved}
+
+        models = (
+            self._music_model,
+            self._music_singles_model,
+            self._music_albums_model,
+            self._music_search_model,
+            self._music_shared_model,
+            self.mediaMusicModel,
+            self._video_model,
+            self._video_series_model,
+            self._video_movies_model,
+            self._video_my_movies_model,
+            self._video_shared_model,
+            self._video_search_model,
+            self.mediaVideoModel,
+        )
+        for model in models:
+            model.update_image_by_path(path, image, preview_images=preview_images)
+            if resolved != path:
+                model.update_image_by_path(resolved, image, preview_images=preview_images)
+
+        for collection in (
+            self._all_music_items,
+            self._all_music_singles,
+            self._all_music_albums,
+            self._all_music_tracks,
+            self._all_video_items,
+            self._all_video_tracks,
+            self._media_music_preview,
+            self._media_video_preview,
+        ):
+            for item in collection:
+                item_path = str(item.get("canonical_path") or item.get("path") or "")
+                try:
+                    item_resolved = str(Path(item_path).resolve()) if item_path else ""
+                except OSError:
+                    item_resolved = item_path
+                if item_path not in path_keys and item_resolved not in path_keys:
+                    continue
+                item["image"] = image
+                if preview_images is not None:
+                    item["preview_images"] = list(preview_images)
+
+        for info in (self._music_track_infos or []) + (self._video_track_infos or []):
+            info_path = info.canonical_path or info.path
+            try:
+                info_resolved = str(Path(info_path).resolve()) if info_path else ""
+            except OSError:
+                info_resolved = info_path
+            if info_path in path_keys or info_resolved in path_keys:
+                info.image = image
+                if preview_images is not None:
+                    info.preview_images = list(preview_images)
+
+    def _load_music_library(self, *, refresh: bool = False) -> None:
+        if self._music_library_loaded and not refresh:
+            return
         if refresh:
-            self._drop_missing_current_track()
+            self._music_root_infos = None
+            self._music_track_infos = None
+        self._start_music_library_scan(refresh=refresh)
+
+    def _load_video_library(self, *, refresh: bool = False) -> None:
+        if self._video_library_loaded and not refresh:
+            return
+        if refresh:
+            self._video_root_infos = None
+            self._video_track_infos = None
+        self._start_video_library_scan(refresh=refresh)
 
     def _load_book_library(self, *, refresh: bool = False) -> None:
         """Scan books directory and populate book model."""
@@ -4920,6 +5344,10 @@ class AppBackend(QObject):
         self._video_library_loaded = False
         self._music_track_infos = None
         self._video_track_infos = None
+        self._music_root_infos = None
+        self._video_root_infos = None
+        self._music_scan_running = False
+        self._video_scan_running = False
         self._music_source_ids = set()
         self._video_source_ids = set()
         self._music_source_ids_ready = False
@@ -5441,6 +5869,8 @@ class AppBackend(QObject):
         if getattr(self, "_cleaned_up", False):
             return
         self._cleaned_up = True
+        self._video_progress_timer.stop()
+        self._save_video_progress()
         if self._has_played_before and self._current_path:
             try:
                 save_raw_state({

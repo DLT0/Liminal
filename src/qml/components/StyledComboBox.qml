@@ -20,18 +20,34 @@ ComboBox {
     }
 
     indicator: Text {
-        x: control.width - width - 12
+        x: control.width - width - 14
         y: (control.height - height) / 2
         text: "▾"
-        color: Theme.textSecondary
-        font.pixelSize: 16
+        color: control.hovered ? Theme.textPrimary : Theme.textMuted
+        font.pixelSize: 11
+
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.colorDuration
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 
     background: Rectangle {
-        radius: Theme.cardRadius
-        color: Theme.inputBg
-        border.width: control.activeFocus ? 2 : 1
-        border.color: control.activeFocus ? Theme.accent : Theme.inputBorder
+        radius: 8
+        color: control.pressed
+            ? Theme.bgHighlight
+            : (control.hovered ? Theme.bgCardHover : Theme.inputBg)
+        border.width: 1
+        border.color: control.activeFocus ? Theme.accent : Theme.settingsCardBorder
+
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.colorDuration
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 
     delegate: ItemDelegate {

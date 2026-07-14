@@ -7,32 +7,39 @@ import re
 from copy import deepcopy
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QUrl, pyqtProperty
+from PyQt6.QtCore import QObject, QTimer, QFileSystemWatcher, pyqtProperty, pyqtSignal, pyqtSlot, QUrl
 from PyQt6.QtGui import QDesktopServices
 
-from src.settings_store import CONFIG_DIR, SETTINGS_FILE, _read_settings_file, save_raw_settings
+from src.settings_store import (
+    CONFIG_DIR,
+    SETTINGS_FILE,
+    _read_settings_file,
+    load_raw_settings,
+    read_settings_document_or_none,
+    save_raw_settings,
+)
 
 DEFAULT_COLORS: dict[str, str] = {
     "bg_base": "#000000",
-    "bg_elevated": "#121212",
-    "bg_highlight": "#1a1a1a",
-    "bg_card": "#181818",
-    "bg_card_hover": "#282828",
+    "bg_elevated": "#000000",
+    "bg_highlight": "#0a0a0a",
+    "bg_card": "#0a0a0a",
+    "bg_card_hover": "#121212",
     "accent": "#a855f7",
-    "border": "#2a2a2a",
-    "glass_fill": "#000000",
-    "glass_border": "#2a2a2a",
-    "glass_strong": "#1a1a1a",
+    "border": "#141414",
+    "glass_fill": "#0a0a0a",
+    "glass_border": "#141414",
+    "glass_strong": "#0a0a0a",
     "text_primary": "#ffffff",
     "text_secondary": "#b3b3b3",
-    "text_muted": "#6a6a6a",
+    "text_muted": "#737373",
     "text_on_accent": "#000000",
-    "input_bg": "#1a1a1a",
-    "input_border": "#2a2a2a",
-    "slider_track": "#2a2a2a",
-    "hover_overlay": "#282828",
-    "card_bg": "#181818",
-    "card_border": "#2a2a2a",
+    "input_bg": "#0a0a0a",
+    "input_border": "#141414",
+    "slider_track": "#1a1a1a",
+    "hover_overlay": "#141414",
+    "card_bg": "#0a0a0a",
+    "card_border": "#141414",
 }
 
 DEFAULT_UI: dict = {
@@ -345,146 +352,269 @@ def load_ui_config() -> dict:
     return resolve_ui_config()
 
 
+def _try_read_settings_document() -> dict | None:
+    return read_settings_document_or_none()
+
+
 class UiConfigBridge(QObject):
     """Expose resolved UI settings to QML via context property `uiConfig`."""
+
+    configChanged = pyqtSignal()
+    settingsFileChanged = pyqtSignal()
+    reloadStateChanged = pyqtSignal()
+    autoReloadEnabledChanged = pyqtSignal()
+
+    _RELOAD_DEBOUNCE_MS = 450
+    _RELOAD_OK_CLEAR_MS = 4000
 
     def __init__(self, config: dict | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._config = normalize_ui_config(config or load_ui_config())
         self._path = str(SETTINGS_FILE)
+        self._auto_reload_enabled = _normalize_bool(
+            load_raw_settings().get("auto_reload_enabled"),
+            True,
+        )
+        if self._auto_reload_enabled:
+            self._reload_state = "watching"
+            self._reload_message = "Đang theo dõi thay đổi từ settings.json"
+        else:
+            self._reload_state = "disabled"
+            self._reload_message = "Tự động áp dụng cấu hình đã tắt"
+
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(self._RELOAD_DEBOUNCE_MS)
+        self._debounce.timeout.connect(self._reload_from_disk)
+
+        self._ok_clear = QTimer(self)
+        self._ok_clear.setSingleShot(True)
+        self._ok_clear.setInterval(self._RELOAD_OK_CLEAR_MS)
+        self._ok_clear.timeout.connect(self._clear_reload_ok)
+
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.fileChanged.connect(self._schedule_reload)
+        self._watcher.directoryChanged.connect(self._on_directory_changed)
+        self._ensure_watching()
+
+    def _ensure_watching(self) -> None:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        config_path = str(SETTINGS_FILE)
+        if SETTINGS_FILE.exists() and config_path not in self._watcher.files():
+            self._watcher.addPath(config_path)
+        config_dir = str(CONFIG_DIR)
+        if config_dir not in self._watcher.directories():
+            self._watcher.addPath(config_dir)
+
+    def _on_directory_changed(self, _path: str) -> None:
+        self._ensure_watching()
+        self._schedule_reload(str(SETTINGS_FILE))
+
+    def _schedule_reload(self, _path: str = "") -> None:
+        if not self._auto_reload_enabled:
+            return
+        self._ensure_watching()
+        self._debounce.start()
+
+    def _set_reload_state(self, state: str, message: str) -> None:
+        if self._reload_state == state and self._reload_message == message:
+            return
+        self._reload_state = state
+        self._reload_message = message
+        self.reloadStateChanged.emit()
+
+    def _clear_reload_ok(self) -> None:
+        if self._reload_state == "ok":
+            self._set_reload_state("watching", "Đang theo dõi thay đổi từ settings.json")
+
+    def _reload_from_disk(self) -> None:
+        document = _try_read_settings_document()
+        if document is None:
+            self._set_reload_state("error", "Không thể đọc settings.json. Vui lòng kiểm tra cú pháp JSON.")
+            return
+
+        self._set_reload_state("reloading", "Đang áp dụng cấu hình giao diện…")
+        try:
+            new_config = normalize_ui_config(resolve_ui_config(document))
+        except Exception as exc:
+            self._set_reload_state("error", f"Cấu hình không hợp lệ: {exc}")
+            return
+
+        if new_config == self._config:
+            self._set_reload_state("watching", "Đang theo dõi thay đổi từ settings.json")
+            self.settingsFileChanged.emit()
+            return
+
+        self._config = new_config
+        self.configChanged.emit()
+        self.settingsFileChanged.emit()
+        self._ok_clear.stop()
+        self._set_reload_state("ok", "Đã áp dụng cấu hình thành công")
+        self._ok_clear.start()
+
+    def get_config(self) -> dict:
+        return self._config
 
     @pyqtProperty(str, constant=True)
     def configPath(self) -> str:
         return self._path
 
+    @pyqtProperty(str, notify=reloadStateChanged)
+    def reloadState(self) -> str:
+        return self._reload_state
+
+    @pyqtProperty(str, notify=reloadStateChanged)
+    def reloadMessage(self) -> str:
+        return self._reload_message
+
+    @pyqtProperty(bool, notify=autoReloadEnabledChanged)
+    def autoReloadEnabled(self) -> bool:
+        return self._auto_reload_enabled
+
+    @pyqtSlot(bool)
+    def setAutoReloadEnabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._auto_reload_enabled == enabled:
+            return
+        self._auto_reload_enabled = enabled
+        save_raw_settings({"auto_reload_enabled": enabled})
+        self.autoReloadEnabledChanged.emit()
+        if enabled:
+            self._set_reload_state("watching", "Đang theo dõi thay đổi từ settings.json")
+            self._schedule_reload()
+        else:
+            self._debounce.stop()
+            self._ok_clear.stop()
+            self._set_reload_state("disabled", "Tự động áp dụng cấu hình đã tắt")
+
     def _color(self, key: str) -> str:
         return self._config["colors"][key]
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def bgBase(self) -> str:
         return self._color("bg_base")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def bgElevated(self) -> str:
         return self._color("bg_elevated")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def bgHighlight(self) -> str:
         return self._color("bg_highlight")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def bgCard(self) -> str:
         return self._color("bg_card")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def bgCardHover(self) -> str:
         return self._color("bg_card_hover")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def accent(self) -> str:
         return self._color("accent")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def border(self) -> str:
         return self._color("border")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def glassFill(self) -> str:
         return self._color("glass_fill")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def glassBorder(self) -> str:
         return self._color("glass_border")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def glassStrong(self) -> str:
         return self._color("glass_strong")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def textPrimary(self) -> str:
         return self._color("text_primary")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def textSecondary(self) -> str:
         return self._color("text_secondary")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def textMuted(self) -> str:
         return self._color("text_muted")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def textOnAccent(self) -> str:
         return self._color("text_on_accent")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def inputBg(self) -> str:
         return self._color("input_bg")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def inputBorder(self) -> str:
         return self._color("input_border")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def sliderTrack(self) -> str:
         return self._color("slider_track")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def hoverOverlay(self) -> str:
         return self._color("hover_overlay")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def cardBg(self) -> str:
         return self._color("card_bg")
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def cardBorder(self) -> str:
         return self._color("card_border")
 
-    @pyqtProperty(bool, constant=True)
+    @pyqtProperty(bool, notify=configChanged)
     def customTitleBar(self) -> bool:
         return bool(self._config["window"]["custom_title_bar"])
 
-    @pyqtProperty(float, constant=True)
+    @pyqtProperty(float, notify=configChanged)
     def windowOpacity(self) -> float:
         return float(self._config["window"]["opacity"])
 
-    @pyqtProperty(int, constant=True)
+    @pyqtProperty(int, notify=configChanged)
     def sidebarWidth(self) -> int:
         return int(self._config["sidebar"]["width"])
 
-    @pyqtProperty(bool, constant=True)
+    @pyqtProperty(bool, notify=configChanged)
     def sidebarVisible(self) -> bool:
         return bool(self._config["sidebar"]["visible"])
 
-    @pyqtProperty(int, constant=True)
+    @pyqtProperty(int, notify=configChanged)
     def searchWidth(self) -> int:
         return int(self._config["search"]["width"])
 
-    @pyqtProperty(str, constant=True)
+    @pyqtProperty(str, notify=configChanged)
     def searchPlaceholder(self) -> str:
         return str(self._config["search"]["placeholder"])
 
-    @pyqtProperty(int, constant=True)
+    @pyqtProperty(int, notify=configChanged)
     def playerBarHeight(self) -> int:
         return int(self._config["player_bar"]["height"])
 
-    @pyqtProperty(bool, constant=True)
+    @pyqtProperty(bool, notify=configChanged)
     def playerBarAlwaysVisible(self) -> bool:
         return bool(self._config["player_bar"]["always_visible"])
 
-    @pyqtProperty(int, constant=True)
+    @pyqtProperty(int, notify=configChanged)
     def gridColumns(self) -> int:
         return int(self._config["layout"]["grid_columns"])
 
-    @pyqtProperty(int, constant=True)
+    @pyqtProperty(int, notify=configChanged)
     def contentPadding(self) -> int:
         return int(self._config["layout"]["content_padding"])
 
-    @pyqtProperty(int, constant=True)
+    @pyqtProperty(int, notify=configChanged)
     def cardRadius(self) -> int:
         return int(self._config["layout"]["card_radius"])
 
-    @pyqtProperty(int, constant=True)
+    @pyqtProperty(int, notify=configChanged)
     def cardGap(self) -> int:
         return int(self._config["layout"]["card_gap"])
 

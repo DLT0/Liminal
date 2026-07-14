@@ -15,6 +15,7 @@ ApplicationWindow {
     minimumHeight: 680
     visible: false
     title: "Liminal"
+    opacity: uiConfig.windowOpacity
     color: "transparent"
     flags: uiConfig.customTitleBar
         ? (Qt.Window | Qt.FramelessWindowHint)
@@ -22,12 +23,6 @@ ApplicationWindow {
 
     property string searchQuery: ""
     property int visibilityBeforeFullScreen: Window.Windowed
-
-    onVisibilityChanged: function(visibility) {
-        if (visibility === Window.Minimized) {
-            backend.minimizeToTray()
-        }
-    }
 
     onClosing: function(close) {
         close.accepted = false
@@ -58,10 +53,18 @@ ApplicationWindow {
         parent: Overlay.overlay
     }
 
+    ShareLoadingDialog {
+        id: shareLoadingDialog
+        parent: Overlay.overlay
+    }
+
     RedeemShareDialog {
         id: redeemShareDialog
         parent: Overlay.overlay
-        onAccepted: shareBridge.redeemCode(codeField.text)
+        onAccepted: {
+            if (!shareBridge.shareBusy)
+                shareBridge.redeemCode(codeField.text)
+        }
     }
 
     Popup {
@@ -108,6 +111,12 @@ ApplicationWindow {
             shareToast.text = message
             shareToast.open()
         }
+        function onShareBusyChanged() {
+            if (shareBridge.shareBusy)
+                shareLoadingDialog.open()
+            else
+                shareLoadingDialog.close()
+        }
     }
 
     Connections {
@@ -133,6 +142,13 @@ ApplicationWindow {
         }
     }
 
+    Connections {
+        target: uiConfig
+        function onConfigChanged() {
+            contentHeader.updateForPage(backend.currentPage)
+        }
+    }
+
     Rectangle {
         id: windowBg
         anchors.fill: parent
@@ -152,7 +168,7 @@ ApplicationWindow {
             visible: uiConfig.customTitleBar && root.visibility !== Window.FullScreen
 
             onCloseRequested: root.close()
-            onMinimizeRequested: backend.minimizeToTray()
+            onMinimizeRequested: root.showMinimized()
             onMaximizeRequested: {
                 root.visibility === Window.Maximized
                     ? root.showNormal()
@@ -222,6 +238,27 @@ ApplicationWindow {
                         interactive: musicContent.height > musicPage.height
 
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                        // Qt can deliver mouse-wheel events differently on X11 and
+                        // Wayland.  Handle both high-resolution (pixelDelta) and
+                        // traditional wheel (angleDelta) events explicitly so the
+                        // page also scrolls on Linux distributions using either
+                        // input backend.
+                        WheelHandler {
+                            target: musicPage
+                            onWheel: function(event) {
+                                var delta = event.pixelDelta.y
+                                if (delta === 0)
+                                    delta = event.angleDelta.y / 2
+                                if (delta === 0 || !musicPage.interactive)
+                                    return
+
+                                var maximum = Math.max(0, musicPage.contentHeight - musicPage.height)
+                                musicPage.contentY = Math.max(0, Math.min(maximum,
+                                    musicPage.contentY - delta))
+                                event.accepted = true
+                            }
+                        }
 
                         // Flickable's children live in its content item.  Give that item
                         // an explicit height so the two embedded LibraryPages cannot end up
@@ -435,6 +472,22 @@ ApplicationWindow {
                         }
 
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                        WheelHandler {
+                            target: videoPage
+                            onWheel: function(event) {
+                                var delta = event.pixelDelta.y
+                                if (delta === 0)
+                                    delta = event.angleDelta.y / 2
+                                if (delta === 0 || !videoPage.interactive)
+                                    return
+
+                                var maximum = Math.max(0, videoPage.contentHeight - videoPage.height)
+                                videoPage.contentY = Math.max(0, Math.min(maximum,
+                                    videoPage.contentY - delta))
+                                event.accepted = true
+                            }
+                        }
 
                         Item {
                             id: videoContent

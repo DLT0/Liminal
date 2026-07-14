@@ -25,7 +25,8 @@
 
   "liminal.colorCustomizations": {
     "accent": "#a855f7",
-    "bgElevated": "#121212",
+    "bgElevated": "#000000",
+    "bgCard": "#0a0a0a",
     "textPrimary": "#ffffff"
   }
 }

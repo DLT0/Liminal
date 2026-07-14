@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QTimer, QUrl
+from PyQt6.QtCore import QTimer, QUrl
 from PyQt6.QtGui import QIcon, QImage, QWindow
 from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterSingletonType
 from PyQt6.QtQuick import QQuickImageProvider
@@ -47,13 +47,13 @@ def _register_theme() -> None:
 def prepare_qml_app(
     app: QApplication,
     player: PlayerBridge,
-    mpris=None,
 ) -> AppBackend:
-    """Load QML and backend while intro may still be playing. Window stays hidden."""
+    """Load QML engine and backend. Window stays hidden until show_qml_app."""
     global _engine
 
     _register_theme()
-    app.setQuitOnLastWindowClosed(False)
+    # Closing the only window must terminate the application.
+    app.setQuitOnLastWindowClosed(True)
 
     _engine = QQmlApplicationEngine()
     _engine.addImportPath(str(QML_DIR.resolve()))
@@ -92,12 +92,11 @@ def prepare_qml_app(
     share_bridge.set_backend(backend)
     share_bridge.setParent(_engine)
 
-    if mpris is not None:
-        mpris.set_transport_handlers(backend.next, backend.previous)
     _engine.rootContext().setContextProperty("backend", backend)
     _engine.rootContext().setContextProperty("mpvVideo", mpv_video)
     _engine.rootContext().setContextProperty("shareBridge", share_bridge)
     _engine.rootContext().setContextProperty("uiConfig", ui_bridge)
+    ui_bridge.settingsFileChanged.connect(backend.reload_app_settings_from_disk)
 
     _engine.load(QUrl.fromLocalFile(str((QML_DIR / "main.qml").resolve())))
 
@@ -110,37 +109,7 @@ def prepare_qml_app(
         backend.set_main_window(root)
         mpv_video.setMainWindow(root)
 
-    from PyQt6.QtGui import QAction
-    from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
-
-    tray_icon = QSystemTrayIcon(QIcon(str(ICON_PATH)), app)
-    tray_icon.setToolTip("Liminal Media Player")
-
-    tray_menu = QMenu()
-    show_action = QAction("Hiện ứng dụng", app)
-    quit_action = QAction("Thoát", app)
-
-    tray_menu.addAction(show_action)
-    tray_menu.addSeparator()
-    tray_menu.addAction(quit_action)
-
-    tray_icon.setContextMenu(tray_menu)
-    tray_icon.show()
-
-    show_action.triggered.connect(backend.restoreFromTray)
-
-    def quit_from_tray() -> None:
-        tray_icon.hide()
-        backend.quitApp()
-
-    quit_action.triggered.connect(quit_from_tray)
-
-    def on_tray_activated(reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            backend.restoreFromTray()
-
-    tray_icon.activated.connect(on_tray_activated)
-
+    QTimer.singleShot(0, backend.preload_libraries)
     QTimer.singleShot(0, backend.load_initial_page)
     QTimer.singleShot(0, share_bridge.emit_cached_shared)
     QTimer.singleShot(0, share_bridge.refreshShared)
@@ -154,15 +123,14 @@ def prepare_qml_app(
 
 
 def show_qml_app(backend: AppBackend) -> None:
-    """Reveal the main window after intro (or other splash) completes."""
+    """Reveal the main window."""
     backend.show_main_window()
 
 
 def run_qml_app(
     app: QApplication,
     player: PlayerBridge,
-    mpris=None,
 ) -> AppBackend:
-    backend = prepare_qml_app(app, player, mpris)
+    backend = prepare_qml_app(app, player)
     show_qml_app(backend)
     return backend
