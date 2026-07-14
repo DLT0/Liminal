@@ -32,7 +32,7 @@ Trình phát đa phương tiện cục bộ cho Linux. Giao diện desktop xây 
 Hỗ trợ các bản phân phối Fedora, Ubuntu/Debian/Mint, và Arch Linux. Lệnh này sẽ tự động cài các gói hệ thống cần thiết (mpv, ffmpeg, Qt6 Multimedia, MPRIS), tạo môi trường ảo Python và tạo shortcut desktop:
 
 ```bash
-git clone https://github.com/hmduongdl/Liminal.git
+git clone https://github.com/DLT0/Liminal.git
 cd Liminal
 ./setup.sh
 ```
