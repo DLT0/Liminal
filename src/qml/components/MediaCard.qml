@@ -55,6 +55,10 @@ Item {
                 anchors.fill: parent
                 source: root.resolvedImageSource
                 fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                cache: true
+                sourceSize.width: Math.max(128, Math.round(poster.width))
+                sourceSize.height: Math.max(128, Math.round(poster.height))
                 visible: root.imageSource !== ""
             }
 

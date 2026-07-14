@@ -80,7 +80,8 @@ def _media_from_file(path: Path, *, audio_only: bool, fast: bool = False) -> Med
     except OSError:
         resolved = path
     if audio_only:
-        embedded = read_embedded_metadata(resolved, include_cover=True)
+        # Fast scans skip APIC extraction so startup stays responsive; ThumbnailQueue fills covers later.
+        embedded = read_embedded_metadata(resolved, include_cover=not fast)
         detected_image = embedded.get("image", "")
     else:
         embedded = {}
@@ -148,6 +149,45 @@ def _first_media_file(directory: Path, extensions: set[str]) -> Path | None:
     return None
 
 
+def _find_folder_track_thumbnails_fast(directory: Path, limit: int) -> list[str]:
+    """Cheap collage sources: cover.jpg, video sidecars/cache, metadata overrides — no mutagen APIC."""
+    from src.metadata_store import find_cached_cover, get_metadata
+
+    images: list[str] = []
+    seen: set[str] = set()
+
+    def _add(img: str) -> bool:
+        if not img or img in seen:
+            return False
+        seen.add(img)
+        images.append(img)
+        return len(images) >= limit
+
+    cover = find_cover_image(directory)
+    if cover and _add(cover):
+        return images
+
+    for media_path in _iter_media_files(directory, AUDIO_EXTS | VIDEO_EXTS):
+        ext = media_path.suffix.lower()
+        img = ""
+        if ext in VIDEO_EXTS:
+            img = read_video_thumbnail(media_path, extract=False)
+        elif ext in AUDIO_EXTS:
+            img = find_cached_cover(media_path)
+            if not img:
+                try:
+                    resolved = str(media_path.resolve())
+                except OSError:
+                    resolved = str(media_path)
+                meta_img = str(get_metadata(resolved).get("image") or "")
+                if meta_img and Path(meta_img).is_file():
+                    img = meta_img
+        if img and _add(img):
+            break
+
+    return images
+
+
 def find_folder_track_thumbnails(
     directory: Path,
     limit: int = 4,
@@ -155,6 +195,9 @@ def find_folder_track_thumbnails(
     fast: bool = False,
 ) -> list[str]:
     """Return up to *limit* distinct cover/thumbnail paths from media inside *directory*."""
+    if fast:
+        return _find_folder_track_thumbnails_fast(directory, limit)
+
     images: list[str] = []
     seen: set[str] = set()
 
@@ -175,7 +218,7 @@ def find_folder_track_thumbnails(
                 str(media_path.resolve()),
                 default_title=media_path.stem,
                 default_artist="Video",
-                default_image=read_video_thumbnail(media_path, extract=not fast),
+                default_image=read_video_thumbnail(media_path, extract=True),
             )
             img = display["image"]
 

@@ -28,17 +28,28 @@ def _ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# In-memory cache so scan loops do not re-read metadata.json per file.
+_metadata_cache: dict[str, dict] | None = None
+
+
 def _load_all() -> dict[str, dict]:
+    global _metadata_cache
+    if _metadata_cache is not None:
+        return _metadata_cache
     if not METADATA_FILE.exists():
-        return {}
+        _metadata_cache = {}
+        return _metadata_cache
     try:
         data = json.loads(METADATA_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        _metadata_cache = data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
-        return {}
+        _metadata_cache = {}
+    return _metadata_cache
 
 
 def _save_all(data: dict[str, dict]) -> None:
+    global _metadata_cache
+    _metadata_cache = data
     _ensure_config_dir()
     METADATA_FILE.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
@@ -191,6 +202,18 @@ def _cover_cache_path(path: Path, extension: str = ".jpg") -> Path:
         f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode()
     ).hexdigest()
     return COVER_CACHE_DIR / f"{cache_key}{extension}"
+
+
+def find_cached_cover(path: Path) -> str:
+    """Return an already-extracted cover/thumbnail from disk cache, if present."""
+    try:
+        for extension in (".jpg", ".png"):
+            target = _cover_cache_path(path, extension)
+            if target.is_file():
+                return str(target.resolve())
+    except OSError:
+        return ""
+    return ""
 
 
 def read_video_thumbnail(path: Path, *, extract: bool = True) -> str:

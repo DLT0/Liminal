@@ -45,6 +45,7 @@ from src.media_links import (
 )
 from src.metadata_store import (
     delete_metadata,
+    find_cover_image,
     get_watched_progress,
     migrate_metadata,
     get_metadata,
@@ -691,9 +692,21 @@ class AppBackend(QObject):
             self._sync_library_page_view(3)
 
     def preload_libraries(self) -> None:
-        """Warm music/video indexes at startup so the first tab opens faster."""
+        """Warm libraries at startup; scan the current tab first, defer the other."""
+        if self._current_page == 3:
+            primary = self._start_video_library_scan
+            deferred = self._deferred_music_library_scan
+        else:
+            primary = self._start_music_library_scan
+            deferred = self._deferred_video_library_scan
+        primary(refresh=False)
+        QTimer.singleShot(400, deferred)
+
+    def _deferred_music_library_scan(self) -> None:
         if not self._music_library_loaded and not self._music_scan_running:
             self._start_music_library_scan(refresh=False)
+
+    def _deferred_video_library_scan(self) -> None:
         if not self._video_library_loaded and not self._video_scan_running:
             self._start_video_library_scan(refresh=False)
 
@@ -4329,13 +4342,36 @@ class AppBackend(QObject):
     def _build_all_musics_collection_item(self, tracks: list[MediaInfo] | None = None) -> dict:
         tracks = tracks if tracks is not None else self._scan_all_music_tracks()
         count = len(tracks)
+        preview_images: list[str] = []
+        seen: set[str] = set()
+
+        def _take(img: str) -> bool:
+            if not img or img in seen:
+                return False
+            seen.add(img)
+            preview_images.append(img)
+            return len(preview_images) >= 4
+
+        # Reuse art already discovered during the async scan — avoid another tree walk on the UI thread.
+        for info in self._music_root_infos or []:
+            if _take(info.image):
+                break
+            for thumb in info.preview_images or []:
+                if _take(thumb):
+                    break
+            if len(preview_images) >= 4:
+                break
+        if len(preview_images) < 4:
+            for info in tracks:
+                if _take(info.image):
+                    break
+
         music_root = Path(self._music_dir)
-        preview_images = find_folder_track_thumbnails(music_root, 4, fast=True)
         if not preview_images:
-            folder_image = find_folder_preview_image(music_root, fast=True)
-            if folder_image:
-                preview_images = [folder_image]
-        folder_image = preview_images[0] if preview_images else find_folder_preview_image(music_root, fast=True)
+            folder_cover = find_cover_image(music_root)
+            if folder_cover:
+                preview_images = [folder_cover]
+        folder_image = preview_images[0] if preview_images else ""
         subtitle = f"{count} bài" if count else "Playlist trống"
         return {
             "title": ALL_MUSICS_TITLE,
@@ -5102,25 +5138,38 @@ class AppBackend(QObject):
             )
 
     def _schedule_library_thumbnails(self, infos: list[MediaInfo]) -> None:
-        """Fill missing card artwork in the background after a fast scan."""
+        """Fill missing card artwork in the background after a fast scan.
+
+        Collections (albums/series) are queued first so the root grid paints covers
+        before individual track thumbnails compete for workers.
+        """
         queue = get_thumbnail_queue()
         scheduled: set[str] = set()
 
-        for info in infos:
+        def _submit(info: MediaInfo) -> None:
             path = info.canonical_path or info.path
             if not path or path in scheduled:
-                continue
-            if info.image:
-                continue
+                return
             if info.kind != MediaKind.FILE:
+                if info.image:
+                    return
                 scheduled.add(path)
                 queue.submit_folder_preview(path)
-                continue
+                return
+            if info.image:
+                return
             ext = Path(path).suffix.lower()
             if not ext:
-                continue
+                return
             scheduled.add(path)
             queue.submit(path, is_video=ext in VIDEO_EXTS)
+
+        for info in infos:
+            if info.kind != MediaKind.FILE:
+                _submit(info)
+        for info in infos:
+            if info.kind == MediaKind.FILE:
+                _submit(info)
 
     def _apply_library_thumbnail(
         self,

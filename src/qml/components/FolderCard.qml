@@ -152,6 +152,10 @@ Item {
                 anchors.fill: parent
                 source: root.resolvedImageSource
                 fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                cache: true
+                sourceSize.width: Math.max(96, Math.round(thumbFrame.width))
+                sourceSize.height: Math.max(96, Math.round(thumbFrame.height))
             }
 
             // Subtle shadow so thumbnail reads above the folder
