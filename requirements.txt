@@ -12,8 +12,5 @@ srt>=3.5.0
 # YouTube / link downloads (needs system ffmpeg binary)
 yt-dlp>=2024.12.23
 
-# RSS/Atom podcast feed parsing
-feedparser>=6.0
-
 # Optional terminal UI (python app.py)
 textual>=0.40

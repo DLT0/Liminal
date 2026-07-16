@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(grep -v \"⣿\\\\|──\\\\|CPU\\\\|GPU\\\\|Memory\\\\|Disk\\\\|Battery\\\\|Local\\\\|Locale\\\\|DE \\\\|WM \\\\|Terminal\\\\|Shell\\\\|Packages\\\\|Uptime\\\\|Kernel\\\\|OS \\\\|Reso\\\\|^$\\\\|^[[:space:]]*$\")",
+      "Bash(timeout 8 python /mnt/Work/Liminal/app_qt.py)",
+      "Bash(echo \"EXIT CODE: $?\")"
+    ]
+  }
+}

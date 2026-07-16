@@ -121,10 +121,6 @@ ApplicationWindow {
 
     Connections {
         target: backend
-        function onDebugToast(message) {
-            shareToast.text = message
-            shareToast.open()
-        }
         function onSeriesAiSortError(message) {
             shareToast.text = message
             shareToast.open()
@@ -856,22 +852,7 @@ ApplicationWindow {
                             anchors.fill: parent
                             // PodcastPage tự xử lý internal navigation:
                             // main view / category detail (grid) / playlist detail (series)
-                            visible: !backend.inPodcastDetail
-                        }
-
-                        PodcastDetailPage {
-                            id: podcastDetail
-                            anchors.fill: parent
-                            visible: backend.inPodcastDetail
-                            model: backend.podcastEpisodeModel
-                            showTitle: backend.podcastShowTitle
-                            showImage: backend.podcastShowImage
-                            showDescription: backend.podcastShowDescription
-                            showAuthor: backend.podcastShowAuthor
-
-                            onBackClicked: backend.closePodcastDetail()
-                            onEpisodeClicked: function(index) { backend.playPodcastEpisode(index) }
-                            onDownloadRequested: function(feedUrl, guid) { console.log("[DEBUG main.qml] PodcastDetailPage downloadRequested feedUrl=" + feedUrl + " guid=" + guid); backend.downloadPodcastEpisode(feedUrl, guid) }
+                            visible: true
                         }
                     }
 

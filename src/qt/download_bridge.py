@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import pyqtSlot
 
-from src.downloader import Download403Failed, DownloadCancelled, DownloadFailed, _normalize_video_quality
+from src.downloader import Download403Failed, DownloadCancelled, DownloadFailed
 from src.metadata_store import canonical_source_url, find_video_subtitle_paths, set_metadata
 
 logger = logging.getLogger(__name__)
@@ -22,9 +22,7 @@ class DownloadJob:
     output_subdir: str
     quality: str = "1080"
     retry_403: bool = False
-    source: str = "download_page"  # download_page | shared | suggestion | rss_podcast
-    rss_feed_url: str = ""  # Only for rss_podcast source
-    rss_guid: str = ""       # Only for rss_podcast source
+    source: str = "download_page"  # download_page | shared | suggestion
     dispatch_target: str = "general" # shared | suggestion | general
     owner_model: object = None
     owner_key: str = ""
@@ -41,7 +39,16 @@ class DownloadMixin:
     # ── Public download slots ────────────────────────────────────────────
 
     @pyqtSlot(str, str, str)
-    def downloadMedia(self, url: str, kind: str, output_subdir: str = "") -> None:
+    def downloadMedia(
+        self,
+        url: str,
+        kind: str,
+        output_subdir: str = "",
+        source: str = "download_page",
+        dispatch_target: str = "general",
+        owner_model: object = None,
+        owner_key: str = "",
+    ) -> None:
         """Enqueue an audio/video/podcast download; jobs run one at a time."""
         value = url.strip()
         logger.info("[DEBUG downloadMedia] url=%s kind=%s subdir=%s", value[:120], kind, output_subdir)
@@ -63,7 +70,17 @@ class DownloadMixin:
             self.downloadError.emit(value, "Loại media không được hỗ trợ.")
             return
         subdir = output_subdir.strip()
-        self._enqueue_download(DownloadJob(value, media_type, subdir, self._download_quality))
+        job = DownloadJob(
+            url=value,
+            media_type=media_type,
+            output_subdir=subdir,
+            quality=self._download_quality,
+            source=source,
+            dispatch_target=dispatch_target,
+            owner_model=owner_model,
+            owner_key=owner_key,
+        )
+        self._enqueue_download(job)
 
     @pyqtSlot(str, str, result=bool)
     def removeQueuedDownload(self, url: str, media_kind: str) -> bool:
@@ -226,6 +243,8 @@ class DownloadMixin:
         self._refresh_download_concurrency()
         self._start_library_hotload_timer()
         finished = False
+        self._active_jobs[job.url] = job
+        video_id = job.url
         try:
             self.downloadJobStarted.emit(job.url)
             try:
@@ -234,6 +253,7 @@ class DownloadMixin:
                     job.media_type,
                     job.output_subdir,
                     job.quality,
+                    source=job.source,
                 )
             except DownloadCancelled:
                 logger.info("Download cancelled for %r", job.url)
@@ -248,11 +268,15 @@ class DownloadMixin:
                     logger.warning("HTTP 403 for %r, deferring until batch end", job.url)
                     self._deferred_403_jobs.append(job)
                     self.downloadJobRequeued.emit(job.url)
+                if job.source == "rss_podcast" and job.owner_model is not None and hasattr(job.owner_model, "update_download_state"):
+                    job.owner_model.update_download_state(job.owner_key, is_downloading=False)
                 return
             except DownloadFailed as exc:
                 logger.exception("Media download failed for %r", job.url)
                 self.downloadError.emit(job.url, str(exc))
                 finished = True
+                if job.source == "rss_podcast" and job.owner_model is not None and hasattr(job.owner_model, "update_download_state"):
+                    job.owner_model.update_download_state(job.owner_key, is_downloading=False)
                 return
 
             finished = True
@@ -270,6 +294,20 @@ class DownloadMixin:
                 self._music_source_ids.add(video_id)
             else:
                 self._video_source_ids.add(video_id)
+
+            # RSS podcast post-processing
+            if job.source == "rss_podcast" and file_path and Path(file_path).exists():
+                from src.podcast_manager import update_episode_download
+                update_episode_download(job.rss_feed_url, job.rss_guid, file_path)
+                if job.owner_model is not None and hasattr(job.owner_model, "update_download_state"):
+                    job.owner_model.update_download_state(
+                        job.owner_key, percent=100.0, status="done", is_downloading=False,
+                    )
+                if hasattr(self, '_podcast_new_episodes_model'):
+                    self._podcast_new_episodes_model.update_download_state(
+                        job.rss_guid, percent=100.0, status="done", is_downloading=False,
+                    )
+
             self._hotload_after_download(job, file_path)
         finally:
             self._download_jobs_in_progress -= 1
@@ -278,6 +316,8 @@ class DownloadMixin:
             if finished:
                 self._untrack_download_subdir(job.media_type, job.output_subdir)
             self._refresh_download_concurrency()
+            self._active_jobs.pop(job.url, None)
+            self._active_jobs.pop(video_id, None)
 
     async def _download_worker(self) -> None:
         queue = self._ensure_download_worker()
@@ -346,6 +386,7 @@ class DownloadMixin:
         source: str = "",
     ) -> tuple[str, str]:
         active_id = url
+        job = self._active_jobs.get(url)
 
         def hook(data: dict) -> None:
             nonlocal active_id
@@ -356,6 +397,8 @@ class DownloadMixin:
                 active_id = new_id
                 if source and hasattr(self, '_active_download_source'):
                     self._active_download_source[active_id] = source
+            if active_id not in self._active_jobs and job:
+                self._active_jobs[active_id] = job
             if data.get("status") != "downloading":
                 return
             downloaded = float(data.get("downloaded_bytes") or 0)
@@ -369,10 +412,20 @@ class DownloadMixin:
         if media_type not in {"music", "video", "podcast", "podcast_video"}:
             raise DownloadFailed("Loại media không được hỗ trợ.")
         logger.info("[DEBUG _execute_download] START url=%s type=%s quality=%s", url[:120], media_type, quality)
+        cookies_browser = getattr(self, '_youtube_cookies_browser', None)
+
+        def _on_fallback(fmt_str: str) -> None:
+            logger.info("Download falling back to format: %s", fmt_str)
+            self.downloadProgress.emit(
+                url, -1.0
+            )  # -1 signals "retrying" to the UI
+
         return await self.downloader.download(
             url,
             media_type,
             hook,
             output_subdir=output_subdir or None,
             quality=quality,
+            cookies_browser=cookies_browser,
+            on_fallback=_on_fallback,
         )

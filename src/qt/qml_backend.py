@@ -80,17 +80,6 @@ from src.metadata_store import (
 )
 from src.models import MediaInfo, MediaKind, PlaybackStatus
 from src.player import PlayerBridge
-from src.podcast_manager import (
-    load_subscriptions,
-    subscribe,
-    unsubscribe,
-    refresh_all_feeds,
-    get_all_episodes,
-    get_downloaded_episodes,
-    update_episode_download,
-    update_episode_progress,
-    verify_local_episodes,
-)
 from src import podcast_library
 from src.scanner import (
     find_folder_preview_image,
@@ -276,7 +265,6 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
     downloadConcurrencyChanged = pyqtSignal()
     youtubeCookiesBrowserChanged = pyqtSignal()
     ytDlpUpdateStatusChanged = pyqtSignal()
-    debugToast = pyqtSignal(str)
     libraryNavigationChanged = pyqtSignal()
     primaryPlayLabelChanged = pyqtSignal()
     musicSearchChanged = pyqtSignal()
@@ -343,11 +331,10 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         self._download_worker_started = False
         self._deferred_403_jobs: list[_DownloadJob] = []
         self._download_jobs_in_progress = 0
+        self._active_jobs: dict[str, _DownloadJob] = {}
         self._pending_video_downloads = 0
         self._download_speed_ema = 0.0
         self._published_download_concurrency = 1
-        self._active_download_source: dict[str, str] = {}  # key → source
-        self._active_rss_meta: dict[str, tuple[str, str]] = {}  # key → (feed_url, guid)
         self._pending_play_suggestions: set[str] = set()
         podcasts_dir = get_podcasts_dir()
         podcast_library.ensure_podcasts_dir()
@@ -530,15 +517,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         self._video_sections: list[dict] = []
 
         # Podcast feed models
-        self._podcast_feed_model = MediaListModel(self)
-        self._podcast_episode_model = MediaListModel(self)
-        self._podcast_new_episodes_model = MediaListModel(self)
         self._podcast_downloaded_model = MediaListModel(self)
-        self._podcast_detail_index = -1
-        self._podcast_show_title = ""
-        self._podcast_show_image = ""
-        self._podcast_show_description = ""
-        self._podcast_show_author = ""
         self._is_podcast_media = False
         self._podcast_playback_speed = 1.0
         self._watch_now_pending: set[str] = set()
@@ -548,14 +527,10 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         self._player.position_changed.connect(self._on_position_changed)
         self._player.track_ended.connect(self._on_track_ended)
 
-        self.downloadProgress.connect(self._on_shared_download_progress)
-        self.downloadFinished.connect(self._on_shared_download_finished)
-        self.downloadError.connect(self._on_shared_download_error)
-        self.downloadJobStarted.connect(self._on_shared_download_started)
-        self.downloadProgress.connect(self._on_suggestion_download_progress)
-        self.downloadFinished.connect(self._on_suggestion_download_finished)
-        self.downloadError.connect(self._on_suggestion_download_error)
-        self.downloadJobStarted.connect(self._on_suggestion_download_started)
+        self.downloadProgress.connect(self._on_download_progress)
+        self.downloadFinished.connect(self._on_download_finished)
+        self.downloadError.connect(self._on_download_error)
+        self.downloadJobStarted.connect(self._on_download_started)
 
         self.isPlayingChanged.connect(self.primaryPlayLabelChanged.emit)
         self.trackTitleChanged.connect(self.primaryPlayLabelChanged.emit)
@@ -777,19 +752,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         random.shuffle(result)
         return result
 
-    # Podcast feed models (RSS subscriptions)
-    @pyqtProperty(QObject, constant=True)
-    def podcastModel(self) -> MediaListModel:
-        return self._podcast_feed_model
-
-    @pyqtProperty(QObject, constant=True)
-    def podcastEpisodeModel(self) -> MediaListModel:
-        return self._podcast_episode_model
-
-    @pyqtProperty(QObject, constant=True)
-    def podcastNewEpisodesModel(self) -> MediaListModel:
-        return self._podcast_new_episodes_model
-
+    # Podcast models
     @pyqtProperty(QObject, constant=True)
     def podcastDownloadedModel(self) -> MediaListModel:
         return self._podcast_downloaded_model
@@ -1477,10 +1440,6 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         model = self._model_for_page(self._current_page)
         item = model.item_at(index)
         title = item.get("title", "???") if item else "None"
-        logger.info("[DEBUG playMedia] index=%d current_page=%d video_section=%s inCollectionView=%s model=%s item_title=%s",
-                     index, self._current_page, self._video_section, self.inCollectionView,
-                     type(model).__name__, title)
-        self.debugToast.emit(f"playMedia(idx={index}, section={self._video_section}, title={title})")
 
         # Defensive: when on video page (3) and not in collection view,
         # _video_section may be stale, causing the wrong model to resolve.
@@ -1858,9 +1817,6 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
     def playVideoMyMovie(self, index: int) -> None:
         item = self._video_my_movies_model.item_at(index)
         title = item.get("title", "???") if item else "None"
-        logger.info("[DEBUG playVideoMyMovie] index=%d model_count=%d item_title=%s",
-                     index, self._video_my_movies_model.rowCount(), title)
-        self.debugToast.emit(f"playVideoMyMovie(idx={index}, title={title})")
         self._video_section = "movies"
         self._video_model.set_items(self._video_my_movies_model._items)
         if item is not None:
@@ -2285,7 +2241,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
             self.downloadError.emit("", "Mục chia sẻ thiếu link tải.")
             return
         self._mark_shared_downloading(item, percent=0.0)
-        self._downloadMedia(source_url, "video", "", "shared")
+        self.downloadMedia(source_url, "video", "", source="shared", dispatch_target="shared")
 
     @pyqtSlot(int)
     def openVideoSharedSeries(self, index: int) -> None:
@@ -2401,7 +2357,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
             self.downloadError.emit("", "Mục chia sẻ thiếu link tải.")
             return
         self._mark_music_shared_downloading(item, percent=0.0)
-        self._downloadMedia(source_url, "music", "", "shared")
+        self.downloadMedia(source_url, "music", "", source="shared", dispatch_target="shared")
 
     def _play_shared_music_item(self, item: dict) -> None:
         play_item = dict(item)
@@ -2611,9 +2567,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
     def verifyLocalPodcastFiles(self) -> None:
         """Scan all downloaded podcast files and suggestions, verifying if they exist on disk.
         Resets status to 'pending' if the file is missing, forcing a re-download."""
-        # Clean up RSS podcast episodes whose files are missing
-        verify_local_episodes()
-        
+
         # Clean up podcast library items whose files are missing
         podcast_library.list_downloads()
         
@@ -3083,37 +3037,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
 
     @pyqtSlot(str)
     def downloadPodcastSuggestionById(self, track_id: str) -> None:
-        self._download_suggestion_by_id(track_id)
-
-    def _download_suggestion_by_id(self, suggestion_id: str) -> None:
-        suggestion_id = (suggestion_id or "").strip()
-        if not suggestion_id:
-            return
-        item = self._find_suggestion_by_key(suggestion_id)
-        if item is None:
-            return
-        path = str(item.get("path") or "").strip()
-        if item.get("download_status") == "done" and path and Path(path).exists():
-            return
-        source_url = str(item.get("url") or item.get("source_url") or "").strip()
-        if not source_url:
-            self.downloadError.emit("", "Đề xuất thiếu link tải.")
-            return
-            
-        media_kind = str(item.get("media_kind") or "audio").lower()
-        content_type = str(item.get("content_type") or "").lower()
-        if content_type == "podcast":
-            kind = "podcast" if media_kind == "audio" else "podcast_video"
-        else:
-            kind = "music" if media_kind == "audio" else "video"
-            
-        self._patch_suggestion_download(
-            suggestion_id,
-            percent=0.0,
-            status="downloading",
-            is_downloading=True,
-        )
-        self._downloadMedia(source_url, kind, "", "suggestion")
+        self._download_suggestion_by_id(track_id, owner_model=self._podcast_suggestions_model)
 
     def _play_podcast_suggestion_item(self, item: dict) -> None:
         path = str(item.get("path") or item.get("local_path") or "").strip()
@@ -3154,43 +3078,10 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         item = model.item_at(index)
         if item is None:
             return
-        path = str(item.get("path") or "").strip()
-        if item.get("download_status") == "done" and path and Path(path).exists():
+        suggestion_id = str(item.get("suggestion_id") or item.get("track_id") or item.get("id") or "")
+        if not suggestion_id:
             return
-        source_url = str(item.get("url") or item.get("source_url") or "").strip()
-        if not source_url:
-            self.downloadError.emit("", "Đề xuất thiếu link tải.")
-            return
-        suggestion_id = str(item.get("suggestion_id") or item.get("track_id") or "")
-        media_kind = str(item.get("media_kind") or "audio").lower()
-        content_type = str(item.get("content_type") or "").lower()
-        if content_type == "podcast":
-            kind = "podcast" if media_kind == "audio" else "podcast_video"
-        else:
-            kind = "music" if media_kind == "audio" else "video"
-        item["is_downloading"] = True
-        item["download_status"] = "downloading"
-        item["download_percent"] = 0.0
-        model.update_download_state(
-            str(item.get("track_id") or ""),
-            percent=0.0,
-            status="downloading",
-            is_downloading=True,
-        )
-        if suggestion_id:
-            suggestions_manager.persist_download_state(
-                suggestion_id,
-                status="downloading",
-                percent=0.0,
-                is_downloading=True,
-            )
-            for raw in self._all_suggestions:
-                if str(raw.get("id") or "") == suggestion_id:
-                    raw["download_status"] = "downloading"
-                    raw["download_percent"] = 0.0
-                    raw["is_downloading"] = True
-                    break
-        self._downloadMedia(source_url, kind, "", "suggestion")
+        self._download_suggestion_by_id(suggestion_id)
 
     def _find_suggestion_by_key(self, key: str) -> dict | None:
         needle = (key or "").strip()
@@ -3207,116 +3098,118 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
                 return item
         return None
 
-    def _patch_suggestion_download(
-        self,
-        key: str,
-        *,
-        percent: float | None = None,
-        status: str | None = None,
-        is_downloading: bool | None = None,
-    ) -> None:
-        item = self._find_suggestion_by_key(key)
+    def _download_suggestion_by_id(self, suggestion_id: str, owner_model=None) -> None:
+        suggestion_id = (suggestion_id or "").strip()
+        if not suggestion_id:
+            return
+        item = self._find_suggestion_by_key(suggestion_id)
         if item is None:
             return
-        if percent is not None:
-            item["download_percent"] = float(percent)
-        if status is not None:
-            item["download_status"] = status
-        if is_downloading is not None:
-            item["is_downloading"] = bool(is_downloading)
-        suggestion_id = str(item.get("id") or "")
-        if suggestion_id:
-            suggestions_manager.persist_download_state(
-                suggestion_id,
-                status=item.get("download_status"),
-                percent=item.get("download_percent"),
-                is_downloading=item.get("is_downloading"),
-            )
-        track_id = suggestion_id
-        source_url = str(item.get("source_url") or "")
+        path = str(item.get("path") or "").strip()
+        if item.get("download_status") == "done" and path and Path(path).exists():
+            return
+        source_url = str(item.get("url") or item.get("source_url") or "").strip()
+        if not source_url:
+            self.downloadError.emit("", "Đề xuất thiếu link tải.")
+            return
+
+        media_kind = str(item.get("media_kind") or "audio").lower()
         content_type = str(item.get("content_type") or "").lower()
-        # Only update models that can contain this item type
         if content_type == "podcast":
-            target_models = (
-                self._podcast_suggestions_model,
-                self._podcast_playlist_model,
-                self._podcast_category_detail_model,
-            )
-        elif content_type == "video":
-            target_models = (self._video_suggestions_model,)
-        elif content_type == "shorts":
-            target_models = (self._shorts_suggestions_model,)
+            kind = "podcast" if media_kind == "audio" else "podcast_video"
         else:
-            target_models = (
-                self._podcast_suggestions_model,
-                self._video_suggestions_model,
-                self._shorts_suggestions_model,
-            )
-        for model in target_models:
-            model.update_download_state(
-                track_id,
-                percent=item.get("download_percent"),
-                status=item.get("download_status"),
-                is_downloading=item.get("is_downloading"),
-            )
-            if source_url and source_url != track_id:
-                model.update_download_state(
-                    source_url,
-                    percent=item.get("download_percent"),
-                    status=item.get("download_status"),
-                    is_downloading=item.get("is_downloading"),
-                )
-        self.suggestionsChanged.emit()
+            kind = "music" if media_kind == "audio" else "video"
 
-    # ── Suggestion download signal handlers (process "suggestion" + "rss_podcast") ─
-
-    def _on_suggestion_download_started(self, key: str) -> None:
-        source = self._active_download_source.get(key, "")
-        if source == "rss_podcast":
-            return  # RSS start state already set by downloadPodcastEpisode
-        if source != "suggestion":
-            return
-        self._patch_suggestion_download(
-            key, status="downloading", is_downloading=True
-        )
-
-    def _on_suggestion_download_progress(self, key: str, percent: float) -> None:
-        source = self._active_download_source.get(key, "")
-        if source == "rss_podcast":
-            meta = self._active_rss_meta.get(key)
-            if meta:
-                _feed_url, guid = meta
-                self._podcast_episode_model.update_download_state(
-                    guid, percent=percent, is_downloading=True,
-                )
-            return
-        if source != "suggestion":
-            return
-        self._patch_suggestion_download(
-            key,
-            percent=percent,
+        # Update raw item state
+        item["download_percent"] = 0.0
+        item["download_status"] = "downloading"
+        item["is_downloading"] = True
+        suggestions_manager.persist_download_state(
+            suggestion_id,
             status="downloading",
+            percent=0.0,
             is_downloading=True,
         )
-        item = self._find_suggestion_by_key(key)
-        item_id = str(item.get("id") or "") if item else ""
-        if self._focus_mode_loading_id and (key == self._focus_mode_loading_id or item_id == self._focus_mode_loading_id):
+        self.suggestionsChanged.emit()
+
+        if owner_model is None:
+            owner_model = self._podcast_suggestions_model
+
+        self.downloadMedia(
+            source_url, kind, "",
+            source="suggestion",
+            dispatch_target="suggestion",
+            owner_model=owner_model,
+            owner_key=suggestion_id,
+        )
+
+    def _dispatch_job(self, key: str) -> _DownloadJob | None:
+        return self._active_jobs.get(key)
+
+    def _on_download_started(self, key: str) -> None:
+        job = self._dispatch_job(key)
+        if job is None:
+            return
+        if job.dispatch_target == "shared":
+            self._on_shared_download_started(key, job)
+        elif job.dispatch_target == "suggestion":
+            self._on_suggestion_download_started(job)
+
+    def _on_download_progress(self, key: str, percent: float) -> None:
+        job = self._dispatch_job(key)
+        if job is None:
+            return
+        if job.dispatch_target == "shared":
+            self._on_shared_download_progress(key, job, percent)
+        elif job.dispatch_target == "suggestion":
+            self._on_suggestion_download_progress(job, percent)
+
+    def _on_download_finished(self, key: str, file_path: str) -> None:
+        job = self._dispatch_job(key)
+        if job is None:
+            return
+        if job.dispatch_target == "shared":
+            self._on_shared_download_finished(key, job, file_path)
+        elif job.dispatch_target == "suggestion":
+            self._on_suggestion_download_finished(job, file_path)
+
+    def _on_download_error(self, key: str, message: str) -> None:
+        job = self._dispatch_job(key)
+        if job is None:
+            return
+        if job.dispatch_target == "shared":
+            self._on_shared_download_error(key, job, message)
+        elif job.dispatch_target == "suggestion":
+            self._on_suggestion_download_error(job, message)
+
+    # ── Suggestion download signal handlers ────────────────────────────────
+
+    def _on_suggestion_download_started(self, job: _DownloadJob) -> None:
+        if job.owner_model is not None and hasattr(job.owner_model, "update_download_state"):
+            job.owner_model.update_download_state(
+                job.owner_key, status="downloading", is_downloading=True,
+            )
+
+    def _on_suggestion_download_progress(self, job: _DownloadJob, percent: float) -> None:
+        if job.owner_model is not None and hasattr(job.owner_model, "update_download_state"):
+            job.owner_model.update_download_state(
+                job.owner_key, percent=percent, status="downloading", is_downloading=True,
+            )
+        if self._focus_mode_loading_id and job.owner_key == self._focus_mode_loading_id:
             self._focus_mode_download_percent = percent
             self.focusModeDownloadPercentChanged.emit()
 
-    def _on_suggestion_download_finished(self, key: str, file_path: str) -> None:
-        source = self._active_download_source.get(key, "")
-        if source == "rss_podcast":
-            # RSS completion handled directly in _run_download_job
-            return
-        if source != "suggestion":
-            return
-        item = self._find_suggestion_by_key(key)
-        item_id = str(item.get("id") or "") if item else ""
-        if self._focus_mode_loading_id and (key == self._focus_mode_loading_id or item_id == self._focus_mode_loading_id):
+    def _on_suggestion_download_finished(self, job: _DownloadJob, file_path: str) -> None:
+        if job.owner_model is not None and hasattr(job.owner_model, "update_download_state"):
+            job.owner_model.update_download_state(
+                job.owner_key, percent=100.0, status="done", is_downloading=False,
+            )
+        if self._focus_mode_loading_id and job.owner_key == self._focus_mode_loading_id:
             self._focus_mode_download_percent = 100.0
             self.focusModeDownloadPercentChanged.emit()
             self._focus_mode_loading_id = ""
+
+        item = self._find_suggestion_by_key(job.owner_key)
         path = str(file_path or "").strip()
         if item is not None and path and Path(path).exists():
             content_type = str(item.get("content_type") or "").lower()
@@ -3350,12 +3243,9 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
                 is_downloading=False,
                 local_path=path,
             )
-        self._patch_suggestion_download(
-            key, percent=100.0, status="done", is_downloading=False
-        )
         self._rebuild_suggestion_models()
         self._refresh_podcast_downloaded_from_library()
-        
+
         if item is not None:
             suggestion_id = str(item.get("id") or "")
             if suggestion_id in self._pending_play_suggestions:
@@ -3369,26 +3259,18 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
                         self.focusModeDownloadPercentChanged.emit()
                         self.exitFocusMode()
 
-    def _on_suggestion_download_error(self, key: str, _message: str) -> None:
-        source = self._active_download_source.get(key, "")
-        if source == "rss_podcast":
-            # RSS error handling already done in _run_download_job
-            return
-        if source != "suggestion":
-            return
-        self._patch_suggestion_download(
-            key, status="error", is_downloading=False
-        )
-        item = self._find_suggestion_by_key(key)
-        if item is not None:
-            suggestion_id = str(item.get("id") or "")
-            if suggestion_id in self._pending_play_suggestions:
-                self._pending_play_suggestions.remove(suggestion_id)
-                if self._focus_mode_loading_id == suggestion_id:
-                    self._focus_mode_loading_id = ""
-                    self._focus_mode_download_percent = 0.0
-                    self.focusModeDownloadPercentChanged.emit()
-                    self.exitFocusMode()
+    def _on_suggestion_download_error(self, job: _DownloadJob, _message: str) -> None:
+        if job.owner_model is not None and hasattr(job.owner_model, "update_download_state"):
+            job.owner_model.update_download_state(
+                job.owner_key, is_downloading=False, status="error",
+            )
+        if job.owner_key in self._pending_play_suggestions:
+            self._pending_play_suggestions.remove(job.owner_key)
+            if self._focus_mode_loading_id == job.owner_key:
+                self._focus_mode_loading_id = ""
+                self._focus_mode_download_percent = 0.0
+                self.focusModeDownloadPercentChanged.emit()
+                self.exitFocusMode()
 
     def _refresh_podcast_downloaded_from_library(self) -> None:
         """Fill podcastDownloadedModel from local YouTube podcast downloads."""
@@ -3427,179 +3309,10 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
     # ── Podcast feed management ─────────────────────────────────────────
 
     def _load_podcasts(self) -> None:
-        """Load podcast suggestion downloads (+ optional legacy RSS feeds)."""
-        try:
-            verify_local_episodes()
-        except Exception:
-            logger.exception("Failed verifying local podcast episodes")
+        """Load YouTube-based podcast suggestion downloads."""
         self._refresh_podcast_downloaded_from_library()
-        try:
-            feeds = load_subscriptions()
-        except Exception:
-            logger.exception("Failed loading podcast RSS subscriptions")
-            feeds = []
-        items: list[dict] = []
-        for i, feed in enumerate(feeds):
-            items.append({
-                "title": feed.title or feed.url,
-                "subtitle": feed.author or f"{len(feed.episodes)} tập",
-                "artist": feed.author,
-                "path": feed.url,
-                "canonical_path": feed.url,
-                "url": feed.url,
-                "track_id": feed.url,
-                "duration": "",
-                "image": feed.image_url,
-                "accent": ACCENT_COLORS[i % len(ACCENT_COLORS)],
-                "audio_only": True,
-                "is_remote": True,
-                "is_collection": True,
-                "kind": "podcast",
-                "child_count": len(feed.episodes),
-                "preview_images": [],
-                "download_percent": 0.0,
-                "download_status": "",
-                "is_downloading": False,
-                "watched_percent": 0.0,
-            })
-        self._podcast_feed_model.set_items(items)
-
-        try:
-            all_eps = get_all_episodes()
-        except Exception:
-            all_eps = []
-        new_items: list[dict] = []
-        for idx, (feed, ep) in enumerate(all_eps):
-            new_items.append({
-                "title": ep.title,
-                "subtitle": f"{feed.title} · {ep.publish_date[:10] if ep.publish_date else ''}",
-                "artist": feed.author,
-                "path": ep.audio_url,
-                "canonical_path": ep.guid,
-                "url": ep.audio_url,
-                "track_id": ep.guid,
-                "duration": ep.duration,
-                "image": ep.image_url or feed.image_url,
-                "accent": ACCENT_COLORS[idx % len(ACCENT_COLORS)],
-                "audio_only": True,
-                "is_remote": True,
-                "is_collection": False,
-                "kind": "podcast_episode",
-                "child_count": 0,
-                "preview_images": [],
-                "download_percent": 0.0,
-                "download_status": "done" if (ep.downloaded_path and Path(ep.downloaded_path).exists()) else "",
-                "is_downloading": False,
-                "watched_percent": 0.0,
-            })
-        self._podcast_new_episodes_model.set_items(new_items)
-
-    @pyqtSlot(str)
-    def subscribePodcast(self, url: str) -> None:
-        url = url.strip()
-        if not url:
-            return
-        feed = subscribe(url)
-        self._load_podcasts()
-
-    @pyqtSlot(str)
-    def unsubscribePodcast(self, url: str) -> None:
-        url = url.strip()
-        if not url:
-            return
-        unsubscribe(url)
-        self._load_podcasts()
-        if self._podcast_detail_index >= 0:
-            self._podcast_detail_index = -1
-            self._podcast_episode_model.set_items([])
-            self.libraryNavigationChanged.emit()
-
-    @pyqtSlot()
-    def refreshPodcasts(self) -> None:
-        refresh_all_feeds()
-        self._load_podcasts()
-
-    @pyqtSlot(int)
-    def openPodcastDetail(self, index: int) -> None:
-        feeds = load_subscriptions()
-        if index < 0 or index >= len(feeds):
-            return
-        feed = feeds[index]
-        self._podcast_detail_index = index
-        self._podcast_show_title = feed.title or feed.url
-        self._podcast_show_image = feed.image_url
-        self._podcast_show_description = feed.description
-        self._podcast_show_author = feed.author
-
-        ep_items: list[dict] = []
-        for i, ep in enumerate(feed.episodes):
-            ep_items.append({
-                "title": ep.title,
-                "subtitle": ep.description[:120] if ep.description else "",
-                "artist": feed.author,
-                "path": ep.downloaded_path if (ep.downloaded_path and Path(ep.downloaded_path).exists()) else ep.audio_url,
-                "canonical_path": ep.guid,
-                "url": ep.audio_url,
-                "track_id": ep.guid,
-                "duration": ep.duration,
-                "image": ep.image_url or feed.image_url,
-                "accent": ACCENT_COLORS[i % len(ACCENT_COLORS)],
-                "audio_only": True,
-                "is_remote": not bool(ep.downloaded_path and Path(ep.downloaded_path).exists()),
-                "is_collection": False,
-                "kind": "podcast_episode",
-                "child_count": 0,
-                "preview_images": [],
-                "download_percent": 0.0,
-                "download_status": "done" if (ep.downloaded_path and Path(ep.downloaded_path).exists()) else "",
-                "is_downloading": False,
-                "watched_percent": 0.0,
-                "podcast_feed_url": feed.url,
-                "podcast_guid": ep.guid,
-            })
-        self._podcast_episode_model.set_items(ep_items)
-        self.libraryNavigationChanged.emit()
-
-    @pyqtSlot()
-    def closePodcastDetail(self) -> None:
-        self._podcast_detail_index = -1
-        self._podcast_episode_model.set_items([])
-        self.libraryNavigationChanged.emit()
-
-    @pyqtSlot(int)
-    def playPodcastEpisode(self, index: int) -> None:
-        item = self._podcast_episode_model.item_at(index)
-        if item is None:
-            # Try from new episodes or downloaded models
-            if self._podcast_new_episodes_model.count > 0:
-                item = self._podcast_new_episodes_model.item_at(index)
-        if item is None:
-            return
-
-        download_status = str(item.get("download_status") or "")
-        path = item.get("path") or item.get("url") or ""
-
-        if download_status == "done" and Path(path).exists():
-            item["is_remote"] = False
-            item["path"] = path
-        else:
-            item["is_remote"] = True
-            item["path"] = item.get("url", "")
-
-        self._is_podcast_media = True
-        self.podcastPlaybackSpeedChanged.emit()
-        self._set_playback_queue([item])
-        self._play_item(item)
-
-    @pyqtSlot(int)
-    def playPodcastNewEpisode(self, index: int) -> None:
-        item = self._podcast_new_episodes_model.item_at(index)
-        if item is None:
-            return
-        self._is_podcast_media = True
-        self.podcastPlaybackSpeedChanged.emit()
-        self._set_playback_queue([item])
-        self._play_item(item)
+        self._podcast_feed_model.set_items([])
+        self._podcast_new_episodes_model.set_items([])
 
     @pyqtSlot(int)
     def playDownloadedPodcastEpisode(self, index: int) -> None:
@@ -3610,45 +3323,6 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         self.podcastPlaybackSpeedChanged.emit()
         self._set_playback_queue([item])
         self._play_item(item)
-
-    @pyqtSlot(str, str)
-    def downloadPodcastEpisode(self, feed_url: str, guid: str) -> None:
-        feeds = load_subscriptions()
-        target_ep = None
-        for feed in feeds:
-            if feed.url == feed_url:
-                for ep in feed.episodes:
-                    if ep.guid == guid:
-                        target_ep = ep
-                        break
-                break
-
-        if target_ep is None or not target_ep.audio_url:
-            return
-
-        if target_ep.downloaded_path and Path(target_ep.downloaded_path).exists():
-            return
-
-        error = self.downloader.availability_error(require_ffmpeg=True)
-        if error:
-            self.downloadError.emit(guid, error)
-            return
-
-        self._podcast_episode_model.update_download_state(
-            guid, percent=0.0, is_downloading=True,
-        )
-
-        job = _DownloadJob(
-            target_ep.audio_url,
-            "podcast",
-            "",
-            source="rss_podcast",
-            rss_feed_url=feed_url,
-            rss_guid=guid,
-        )
-        self._active_download_source[target_ep.audio_url] = "rss_podcast"
-        self._active_rss_meta[target_ep.audio_url] = (feed_url, guid)
-        self._enqueue_download(job)
 
     @pyqtSlot(float)
     def setPodcastPlaybackSpeed(self, speed: float) -> None:
@@ -3962,7 +3636,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         track["download_percent"] = float(track.get("download_percent") or 0.0)
         self._persist_shared_playlist_state(playlist)
         self._refresh_shared_playlist_model(playlist)
-        self.downloadMedia(source_url, "music", folder)
+        self.downloadMedia(source_url, "music", folder, source="shared", dispatch_target="shared")
 
     def _persist_shared_playlist_state(self, playlist: dict) -> None:
         from src import share_manager
@@ -4099,7 +3773,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         episode["download_percent"] = float(episode.get("download_percent") or 0.0)
         self._persist_shared_series_state(series)
         self._refresh_shared_series_model(series)
-        self.downloadMedia(source_url, "video", folder)
+        self.downloadMedia(source_url, "video", folder, source="shared", dispatch_target="shared")
 
     def _persist_shared_series_state(self, series: dict) -> None:
         from src import share_manager
@@ -4233,11 +3907,9 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
                 is_downloading=item.get("is_downloading"),
             )
 
-    # ── Shared download signal handlers (only process "shared" source) ─────
+    # ── Shared download signal handlers ────────────────────────────────────
 
-    def _on_shared_download_started(self, key: str) -> None:
-        if self._active_download_source.get(key, "") != "shared":
-            return
+    def _on_shared_download_started(self, key: str, job: _DownloadJob) -> None:
         match = self._find_shared_episode(key)
         if match is not None:
             series, episode = match
@@ -4262,9 +3934,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
         else:
             self._mark_shared_downloading(item, percent=float(item.get("download_percent") or 0.0))
 
-    def _on_shared_download_progress(self, key: str, percent: float) -> None:
-        if self._active_download_source.get(key, "") != "shared":
-            return
+    def _on_shared_download_progress(self, key: str, job: _DownloadJob, percent: float) -> None:
         match = self._find_shared_episode(key)
         if match is not None:
             series, episode = match
@@ -4362,9 +4032,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
                     is_downloading=True,
                 )
 
-    def _on_shared_download_finished(self, video_id: str, file_path: str) -> None:
-        if self._active_download_source.get(video_id, "") != "shared":
-            return
+    def _on_shared_download_finished(self, video_id: str, job: _DownloadJob, file_path: str) -> None:
         self._flush_shared_progress_state()
         match = self._find_shared_episode(video_id)
         if match is not None:
@@ -4422,9 +4090,7 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
                 source_url=str(item.get("url") or "").strip(),
             )
 
-    def _on_shared_download_error(self, key: str, _message: str) -> None:
-        if self._active_download_source.get(key, "") != "shared":
-            return
+    def _on_shared_download_error(self, key: str, job: _DownloadJob, _message: str) -> None:
         self._flush_shared_progress_state()
         match = self._find_shared_episode(key)
         if match is not None:
@@ -5062,86 +4728,6 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
              "in_library": False}
         ])
 
-    @pyqtSlot(str, str, str)
-    def downloadMedia(self, url: str, kind: str, output_subdir: str = "") -> None:
-        """Enqueue an audio/video/podcast download; jobs run one at a time."""
-        self._downloadMedia(url, kind, output_subdir, "download_page")
-
-    def _downloadMedia(self, url: str, kind: str, output_subdir: str, source: str) -> None:
-        value = url.strip()
-        if not value:
-            self.downloadError.emit("", "URL hoặc video ID không hợp lệ.")
-            return
-        raw = kind.strip().lower()
-        if raw in {"audio", "music"}:
-            media_type = "music"
-        elif raw in {"podcast"}:
-            media_type = "podcast"
-        elif raw in {"podcast_video"}:
-            media_type = "podcast_video"
-        elif raw in {"video"}:
-            media_type = "video"
-        else:
-            media_type = raw
-        if media_type not in {"music", "video", "podcast", "podcast_video"}:
-            self.downloadError.emit(value, "Loại media không được hỗ trợ.")
-            return
-        subdir = output_subdir.strip()
-        job = _DownloadJob(value, media_type, subdir, self._download_quality, source=source)
-        self._enqueue_download(job)
-
-    @pyqtSlot(str, str, result=bool)
-    def removeQueuedDownload(self, url: str, media_kind: str) -> bool:
-        """Remove a job that is still waiting in the download queue.
-
-        A job already reported as ``downloadJobStarted`` is intentionally not
-        cancelled here: yt-dlp/ffmpeg does not currently expose a safe
-        cancellation handle, and removing only its row would leave the
-        backend counters inconsistent.  The UI hides the remove button for
-        that state.
-        """
-        value = str(url or "").strip()
-        kind = "music" if str(media_kind or "").strip() in {"music", "audio"} else "video"
-        if not value:
-            return False
-
-        removed: list[_DownloadJob] = []
-        queue = self._download_queue
-        if queue is not None:
-            queued_jobs = list(queue._queue)
-            kept_jobs = [
-                job
-                for job in queued_jobs
-                if not (job.url == value and job.media_type == kind)
-            ]
-            removed.extend(
-                job for job in queued_jobs
-                if job.url == value and job.media_type == kind
-            )
-            if removed:
-                queue._queue.clear()
-                queue._queue.extend(kept_jobs)
-
-        deferred = [
-            job for job in self._deferred_403_jobs
-            if job.url == value and job.media_type == kind
-        ]
-        if deferred:
-            removed.extend(deferred)
-            self._deferred_403_jobs = [
-                job for job in self._deferred_403_jobs
-                if not (job.url == value and job.media_type == kind)
-            ]
-
-        if not removed:
-            return False
-
-        for job in removed:
-            if job.media_type not in {"music", "podcast"}:
-                self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
-            self._untrack_download_subdir(job.media_type, job.output_subdir)
-        self._refresh_download_concurrency()
-        return True
 
     @pyqtSlot()
     def cancelCurrentDownloads(self) -> None:
@@ -5188,271 +4774,6 @@ class AppBackend(PodcastMixin, DownloadMixin, QObject):
                         status="pending",
                         is_downloading=False,
                     )
-
-    @pyqtSlot(str, str)
-    def queueLink(self, url: str, media_type: str) -> None:
-        """Resolve a link asynchronously and enqueue all items (video or playlist)."""
-        asyncio.create_task(self._queue_link(url, media_type))
-
-    async def _queue_link(self, url: str, media_type: str) -> None:
-        value = url.strip()
-        if not value:
-            self.linkQueueError.emit(value, "URL hoặc video ID không hợp lệ.")
-            return
-        try:
-            resolved = await asyncio.wait_for(
-                self.downloader.resolve_link(value, media_type),
-                timeout=30,
-            )
-        except TimeoutError:
-            self.linkQueueError.emit(value, "Đọc link quá thời gian chờ (30 giây).")
-            return
-        except DownloadFailed as exc:
-            logger.exception("Link queue resolve failed for %r", value)
-            self.linkQueueError.emit(value, str(exc))
-            return
-        items = self._annotate_search_results(list(resolved.get("items") or []), media_type)
-        folder = str(resolved.get("playlist_folder") or "").strip()
-        downloadable = [item for item in items if not item.get("in_library")]
-        if not downloadable:
-            self.linkQueueError.emit(value, "Tất cả mục trong link đã có trong thư viện.")
-            return
-        kind = "music" if media_type == "music" else "video"
-        for item in downloadable:
-            item_url = str(item.get("url") or item.get("id") or "").strip()
-            if item_url:
-                self._enqueue_download(_DownloadJob(item_url, kind, folder, self._download_quality))
-        self.playlistQueued.emit(folder, media_type, downloadable)
-
-    def _ensure_download_worker(self) -> asyncio.Queue[_DownloadJob]:
-        if self._download_queue is None:
-            self._download_queue = asyncio.Queue()
-        if not self._download_worker_started:
-            self._download_worker_started = True
-            asyncio.create_task(self._download_worker())
-        return self._download_queue
-
-    def _enqueue_download(self, job: _DownloadJob) -> None:
-        queue = self._ensure_download_worker()
-        queue.put_nowait(job)
-        if job.media_type not in {"music", "podcast"}:
-            self._pending_video_downloads += 1
-        self._track_download_subdir(job.media_type, job.output_subdir)
-        self._start_library_hotload_timer()
-        self._refresh_download_concurrency()
-
-    def _download_backlog_size(self) -> int:
-        queue = self._download_queue
-        pending = queue.qsize() if queue else 0
-        return pending + self._download_jobs_in_progress
-
-    def _network_is_good(self) -> bool:
-        return self._download_speed_ema >= _GOOD_NETWORK_BPS
-
-    def _download_concurrency_limit(self) -> int:
-        if self._download_backlog_size() <= _LARGE_BATCH_THRESHOLD:
-            return 1
-        if not self._network_is_good():
-            return 1
-        return _MAX_CONCURRENT_DOWNLOADS
-
-    def _refresh_download_concurrency(self) -> None:
-        limit = self._download_concurrency_limit()
-        if limit != self._published_download_concurrency:
-            self._published_download_concurrency = limit
-            self.downloadConcurrencyChanged.emit()
-
-    def _record_download_speed(self, speed_bps: float) -> None:
-        if speed_bps <= 0:
-            return
-        if self._download_speed_ema <= 0:
-            self._download_speed_ema = speed_bps
-        else:
-            self._download_speed_ema = 0.8 * self._download_speed_ema + 0.2 * speed_bps
-        self._refresh_download_concurrency()
-
-    async def _run_download_job(self, job: _DownloadJob) -> None:
-        self._download_jobs_in_progress += 1
-        self._refresh_download_concurrency()
-        self._start_library_hotload_timer()
-        source = job.source
-        rss_feed_url = job.rss_feed_url
-        rss_guid = job.rss_guid
-        self._active_download_source[job.url] = source
-        if source == "rss_podcast":
-            self._active_rss_meta[job.url] = (rss_feed_url, rss_guid)
-        finished = False
-        video_id = ""
-        try:
-            self.downloadJobStarted.emit(job.url)
-            try:
-                video_id, file_path = await self._execute_download(
-                    job.url,
-                    job.media_type,
-                    job.output_subdir,
-                    job.quality,
-                    source=source,
-                )
-            except Download403Failed as exc:
-                if job.retry_403:
-                    logger.exception("Media download failed on 403 retry for %r", job.url)
-                    self.downloadError.emit(job.url, str(exc))
-                    finished = True
-                else:
-                    logger.warning("HTTP 403 for %r, deferring until batch end", job.url)
-                    self._deferred_403_jobs.append(job)
-                    self.downloadJobRequeued.emit(job.url)
-                if source == "rss_podcast":
-                    self._podcast_episode_model.update_download_state(
-                        rss_guid, is_downloading=False,
-                    )
-                return
-            except DownloadFailed as exc:
-                logger.exception("Media download failed for %r", job.url)
-                self.downloadError.emit(job.url, str(exc))
-                finished = True
-                if source == "rss_podcast":
-                    self._podcast_episode_model.update_download_state(
-                        rss_guid, is_downloading=False,
-                    )
-                return
-
-            finished = True
-            self._active_download_source[video_id] = source
-            if source == "rss_podcast":
-                self._active_rss_meta[video_id] = (rss_feed_url, rss_guid)
-            self.downloadFinished.emit(video_id, file_path)
-            resolved_path = str(Path(file_path).resolve())
-            set_metadata(
-                resolved_path,
-                source_id=video_id,
-                source_url=canonical_source_url(job.url, video_id=video_id),
-                subtitle_path=(
-                    find_video_subtitle_paths(Path(resolved_path)) or [None]
-                )[0],
-            )
-            if job.media_type in {"music", "podcast"}:
-                self._music_source_ids.add(video_id)
-            else:
-                self._video_source_ids.add(video_id)
-
-            # RSS podcast post-processing
-            if source == "rss_podcast" and file_path and Path(file_path).exists():
-                update_episode_download(rss_feed_url, rss_guid, file_path)
-                self._podcast_episode_model.update_download_state(
-                    rss_guid, percent=100.0, status="done", is_downloading=False,
-                )
-                self._podcast_new_episodes_model.update_download_state(
-                    rss_guid, percent=100.0, status="done", is_downloading=False,
-                )
-                self._load_podcasts()
-
-            self._hotload_after_download(job, file_path)
-        finally:
-            self._download_jobs_in_progress -= 1
-            if finished and job.media_type not in {"music", "podcast"}:
-                self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
-            if finished:
-                self._untrack_download_subdir(job.media_type, job.output_subdir)
-            self._active_download_source.pop(job.url, None)
-            self._active_rss_meta.pop(job.url, None)
-            if video_id:
-                self._active_download_source.pop(video_id, None)
-                self._active_rss_meta.pop(video_id, None)
-            self._refresh_download_concurrency()
-
-    async def _download_worker(self) -> None:
-        queue = self._ensure_download_worker()
-        in_flight: set[asyncio.Task[None]] = set()
-
-        async def reap_one() -> None:
-            if not in_flight:
-                return
-            done, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                in_flight.discard(task)
-                try:
-                    await task
-                except Exception:
-                    logger.exception("Download task failed unexpectedly")
-
-        async def wait_for_slot() -> None:
-            while len(in_flight) >= self._download_concurrency_limit():
-                await reap_one()
-
-        try:
-            while True:
-                await wait_for_slot()
-
-                if queue.empty():
-                    if in_flight:
-                        await reap_one()
-                        continue
-                    if self._deferred_403_jobs:
-                        pending = self._deferred_403_jobs
-                        self._deferred_403_jobs = []
-                        for deferred in pending:
-                            queue.put_nowait(replace(deferred, retry_403=True))
-                        self._refresh_download_concurrency()
-                        continue
-                    self._download_speed_ema = 0.0
-                    self._refresh_download_concurrency()
-                    self._stop_library_hotload_timer()
-                    self.rescanLibrary()
-                    job = await queue.get()
-                else:
-                    job = await queue.get()
-
-                task = asyncio.create_task(self._run_download_job(job))
-                in_flight.add(task)
-
-                def _on_task_done(t: asyncio.Task[None]) -> None:
-                    in_flight.discard(t)
-                    queue.task_done()
-
-                task.add_done_callback(_on_task_done)
-        except Exception:
-            logger.exception("Download worker crashed, restarting")
-            self._download_worker_started = False
-            self._download_queue = None
-            self._download_jobs_in_progress = 0
-            self._deferred_403_jobs.clear()
-            self._refresh_download_concurrency()
-
-    async def _execute_download(
-        self,
-        url: str,
-        media_type: str,
-        output_subdir: str = "",
-        quality: str = "1080",
-    ) -> tuple[str, str]:
-        active_id = url
-
-        def hook(data: dict) -> None:
-            nonlocal active_id
-            self.downloader._check_cancelled()
-            info = data.get("info_dict") or {}
-            active_id = str(info.get("id") or active_id)
-            if data.get("status") != "downloading":
-                return
-            downloaded = float(data.get("downloaded_bytes") or 0)
-            total = float(data.get("total_bytes") or data.get("total_bytes_estimate") or 0)
-            percent = min(100.0, downloaded / total * 100.0) if total else 0.0
-            self.downloadProgress.emit(active_id, percent)
-            speed = float(data.get("speed") or 0)
-            if speed > 0:
-                self._record_download_speed(speed)
-
-        if media_type not in {"music", "video", "podcast", "podcast_video"}:
-            raise DownloadFailed("Loại media không được hỗ trợ.")
-        return await self.downloader.download(
-            url,
-            media_type,
-            hook,
-            output_subdir=output_subdir or None,
-            quality=quality,
-            cookies_browser=self._youtube_cookies_browser,
-        )
 
     @pyqtSlot()
     def openUiConfigDir(self) -> None:

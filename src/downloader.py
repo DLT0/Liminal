@@ -68,6 +68,58 @@ def _sanitize_folder_name(name: str) -> str:
     return cleaned[:120]
 
 
+def resolve_cookie_options(
+    cookies_browser: str = "",
+    cookiefile_path: Path | None = None,
+) -> dict:
+    """Resolve yt-dlp cookie options with a priority fallback strategy.
+
+    1. Try ``cookiesfrombrowser`` with the user-configured browser.
+       Catches *all* exceptions (missing secretstorage, locked DB, etc.).
+    2. Fall back to ``cookiefile`` if a pre-exported cookie file exists.
+    3. Return an empty dict (anonymous) with a clear warning otherwise.
+
+    Returns a dict safe to ``opts.update()`` directly into ydl_opts.
+    """
+    if not cookies_browser:
+        logger.info("resolve_cookie_options: no browser configured, "
+                     "trying cookiefile fallback")
+    else:
+        try:
+            yt_dlp.cookies.extract_cookies_from_browser(cookies_browser)
+        except Exception:
+            logger.info(
+                "resolve_cookie_options: cookiesfrombrowser('%s') unavailable — "
+                "browser may be locked, secretstorage missing, or permission denied. "
+                "Falling back to cookiefile.",
+                cookies_browser,
+            )
+        else:
+            logger.info(
+                "resolve_cookie_options: using cookiesfrombrowser('%s')",
+                cookies_browser,
+            )
+            return {"cookiesfrombrowser": (cookies_browser,)}
+
+    if cookiefile_path is None:
+        cookiefile_path = Path.home() / ".config" / "liminal" / "cookies.txt"
+
+    if cookiefile_path.is_file():
+        logger.info(
+            "resolve_cookie_options: using cookiefile='%s'",
+            cookiefile_path,
+        )
+        return {"cookiefile": str(cookiefile_path)}
+
+    logger.warning(
+        "resolve_cookie_options: NO cookie source available — "
+        "running anonymous. YouTube may block or rate-limit requests. "
+        "Configure a browser in Settings or export cookies to %s",
+        cookiefile_path,
+    )
+    return {}
+
+
 def _duration_text(value: object) -> str:
     try:
         seconds = max(0, int(float(value or 0)))
@@ -155,6 +207,16 @@ def _video_format_for_quality(quality: str) -> str:
     }
     return mapping.get(quality, mapping["1080"])
 
+
+# Progressive format fallback tiers ordered highest → lowest quality.
+# Tier 0: best video+audio mp4 streams with container-agnostic fallback.
+# Tier 1: 1080p combined file (single-stream, no merge needed).
+# Tier 2: audio-only — matches original behaviour from commit 7651c65.
+FORMAT_TIERS: list[str] = [
+    "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/best[ext=mp4]/best",
+    "best[height<=1080]",
+    "bestaudio/best",
+]
 
 _VIDEO_YTDLP_OPTS: dict = {
     "merge_output_format": "mkv",
@@ -365,6 +427,7 @@ class Downloader:
         output_subdir: str | None = None,
         quality: str = "1080",
         cookies_browser: str = "",
+        on_fallback: Callable[[str], None] | None = None,
     ) -> tuple[str, str]:
         error = self.availability_error(require_ffmpeg=media_type in {
             "music", "video", "podcast", "podcast_video",
@@ -411,15 +474,14 @@ class Downloader:
             },
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["web_creator", "ios", "web", "mweb"],
+                    "player_client": ["ios", "android", "web"],
                 },
             },
             "postprocessor_args": {
                 "ffmpeg_i": ["-hwaccel", "none"],
             },
         }
-        if cookies_browser:
-            opts["cookiesfrombrowser"] = (cookies_browser,)
+        opts.update(resolve_cookie_options(cookies_browser))
         is_yt = "youtube.com" in target or "youtu.be" in target or "youtube" in target.lower()
         audio_like = (media_type == "music") or (media_type == "podcast" and not is_yt)
         if audio_like:
@@ -438,7 +500,6 @@ class Downloader:
                 ],
             })
         else:
-            opts["format"] = _video_format_for_quality(quality)
             opts.update(_VIDEO_YTDLP_OPTS)
             if media_type in {"podcast", "podcast_video"}:
                 for key in ("writesubtitles", "writeautomaticsub", "subtitleslangs", "subtitlesformat"):
@@ -463,81 +524,84 @@ class Downloader:
                     final_path = _resolved_download_path(prepared, resolve_kind)
                     return video_id, str(final_path.resolve())
 
-            try:
-                if is_google_drive_url(target) and not is_google_drive_folder(target):
-                    return download_google_drive_file(
-                        target,
-                        output_dir,
-                        "music" if audio_like else "video",
-                        progress_hook,
+            if is_google_drive_url(target) and not is_google_drive_folder(target):
+                return download_google_drive_file(
+                    target,
+                    output_dir,
+                    "music" if audio_like else "video",
+                    progress_hook,
+                )
+
+            # Only apply FORMAT_TIERS to YouTube video/podcast_video.
+            # Audio-only and non-YouTube use a single format string as-is.
+            try_tiers = not audio_like and is_yt
+            tiers = FORMAT_TIERS if try_tiers else [opts.get("format", "best")]
+
+            last_exc: Exception | None = None
+            for idx, fmt_str in enumerate(tiers):
+                if idx > 0:
+                    logger.info(
+                        "Falling back to FORMAT_TIERS[%d]='%s'",
+                        idx, fmt_str,
                     )
-                return _do_download(opts)
-            except GoogleDriveError as exc:
-                text = str(exc)
-                if "403" in text:
-                    raise Download403Failed(text) from exc
-                raise DownloadFailed(text) from exc
-            except Exception as exc:
-                text = str(exc)
-                # If subtitle download fails (e.g. HTTP 429 rate limit),
-                # retry without subtitles so the main media still succeeds.
-                if "Unable to download video subtitles" in text:
-                    try:
-                        opts_without_subs = dict(opts)
-                        opts_without_subs["writesubtitles"] = False
-                        opts_without_subs["writeautomaticsub"] = False
-                        return _do_download(opts_without_subs)
-                    except Exception as retry_exc:
-                        text2 = str(retry_exc)
-                        message = f"Tải xuống thất bại: {retry_exc}"
-                        if "403" in text2:
-                            raise Download403Failed(message) from retry_exc
-                        raise DownloadFailed(message) from retry_exc
+                    if on_fallback is not None:
+                        try:
+                            on_fallback(fmt_str)
+                        except Exception:
+                            pass
 
-                # If cookie loading fails (e.g. missing secretstorage on Linux),
-                # retry without cookies so the download still succeeds.
-                if ("secretstorage" in text or "failed to load cookies" in text
-                        or "CookieLoadError" in text or "cookies" in text.lower()):
-                    logger.warning("Cookie loading failed, retrying without cookies: %s", text[:120])
-                    opts_without_cookies = dict(opts)
-                    opts_without_cookies.pop("cookiesfrombrowser", None)
-                    try:
-                        return _do_download(opts_without_cookies)
-                    except Exception as retry_exc:
-                        text2 = str(retry_exc)
-                        message = f"Tải xuống thất bại: {retry_exc}"
-                        if "403" in text2:
-                            raise Download403Failed(message) from retry_exc
-                        raise DownloadFailed(message) from retry_exc
+                tier_opts = dict(opts)
+                tier_opts["format"] = fmt_str
 
-                # If video format is not available (e.g. YouTube anti-bot blocks),
-                # retry with audio-only — sufficient for music/podcasts.
-                if ("Requested format is not available" in text
-                        or "Only images are available for download" in text):
-                    logger.warning("Video format unavailable, retrying with audio-only: %s", text[:150])
-                    opts_audio = dict(opts)
-                    opts_audio["format"] = "bestaudio/best"
-                    opts_audio.pop("merge_output_format", None)
-                    for key in ("writesubtitles", "writeautomaticsub", "subtitleslangs", "subtitlesformat"):
-                        opts_audio.pop(key, None)
-                    opts_audio["postprocessors"] = [
-                        {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"},
-                        {"key": "FFmpegMetadata"},
-                        {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
-                        {"key": "EmbedThumbnail"},
-                    ]
-                    try:
-                        return _do_download(opts_audio)
-                    except Exception as retry_exc:
-                        text2 = str(retry_exc)
-                        message = f"Tải xuống thất bại: {retry_exc}"
-                        if "403" in text2:
-                            raise Download403Failed(message) from retry_exc
-                        raise DownloadFailed(message) from retry_exc
+                try:
+                    return _do_download(tier_opts)
+                except GoogleDriveError:
+                    raise
+                except Exception as exc:
+                    text = str(exc)
 
-                message = f"Tải xuống thất bại: {exc}"
-                if "403" in text:
-                    raise Download403Failed(message) from exc
-                raise DownloadFailed(message) from exc
+                    # Subtitle download failure → one retry without subtitles.
+                    if "Unable to download video subtitles" in text:
+                        try:
+                            tier_opts_no_subs = dict(tier_opts)
+                            tier_opts_no_subs["writesubtitles"] = False
+                            tier_opts_no_subs["writeautomaticsub"] = False
+                            return _do_download(tier_opts_no_subs)
+                        except GoogleDriveError:
+                            raise
+                        except Exception as sub_exc:
+                            sub_text = str(sub_exc)
+                            if "403" in sub_text:
+                                raise Download403Failed(f"Tải xuống thất bại: {sub_exc}") from sub_exc
+                            if ("Requested format is not available" in sub_text
+                                    or "Only images are available for download" in sub_text):
+                                logger.info(
+                                    "FORMAT_TIERS[%d]='%s' failed (subtitle retry too), trying next tier",
+                                    idx, fmt_str,
+                                )
+                                last_exc = sub_exc
+                                continue
+                            raise DownloadFailed(f"Tải xuống thất bại: {sub_exc}") from sub_exc
+
+                    # Format not available → advance to next tier.
+                    if ("Requested format is not available" in text
+                            or "Only images are available for download" in text):
+                        logger.info(
+                            "FORMAT_TIERS[%d]='%s' unavailable, trying next tier",
+                            idx, fmt_str,
+                        )
+                        last_exc = exc
+                        continue
+
+                    # Non-retryable error — raise immediately.
+                    if "403" in text:
+                        raise Download403Failed(f"Tải xuống thất bại: {exc}") from exc
+                    raise DownloadFailed(f"Tải xuống thất bại: {exc}") from exc
+
+            # All tiers exhausted.
+            raise DownloadFailed(
+                "Không thể tải xuống với bất kỳ chất lượng nào. "
+                "Hãy kiểm tra cookie trong Settings hoặc cập nhật yt-dlp lên bản mới nhất."
+            ) from last_exc
 
         return await loop.run_in_executor(None, blocking_download)
