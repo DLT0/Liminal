@@ -255,4 +255,4 @@ python3 app.py
 
 ## Giấy phép
 
-[MIT](LICENSE) — Copyright (c) 2026
+[MIT](LICENSE) — Copyright (c) 2026 Nguyễn Phước Lộc 
