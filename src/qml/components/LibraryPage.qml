@@ -344,6 +344,7 @@ Item {
 
                 TapHandler {
                     onTapped: {
+                        console.log("[DEBUG LibraryPage] tapped index=" + index + " isFolder=" + isFolder + " title=" + model.title + " path=" + model.path)
                         if (isFolder)
                             root.openCollectionRequested(index)
                         else
@@ -371,7 +372,7 @@ Item {
 
                 FolderCard {
                     anchors.fill: parent
-                    visible: isFolder && !root.useVinylStyle && !root.useVideoStyle
+                    visible: isFolder && !root.useVinylStyle && !root.useVideoStyle && model.kind !== "podcast"
                     title: model.title
                     subtitle: model.subtitle
                     imageSource: model.imageSource
@@ -441,7 +442,7 @@ Item {
                     anchors.top: parent.top
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    visible: !isFolder && !showVinyl && !root.useVideoStyle
+                    visible: (isFolder && model.kind === "podcast") || (!isFolder && !showVinyl && !root.useVideoStyle)
                     clickEnabled: false
                     widescreen: root.widescreenPosters
                     title: model.title

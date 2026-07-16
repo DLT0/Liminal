@@ -121,6 +121,10 @@ ApplicationWindow {
 
     Connections {
         target: backend
+        function onDebugToast(message) {
+            shareToast.text = message
+            shareToast.open()
+        }
         function onSeriesAiSortError(message) {
             shareToast.text = message
             shareToast.open()
@@ -277,26 +281,25 @@ ApplicationWindow {
                                 (width - 2 * Theme.contentPadding - (musicColumns - 1) * Theme.cardGap) / musicColumns
                             )
                             readonly property real musicCellHeight: Math.ceil(musicCellWidth + 52) + 8
-                            readonly property real musicRowHoverPad: Math.ceil(musicCellWidth * (Theme.hoverScale - 1.0))
                             readonly property real albumsHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.musicAlbumsModel.count) || 0) / musicColumns)
-                                    * (musicCellHeight + musicRowHoverPad) + 16
+                                    * musicCellHeight + 16
                             )
                             readonly property real singlesHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.musicSinglesModel.count) || 0) / musicColumns)
-                                    * (musicCellHeight + musicRowHoverPad) + 16
+                                    * musicCellHeight + 16
                             )
                             readonly property real searchHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.musicSearchModel.count) || 0) / musicColumns)
-                                    * (musicCellHeight + musicRowHoverPad) + 16
+                                    * musicCellHeight + 16
                             )
                             readonly property real sharedHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.musicSharedModel.count) || 0) / musicColumns)
-                                    * (musicCellHeight + musicRowHoverPad) + 16
+                                    * musicCellHeight + 16
                             )
                             readonly property bool showShared: backend.musicSharedModel.count > 0
                             readonly property bool inMusicDetail: backend.inMusicDetailView
@@ -506,34 +509,86 @@ ApplicationWindow {
                                 (width - 2 * Theme.contentPadding - (videoColumns - 1) * Theme.cardGap) / videoColumns
                             )
                             readonly property real videoCellHeight: Math.ceil(videoCellWidth / Theme.videoPosterAspect + 62) + 8
-                            readonly property real videoRowHoverPad: Math.ceil(videoCellWidth * (Theme.hoverScale - 1.0))
 
                             readonly property real sharedHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.videoSharedModel.count) || 0) / videoColumns)
-                                    * (videoCellHeight + videoRowHoverPad) + 16
+                                    * videoCellHeight + 16
                             )
+                            // Chiều cao khối đề xuất (sections + Đề xuất + Shorts) — theo implicitHeight
                             readonly property real seriesHeight: videoContent.showSeries
                                 ? Math.max(
                                     180,
                                     Math.ceil((Number(backend.videoSeriesModel.count) || 0) / videoColumns)
-                                        * (videoCellHeight + videoRowHoverPad) + 16
+                                        * videoCellHeight + 16
                                   )
                                 : 0
                             readonly property real myMoviesHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.videoMyMoviesModel.count) || 0) / videoColumns)
-                                    * (videoCellHeight + videoRowHoverPad) + 16
+                                    * videoCellHeight + 16
                             )
                             readonly property bool showSeries: backend.videoSeriesModel.count > 0
                             readonly property real searchHeight: Math.max(
                                 180,
                                 Math.ceil((Number(backend.videoSearchModel.count) || 0) / videoColumns)
-                                    * (videoCellHeight + videoRowHoverPad) + 16
+                                    * videoCellHeight + 16
                             )
 
 
                             readonly property bool showShared: backend.videoSharedModel.count > 0
+
+                            // ── Helpers: lọc playlist có video ──────────────────────
+                            property var videoPlaylists: []
+
+                            function refreshVideoPlaylists() {
+                                var allPlaylists = backend.getPlaylists() || []
+                                var model = backend.videoSuggestionsModel
+                                var count = Number(model ? model.count : 0) || 0
+                                var playlistItems = {}
+
+                                for (var i = 0; i < count; i++) {
+                                    var it = _videoItemAt(model, i)
+                                    var plId = (it && (it.playlist_id || it.playlistId)) || ""
+                                    plId = plId.toString().trim()
+                                    if (!plId) continue
+                                    if (!playlistItems[plId]) playlistItems[plId] = []
+                                    playlistItems[plId].push(i)
+                                }
+
+                                var playlistMeta = {}
+                                for (var p = 0; p < allPlaylists.length; p++) {
+                                    var pl = allPlaylists[p]
+                                    if (pl && pl.id) playlistMeta[pl.id] = pl
+                                }
+
+                                var out = []
+                                for (var pid in playlistItems) {
+                                    var meta = playlistMeta[pid]
+                                    out.push({
+                                        id: pid,
+                                        label: (meta && meta.label) ? meta.label : pid,
+                                        thumbnail: (meta && meta.thumbnail) ? meta.thumbnail : "",
+                                        itemCount: playlistItems[pid].length,
+                                        indices: playlistItems[pid]
+                                    })
+                                }
+                                videoPlaylists = out
+                            }
+
+                            function _videoItemAt(model, i) {
+                                if (!model) return null
+                                if (typeof model.itemAt === "function") return model.itemAt(i)
+                                if (typeof model.item_at === "function") return model.item_at(i)
+                                return null
+                            }
+
+                            Connections {
+                                target: backend
+                                function onSuggestionsChanged() { videoContent.refreshVideoPlaylists() }
+                            }
+
+                            Component.onCompleted: refreshVideoPlaylists()
 
                             SectionHeader {
                                 id: sharedTitle
@@ -554,8 +609,8 @@ ApplicationWindow {
                                 visible: !videoContent.inVideoDetail && !backend.videoSearchActive && videoContent.showShared
                                 gridColumns: videoContent.videoColumns
                                 model: backend.videoSharedModel
-                                onPlayRequested: function(index) { backend.playVideoShared(index) }
-                                onDownloadRequested: function(index) { backend.downloadSharedItem(index) }
+                                onPlayRequested: function(index) { console.log("[DEBUG main.qml] sharedVideo playRequested index=" + index); backend.playVideoShared(index) }
+                                onDownloadRequested: function(index) { console.log("[DEBUG main.qml] sharedVideo downloadRequested index=" + index); backend.downloadSharedItem(index) }
                                 onDismissRequested: function(index) { backend.dismissSharedItem(index) }
                             }
 
@@ -602,12 +657,68 @@ ApplicationWindow {
                                 onPlayAllRequested: backend.playMovieDetail()
                             }
 
-                            SectionHeader {
-                                id: myMoviesTitle
-                                x: Theme.contentPadding
+                            // ── Playlist video (mỗi playlist = 1 section) ─────────────────
+                            Column {
+                                id: videoPlaylistColumn
+                                x: 0
                                 y: videoContent.showShared
                                     ? videoSharedSection.y + videoSharedSection.height + 8
                                     : Theme.contentPadding
+                                width: parent.width
+                                visible: !videoContent.inVideoDetail && !backend.videoSearchActive
+
+                                Repeater {
+                                    model: videoContent.videoPlaylists
+                                    delegate: Column {
+                                        width: videoPlaylistColumn.width
+                                        visible: modelData.itemCount > 0
+
+                                        SectionHeader {
+                                            width: parent.width - 2 * Theme.contentPadding
+                                            x: Theme.contentPadding
+                                            text: modelData.label
+                                        }
+
+                                        Item { width: 1; height: 8 }
+
+                                        SuggestionsSection {
+                                            width: parent.width
+                                            // Lấy item từ model gốc theo index đã lưu
+                                            arrayModel: {
+                                                var list = []
+                                                var model = backend.videoSuggestionsModel
+                                                var indices = modelData.indices || []
+                                                for (var i = 0; i < indices.length; i++) {
+                                                    var it = videoContent._videoItemAt(model, indices[i])
+                                                    if (!it) continue
+                                                    list.push({
+                                                        title: it.title || "",
+                                                        subtitle: it.subtitle || "",
+                                                        categoryLabel: it.category_label || it.categoryLabel || "",
+                                                        imageSource: it.image || it.imageSource || "",
+                                                        downloadPercent: it.download_percent !== undefined ? it.download_percent : (it.downloadPercent || 0),
+                                                        downloadStatus: it.download_status || it.downloadStatus || "pending",
+                                                        isDownloading: it.is_downloading !== undefined ? it.is_downloading : !!it.isDownloading,
+                                                        audioOnly: it.audio_only !== undefined ? it.audio_only : (it.audioOnly !== undefined ? it.audioOnly : false),
+                                                        originalIndex: indices[i]
+                                                    })
+                                                }
+                                                return list
+                                            }
+                                            gridColumns: videoContent.videoColumns
+                                            emptyMinHeight: 0
+                                            onDownloadRequested: function(origIdx) { backend.downloadVideoSuggestion(origIdx) }
+                                        }
+
+                                        Item { width: 1; height: Theme.sectionSpacing }
+                                    }
+                                }
+                            }
+
+                            SectionHeader {
+                                id: myMoviesTitle
+                                x: Theme.contentPadding
+                                y: videoPlaylistColumn.y + videoPlaylistColumn.implicitHeight + 8
                                 width: parent.width - 2 * Theme.contentPadding
                                 text: "Phim của tôi"
                                 visible: !videoContent.inVideoDetail && !backend.videoSearchActive
@@ -635,7 +746,7 @@ ApplicationWindow {
                                 isPlaying: backend.isPlaying
                                 emptyTitle: "Chưa có phim nào"
                                 emptyMessage: "Thêm phim vào thư mục Videos."
-                                onPlayRequested: function(index) { backend.openVideoMyMovie(index) }
+                                onPlayRequested: function(index) { console.log("[DEBUG main.qml] videoMyMoviesPage playRequested index=" + index); backend.openVideoMyMovie(index) }
                             }
 
                             SectionHeader {
@@ -678,7 +789,7 @@ ApplicationWindow {
                                 isPlaying: backend.isPlaying
                                 emptyTitle: "Chưa có phim bộ"
                                 emptyMessage: "Tạo thư mục trong thư mục Videos để thêm phim bộ."
-                                onPlayRequested: function(index) { backend.playMedia(index) }
+                                onPlayRequested: function(index) { console.log("[DEBUG main.qml] videoSeriesPage playRequested index=" + index + " inCollectionView=" + backend.inCollectionView); backend.playMedia(index) }
                                 onOpenCollectionRequested: function(index) { backend.openVideoSeries(index) }
                                 onPlayAllRequested: backend.togglePlayCollection()
                                 onShufflePlayRequested: backend.playCollectionShuffled()
@@ -708,7 +819,7 @@ ApplicationWindow {
                                 isPlaying: backend.isPlaying
                                 emptyTitle: "Không tìm thấy video"
                                 emptyMessage: "Thử từ khóa khác."
-                                onPlayRequested: function(index) { backend.playVideoSearch(index) }
+                                onPlayRequested: function(index) { console.log("[DEBUG main.qml] videoSearch playRequested index=" + index); backend.playVideoSearch(index) }
                             }
                         }
                     }
@@ -740,34 +851,27 @@ ApplicationWindow {
                         anchors.fill: parent
                         visible: backend.currentPage === 6
 
-                        Column {
-                            anchors.centerIn: parent
-                            spacing: 12
+                        PodcastPage {
+                            id: podcastContent
+                            anchors.fill: parent
+                            // PodcastPage tự xử lý internal navigation:
+                            // main view / category detail (grid) / playlist detail (series)
+                            visible: !backend.inPodcastDetail
+                        }
 
-                            AppIcon {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                name: "podcasts"
-                                font.pixelSize: 64
-                                color: Theme.textMuted
-                                opacity: 0.5
-                            }
+                        PodcastDetailPage {
+                            id: podcastDetail
+                            anchors.fill: parent
+                            visible: backend.inPodcastDetail
+                            model: backend.podcastEpisodeModel
+                            showTitle: backend.podcastShowTitle
+                            showImage: backend.podcastShowImage
+                            showDescription: backend.podcastShowDescription
+                            showAuthor: backend.podcastShowAuthor
 
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Podcast"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.pageTitleSize
-                                font.weight: Font.Bold
-                                color: Theme.textPrimary
-                            }
-
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Tính năng đang phát triển"
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.bodySize
-                                color: Theme.textMuted
-                            }
+                            onBackClicked: backend.closePodcastDetail()
+                            onEpisodeClicked: function(index) { backend.playPodcastEpisode(index) }
+                            onDownloadRequested: function(feedUrl, guid) { console.log("[DEBUG main.qml] PodcastDetailPage downloadRequested feedUrl=" + feedUrl + " guid=" + guid); backend.downloadPodcastEpisode(feedUrl, guid) }
                         }
                     }
 
@@ -861,6 +965,8 @@ ApplicationWindow {
                 duration: backend.duration
                 shuffleOn: backend.shuffleOn
                 loopMode: backend.loopMode
+                isPodcast: backend.isPodcastMedia
+                playbackSpeed: backend.podcastPlaybackSpeed
 
                 onPreviousClicked: backend.previous()
                 onPlayClicked: backend.togglePause()
@@ -871,6 +977,9 @@ ApplicationWindow {
                 onVolumeAdjusted: function(v) { backend.setVolume(v) }
                 onSeekRequested: function(pos) { backend.seekTo(pos) }
                 onSettingsClicked: backend.setCurrentPage(5)
+                onSkipBackClicked: backend.seekPodcastRelative(-15)
+                onSkipForwardClicked: backend.seekPodcastRelative(30)
+                onSpeedChanged: function(speed) { backend.setPodcastPlaybackSpeed(speed) }
             }
         }
 

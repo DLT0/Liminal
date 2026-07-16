@@ -15,6 +15,12 @@ Item {
     signal clicked()
     signal contextMenuRequested(real x, real y)
 
+    readonly property bool hovered: hoverHandler.hovered
+
+    HoverHandler {
+        id: hoverHandler
+    }
+
     function resolvedThumbnail(index) {
         if (index < 0 || index >= trackThumbnails.length)
             return ""
@@ -34,20 +40,9 @@ Item {
         return trackCount + " bài"
     }
 
-    readonly property real cardScale: hoverHandler.hovered ? Theme.hoverScale : 1.0
 
     width: implicitWidth
     height: artBlock.height + textBlock.implicitHeight
-
-    scale: cardScale
-    transformOrigin: Item.Center
-
-    Behavior on scale {
-        NumberAnimation {
-            duration: Theme.hoverDuration
-            easing.type: Easing.OutCubic
-        }
-    }
 
     Column {
         width: parent.width
@@ -108,42 +103,38 @@ Item {
                 }
 
                 Rectangle {
-                    width: Theme.playButtonSize * 0.75
-                    height: width
-                    radius: width / 2
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.margins: 10
-                    opacity: hoverHandler.hovered ? 1.0 : 0.0
-                    visible: opacity > 0
+                    anchors.fill: parent
+                    radius: Theme.libraryCardRadius
+                    color: root.hovered ? "#14ffffff" : "transparent"
+
+                    Behavior on color { ColorAnimation { duration: 100 } }
+                }
+
+                AppIcon {
+                    anchors.centerIn: parent
+                    name: "play_arrow"
+                    font.pixelSize: 36
+                    color: Theme.textPrimary
+                    opacity: root.hovered ? 1.0 : 0.0
 
                     Behavior on opacity {
-                        NumberAnimation { duration: Theme.colorDuration }
-                    }
-
-                    color: Theme.accent
-
-                    AppIcon {
-                        anchors.centerIn: parent
-                        name: "play_arrow"
-                        filled: true
-                        font.pixelSize: 22
-                        color: "#000000"
+                        NumberAnimation { duration: 100 }
                     }
                 }
+
+
             }
 
             Rectangle {
                 anchors.fill: parent
                 radius: Theme.libraryCardRadius
                 color: "transparent"
-                border.color: hoverHandler.hovered ? Theme.accentStart : Theme.cardBorder
-                border.width: 1
+                border.color: root.hovered ? root.accentColor : Theme.cardBorder
+                border.width: 2
 
-                Behavior on border.color {
-                    ColorAnimation { duration: Theme.colorDuration }
-                }
+                Behavior on border.color { ColorAnimation { duration: 100 } }
             }
+
         }
 
         Column {
@@ -173,17 +164,16 @@ Item {
         }
     }
 
-    HoverHandler {
-        id: hoverHandler
-        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchScreen
-    }
 
     MouseArea {
         anchors.fill: parent
-        acceptedButtons: Qt.RightButton
-        z: 1
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        cursorShape: Qt.PointingHandCursor
         onClicked: function(mouse) {
-            root.contextMenuRequested(mouse.x, mouse.y)
+            if (mouse.button === Qt.LeftButton)
+                root.clicked()
+            else if (mouse.button === Qt.RightButton)
+                root.contextMenuRequested(mouse.x, mouse.y)
         }
     }
 }

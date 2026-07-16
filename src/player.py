@@ -109,6 +109,14 @@ class LiminalPlayer:
             self.state.volume = max(0, min(100, volume))
 
         saved_volume = self.state.volume
+        if path.startswith("file://"):
+            from urllib.parse import urlparse, unquote
+            try:
+                parsed = urlparse(path)
+                path = unquote(parsed.path)
+            except Exception:
+                path = path[7:]
+
         is_remote = path.startswith(("http://", "https://"))
         media_title = title or (
             "Streaming" if is_remote else Path(path).stem
@@ -141,7 +149,7 @@ class LiminalPlayer:
         cmd = [
             _mpv_executable() or "mpv",
             f"--input-ipc-server={IPC_SOCKET}",
-            "--keep-open=no",
+            "--keep-open=always",
             "--no-video",
             "--no-terminal",
             "--msg-level=all=no",
@@ -252,6 +260,14 @@ class LiminalPlayer:
         self.state.volume = vol
         if self._writer:
             await self._send_command(["set_property", "volume", vol])
+
+    async def set_speed(self, speed: float) -> None:
+        if self._writer:
+            await self._send_command(["set_property", "speed", speed])
+
+    async def seek_relative(self, seconds: float) -> None:
+        if self._writer and self.state.status != PlaybackStatus.STOPPED:
+            await self._send_command(["seek", seconds, "relative"])
 
     async def set_mute(self, muted: bool) -> None:
         if self._writer:
@@ -397,7 +413,9 @@ class LiminalPlayer:
                 reason = msg.get("reason", _END_FILE_EOF)
                 self.state.status = PlaybackStatus.STOPPED
                 self.state.time_pos = 0.0
-                # Only auto-advance on natural EOF; explicit stop must not race it.
+                # Only auto-advance on natural EOF.
+                # NOTE: mpv --keep-open=always may not send this event on some
+                # versions, so PlayerBridge._poll() has a position-based fallback.
                 if mpv_end_reason_is_eof(reason) and self._on_end_file:
                     self._on_end_file()
             elif ev == "shutdown":
@@ -451,6 +469,7 @@ class PlayerBridge(QObject):
         super().__init__(parent)
         self._player = LiminalPlayer()
         self._prev_state: Optional[PlaybackState] = None
+        self._poll_eof_emitted = False  # prevent duplicate track_ended from poll
 
         self._timer = QTimer(self)
         self._timer.setInterval(500)
@@ -477,6 +496,7 @@ class PlayerBridge(QObject):
         muted: bool = False,
         start_pos: float = 0.0,
     ) -> None:
+        self._poll_eof_emitted = False  # reset for new track
         asyncio.ensure_future(
             self._player.play(
                 path,
@@ -500,6 +520,12 @@ class PlayerBridge(QObject):
     def set_volume(self, vol: int) -> None:
         asyncio.ensure_future(self._player.set_volume(vol))
 
+    def set_speed(self, speed: float) -> None:
+        asyncio.ensure_future(self._player.set_speed(speed))
+
+    def seek_relative(self, seconds: float) -> None:
+        asyncio.ensure_future(self._player.seek_relative(seconds))
+
     def set_mute(self, muted: bool) -> None:
         asyncio.ensure_future(self._player.set_mute(muted))
 
@@ -511,10 +537,29 @@ class PlayerBridge(QObject):
         self._player.cleanup_sync()
 
     def _poll(self) -> None:
-        """Emit signals if state has changed since last poll."""
+        """Emit signals if state has changed since last poll.
+
+        Also serves as a fallback EOF detector: mpv --keep-open=always may
+        not send the 'end-file' IPC event on some versions, so we detect
+        end-of-track when position reaches duration - 1s.
+        _poll_eof_emitted prevents double-firing when both paths trigger.
+        """
         self._player.sync_process_state()
         s = self._player.state
         prev = self._prev_state
+
+        # Position-based EOF fallback.
+        # mpv --keep-open=always may not send 'end-file' on some versions,
+        # so we detect end-of-track when position reaches duration - 1s.
+        # _poll_eof_emitted prevents double-firing when IPC end-file also arrives.
+        if (
+            s.status == PlaybackStatus.PLAYING
+            and s.duration > 0.5
+            and s.time_pos > 0
+            and s.time_pos >= s.duration - 1.0
+            and not self._poll_eof_emitted
+        ):
+            self._on_track_end()
 
         if prev is not None:
             if s.time_pos != prev.time_pos or s.duration != prev.duration:
@@ -535,6 +580,11 @@ class PlayerBridge(QObject):
         )
 
     def _on_track_end(self) -> None:
+        # Guard against double-emission: both poll-based EOF and IPC end-file
+        # can fire for the same track. Only one should produce track_ended.
+        if self._poll_eof_emitted:
+            return
+        self._poll_eof_emitted = True
         # Defer so we never auto-advance/replay from inside the IPC listener task.
         QTimer.singleShot(0, self.track_ended.emit)
 

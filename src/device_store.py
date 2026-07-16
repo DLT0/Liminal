@@ -1,4 +1,4 @@
-"""Persistent device identity for media share (Phase 1 — no GitHub OAuth)."""
+"""Persistent local device identity for media share."""
 
 from __future__ import annotations
 

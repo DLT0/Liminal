@@ -389,6 +389,32 @@ Item {
                                 }
                             }
                         }
+
+                        SettingsSection {
+                            Layout.fillWidth: true
+                            iconName: "cookie"
+                            title: "Cookie trình duyệt cho YouTube"
+                            subtitle: "Dùng cookie từ trình duyệt để giảm lỗi HTTP 403 khi tải video YouTube."
+
+                            StyledComboBox {
+                                Layout.fillWidth: true
+                                model: [
+                                    "Không dùng cookie",
+                                    "Firefox",
+                                    "Chrome",
+                                    "Chromium",
+                                    "Brave",
+                                    "Edge",
+                                    "Opera"
+                                ]
+                                readonly property var browserKeys: ["", "firefox", "chrome", "chromium", "brave", "edge", "opera"]
+                                currentIndex: {
+                                    var idx = browserKeys.indexOf(backend.youtubeCookiesBrowser)
+                                    return idx >= 0 ? idx : 0
+                                }
+                                onActivated: backend.setYoutubeCookiesBrowser(browserKeys[index])
+                            }
+                        }
                     }
 
                     Item {

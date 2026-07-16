@@ -52,7 +52,7 @@ DEFAULT_UI: dict = {
         "grid_columns": 5,
         "content_padding": 24,
         "card_radius": 12,
-        "card_gap": 20,
+        "card_gap": 2,
     },
 }
 
@@ -343,7 +343,7 @@ def normalize_ui_config(data: dict | None) -> dict:
         layout.get("card_radius"), DEFAULT_UI["layout"]["card_radius"], minimum=0, maximum=32
     )
     layout["card_gap"] = _normalize_int(
-        layout.get("card_gap"), DEFAULT_UI["layout"]["card_gap"], minimum=4, maximum=48
+        layout.get("card_gap"), DEFAULT_UI["layout"]["card_gap"], minimum=2, maximum=48
     )
     return merged
 

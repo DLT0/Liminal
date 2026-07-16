@@ -61,6 +61,14 @@ QtObject {
     readonly property int focusListRadius:   10
     readonly property int cardGap:         uiConfig.cardGap
     readonly property real videoPosterAspect: 16 / 9
+    // Shorts: khung dọc nhẹ hơn video ngang (vẫn dùng poster 16:9 trong grid đề xuất)
+    readonly property real shortsPosterAspect: 16 / 9
+    readonly property real podcastCoverAspect: 1.0
+    readonly property int podcastCardRadius: 8
+    // Spacing chuẩn giữa các section (Đề xuất / Đã tải / Shorts…)
+    readonly property int sectionSpacing: 40
+    readonly property int chipSectionGap: 32
+    readonly property int emptyStateMinHeight: 200
 
     readonly property string fontFamily: "Inter, Segoe UI, Noto Sans, sans-serif"
     readonly property string monoFontFamily: "JetBrains Mono, Fira Code, Consolas, monospace"

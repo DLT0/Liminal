@@ -11,6 +11,11 @@ Item {
     property int currentPage: 0
     property string searchPlaceholder: uiConfig.searchPlaceholder
 
+    readonly property bool hidePageTitle: false
+    readonly property bool showSearch: root.currentPage !== 4
+        && root.currentPage !== 5
+        && root.currentPage !== 7
+
     signal searchChanged(string text)
     signal searchSubmitted(string text)
     signal redeemShareClicked()
@@ -30,13 +35,20 @@ Item {
 
         RowLayout {
             spacing: 12
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
 
             Text {
+                visible: !root.hidePageTitle
                 text: root.pageTitle
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.pageTitleSize
                 font.weight: Font.Bold
                 color: Theme.textPrimary
+                elide: Text.ElideRight
+                Layout.maximumWidth: root.showSearch
+                    ? Math.max(80, root.width - uiConfig.searchWidth - 80)
+                    : root.width
             }
 
             Rectangle {
@@ -77,14 +89,19 @@ Item {
                     onClicked: root.redeemShareClicked()
                 }
             }
+
+            Item { Layout.fillWidth: true }
         }
 
-        Item { Layout.fillWidth: true }
-
+        // Search luôn cùng hàng (không wrap) — thu hẹp khi viewport hẹp
         Item {
-            Layout.preferredWidth: root.currentPage === 4 ? 0 : uiConfig.searchWidth
+            visible: root.showSearch
+            Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+            Layout.preferredWidth: Math.min(uiConfig.searchWidth, Math.max(180, root.width * 0.38))
+            Layout.minimumWidth: 160
+            Layout.maximumWidth: uiConfig.searchWidth
             Layout.preferredHeight: 44
-            visible: root.currentPage !== 4 && root.currentPage !== 5 && root.currentPage !== 6 && root.currentPage !== 7
+            Layout.fillWidth: false
             clip: false
 
             Rectangle {

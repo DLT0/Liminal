@@ -18,25 +18,19 @@ Item {
     property color accentColor: Theme.accentEnd
     property bool widescreen: false
     property bool clickEnabled: true
+    readonly property bool hovered: hoverHandler.hovered
 
     signal clicked()
 
     readonly property real posterAspect: widescreen ? Theme.videoPosterAspect : 1
 
-    readonly property real cardScale: hoverMa.containsMouse ? Theme.hoverScale : 1.0
+    HoverHandler {
+        id: hoverHandler
+    }
+
 
     width: implicitWidth
     height: poster.height + titleLabel.implicitHeight + subtitleLabel.implicitHeight + 12
-
-    scale: cardScale
-    transformOrigin: Item.Center
-
-    Behavior on scale {
-        NumberAnimation {
-            duration: Theme.hoverDuration
-            easing.type: Easing.OutCubic
-        }
-    }
 
     // Poster
     Item {
@@ -126,8 +120,18 @@ Item {
             anchors.fill: parent
             radius: Theme.libraryCardRadius
             color: "transparent"
-            border.color: Theme.cardBorder
+            border.color: root.hovered ? root.accentColor : Theme.cardBorder
             border.width: 1
+
+            Behavior on border.color { ColorAnimation { duration: 100 } }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.libraryCardRadius
+            color: root.hovered ? "#14ffffff" : "transparent"
+
+            Behavior on color { ColorAnimation { duration: 100 } }
         }
     }
 
@@ -148,7 +152,6 @@ Item {
         id: hoverMa
         anchors.fill: poster
         enabled: root.clickEnabled
-        hoverEnabled: true
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor
         onClicked: function(mouse) {

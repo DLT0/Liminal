@@ -23,7 +23,6 @@ Item {
             return imageSource
         return "file://" + imageSource
     }
-    readonly property real cardScale: hoverMa.containsMouse ? Theme.hoverScale : 1.0
     readonly property string badgeText: {
         if (root.episodeCount > 0)
             return root.episodeCount + " tập"
@@ -34,16 +33,6 @@ Item {
 
     width: implicitWidth
     height: thumbBlock.height + textBlock.implicitHeight
-
-    scale: cardScale
-    transformOrigin: Item.Center
-
-    Behavior on scale {
-        NumberAnimation {
-            duration: Theme.hoverDuration
-            easing.type: Easing.OutCubic
-        }
-    }
 
     Column {
         width: parent.width
@@ -113,36 +102,9 @@ Item {
                     }
                 }
 
-                Rectangle {
-                    anchors.fill: parent
-                    color: "#66000000"
-                    opacity: hoverMa.containsMouse ? 1 : 0
 
-                    Behavior on opacity {
-                        NumberAnimation { duration: 150 }
-                    }
-
-                    AppIcon {
-                        anchors.centerIn: parent
-                        name: "play_arrow"
-                        filled: true
-                        font.pixelSize: 44
-                        color: "#ffffff"
-                    }
-                }
             }
 
-            Rectangle {
-                anchors.fill: parent
-                radius: 4
-                color: "transparent"
-                border.color: hoverMa.containsMouse ? "#ffffff" : Theme.cardBorder
-                border.width: hoverMa.containsMouse ? 2 : 1
-
-                Behavior on border.color {
-                    ColorAnimation { duration: Theme.colorDuration }
-                }
-            }
         }
 
         Column {
@@ -178,7 +140,6 @@ Item {
         id: hoverMa
         anchors.fill: parent
         enabled: root.clickEnabled
-        hoverEnabled: true
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor
         onClicked: function(mouse) {

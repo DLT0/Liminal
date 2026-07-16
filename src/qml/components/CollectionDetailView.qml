@@ -447,12 +447,16 @@ Item {
                 width: musicListView.width
                 height: 56
                 radius: Theme.libraryCardRadius
-                color: musicRowHover.hovered ? Theme.bgCardHover : Theme.bgCard
+                color: musicRowHover.hovered ? Qt.lighter(Theme.bgCard, 1.06) : Theme.bgCard
+
+                Behavior on color { NumberAnimation { duration: 100 } }
 
                 property string rowPath: model.path
                 property string rowImage: model.imageSource
 
-                HoverHandler { id: musicRowHover }
+                HoverHandler {
+                    id: musicRowHover
+                }
 
                 TapHandler {
                     onTapped: {
@@ -512,6 +516,13 @@ Item {
                             fillMode: Image.PreserveAspectCrop
                             visible: rowImage !== ""
                         }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "#ffffff"
+                            opacity: musicRowHover.hovered ? 0.08 : 0
+                            Behavior on opacity { NumberAnimation { duration: 100 } }
+                        }
                     }
 
                     Column {
@@ -551,14 +562,14 @@ Item {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: root.showDownloadState
-                        text: model.downloadStatus === "done"
+                        text: (model.download_status !== undefined ? model.download_status : model.downloadStatus) === "done"
                             ? "Đã tải"
-                            : (model.isDownloading
-                                ? ("Đang tải " + Math.round(model.downloadPercent) + "%")
+                            : ((model.is_downloading !== undefined ? model.is_downloading : model.isDownloading)
+                                ? ("Đang tải " + Math.round(model.download_percent !== undefined ? model.download_percent : model.downloadPercent) + "%")
                                 : "Nhấp để tải")
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.captionSize
-                        color: model.downloadStatus === "done" ? Theme.textSecondary : Theme.textMuted
+                        color: (model.download_status !== undefined ? model.download_status : model.downloadStatus) === "done" ? Theme.textSecondary : Theme.textMuted
                     }
                 }
             }
@@ -1003,15 +1014,16 @@ Item {
                         anchors.leftMargin: 24
                         anchors.rightMargin: 24
                         radius: 6
-                        color: epHover.hovered ? Theme.bgCardHover : "transparent"
-                        border.color: epHover.hovered ? Theme.cardBorder : "transparent"
+                        color: epHover.hovered ? Qt.lighter(Theme.bgBase, 1.04) : "transparent"
+                        border.color: epHover.hovered ? Qt.lighter(Theme.border, 1.2) : "transparent"
                         border.width: 1
 
-                        Behavior on color {
-                            ColorAnimation { duration: Theme.colorDuration }
-                        }
+                        Behavior on color { NumberAnimation { duration: 100 } }
+                        Behavior on border.color { NumberAnimation { duration: 100 } }
 
-                        HoverHandler { id: epHover }
+                        HoverHandler {
+                            id: epHover
+                        }
 
                         TapHandler {
                             onTapped: {
@@ -1079,21 +1091,11 @@ Item {
 
                                     Rectangle {
                                         anchors.fill: parent
-                                        color: "#99000000"
-                                        opacity: epHover.hovered ? 1 : 0
-
-                                        Behavior on opacity {
-                                            NumberAnimation { duration: 150 }
-                                        }
-
-                                        AppIcon {
-                                            anchors.centerIn: parent
-                                            name: "play_arrow"
-                                            filled: true
-                                            font.pixelSize: 40
-                                            color: "#ffffff"
-                                        }
+                                        color: "#ffffff"
+                                        opacity: epHover.hovered ? 0.08 : 0
+                                        Behavior on opacity { NumberAnimation { duration: 100 } }
                                     }
+
                                 }
                             }
 

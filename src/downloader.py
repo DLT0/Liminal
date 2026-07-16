@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import threading
+import logging
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
+
+logger = logging.getLogger(__name__)
 
 try:
     import yt_dlp
@@ -31,10 +35,15 @@ class Download403Failed(DownloadFailed):
     """HTTP 403 during download — may be retried after the rest of a batch."""
 
 
+class DownloadCancelled(DownloadFailed):
+    """Download was cancelled by the user."""
+
+
 PLAYLIST_RESOLVE_LIMIT = 50
 _INVALID_FOLDER_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _YOUTUBE_ID_RE = re.compile(
-    r"(?:youtube\.com/(?:watch\?(?:[^&\s]+&)*v=|embed/|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})"
+    r"(?:youtube\.com/(?:watch\?(?:[^&\s]+&)*v=|embed/|shorts/|live/)|youtu\.be/(?:shorts/)?)"
+    r"([A-Za-z0-9_-]{11})"
 )
 
 
@@ -137,11 +146,11 @@ def _video_format_for_quality(quality: str) -> str:
     """
     quality = _normalize_video_quality(quality)
     mapping = {
-        "480": "bestvideo[height<=480]+bestaudio/best[height<=480]",
-        "720": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-        "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-        "2K": "bestvideo[height<=1440]+bestaudio/best[height<=1440]",
-        "4K": "bestvideo[height<=2160]+bestaudio/best[height<=2160]",
+        "480": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+        "720": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+        "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "2K": "bestvideo[height<=1440]+bestaudio/best[height<=1440]/best",
+        "4K": "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
         "Max": "bestvideo*+bestaudio/best",
     }
     return mapping.get(quality, mapping["1080"])
@@ -169,8 +178,8 @@ _VIDEO_YTDLP_OPTS: dict = {
     "writeinfojson": True,
     "writesubtitles": True,
     "writeautomaticsub": True,
-    "subtitleslangs": ["vi", "en"],
-    "subtitlesformat": "srt",
+    "subtitleslangs": ["vi"],
+    "subtitlesformat": "best",
     "postprocessors": [
         {"key": "FFmpegMetadata"},
         {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
@@ -196,9 +205,27 @@ def _resolved_download_path(prepared: Path, media_type: str) -> Path:
 class Downloader:
     """Run the blocking yt-dlp Python API in executor worker threads."""
 
-    def __init__(self, music_dir: Path, video_dir: Path):
+    def __init__(
+        self,
+        music_dir: Path,
+        video_dir: Path,
+        podcasts_dir: Path | None = None,
+    ):
         self.music_dir = music_dir
         self.video_dir = video_dir
+        self.podcasts_dir = podcasts_dir if podcasts_dir is not None else music_dir
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """Signal all active downloads to abort."""
+        self._cancel_event.set()
+
+    def _reset_cancel(self) -> None:
+        self._cancel_event.clear()
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_event.is_set():
+            raise DownloadCancelled("Tải xuống đã bị huỷ.")
 
     @staticmethod
     def availability_error(*, require_ffmpeg: bool = False) -> str | None:
@@ -337,35 +364,67 @@ class Downloader:
         progress_hook: Callable[[dict], None],
         output_subdir: str | None = None,
         quality: str = "1080",
+        cookies_browser: str = "",
     ) -> tuple[str, str]:
-        error = self.availability_error(require_ffmpeg=media_type in {"music", "video"})
+        error = self.availability_error(require_ffmpeg=media_type in {
+            "music", "video", "podcast", "podcast_video",
+        })
         if error:
             raise DownloadFailed(error)
-        if media_type not in {"music", "video"}:
+        if media_type not in {"music", "video", "podcast", "podcast_video"}:
             raise DownloadFailed("Loại media không được hỗ trợ.")
 
         target = url_or_id.strip()
         if not target.startswith(("http://", "https://")):
             target = f"https://www.youtube.com/watch?v={target}"
-        base_dir = self.music_dir if media_type == "music" else self.video_dir
+
+        if media_type in {"podcast", "podcast_video"}:
+            base_dir = self.podcasts_dir
+        elif media_type == "music":
+            base_dir = self.music_dir
+        else:
+            base_dir = self.video_dir
+
         subdir = _sanitize_folder_name(output_subdir) if output_subdir and output_subdir.strip() else ""
         output_dir = base_dir / subdir if subdir else base_dir
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        def _clean_title_hook(info, *args, **kwargs):
+            if info and info.get("title"):
+                import re
+                info["title"] = re.sub(r'[\\/*?:"<>|]', "-", info["title"])
+            return None
+
+        is_debug = logger.isEnabledFor(logging.DEBUG)
         opts = {
             "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
             "progress_hooks": [progress_hook],
+            "match_filter": _clean_title_hook,
             "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
+            "quiet": not is_debug,
+            "no_warnings": not is_debug,
+            "verbose": is_debug,
+            "windowsfilenames": True,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web_creator", "ios", "web", "mweb"],
+                },
+            },
+            "postprocessor_args": {
+                "ffmpeg_i": ["-hwaccel", "none"],
+            },
         }
-        if media_type == "music":
+        if cookies_browser:
+            opts["cookiesfrombrowser"] = (cookies_browser,)
+        is_yt = "youtube.com" in target or "youtu.be" in target or "youtube" in target.lower()
+        audio_like = (media_type == "music") or (media_type == "podcast" and not is_yt)
+        if audio_like:
             opts["format"] = "bestaudio/best"
-        else:
-            opts["format"] = _video_format_for_quality(quality)
-        if media_type == "music":
             opts.update({
-                # EmbedThumbnail consumes the downloaded thumbnail file after
-                # audio conversion; writethumbnail must therefore be enabled.
                 "writethumbnail": True,
                 "postprocessors": [
                     {
@@ -374,29 +433,45 @@ class Downloader:
                         "preferredquality": "0",
                     },
                     {"key": "FFmpegMetadata"},
+                    {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
                     {"key": "EmbedThumbnail"},
                 ],
             })
         else:
+            opts["format"] = _video_format_for_quality(quality)
             opts.update(_VIDEO_YTDLP_OPTS)
+            if media_type in {"podcast", "podcast_video"}:
+                for key in ("writesubtitles", "writeautomaticsub", "subtitleslangs", "subtitlesformat"):
+                    opts.pop(key, None)
+                opts["postprocessors"] = [
+                    p for p in opts.get("postprocessors", [])
+                    if p.get("key") != "FFmpegSubtitlesConvertor"
+                ]
 
+        # Resolve final path: podcast_video uses same extensions as video.
+        resolve_kind = "music" if audio_like else "video"
+
+        self._reset_cancel()
         loop = asyncio.get_running_loop()
 
         def blocking_download() -> tuple[str, str]:
+            def _do_download(dl_opts: dict) -> tuple[str, str]:
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    info = ydl.extract_info(target, download=True)
+                    video_id = str((info or {}).get("id") or url_or_id)
+                    prepared = Path(ydl.prepare_filename(info))
+                    final_path = _resolved_download_path(prepared, resolve_kind)
+                    return video_id, str(final_path.resolve())
+
             try:
                 if is_google_drive_url(target) and not is_google_drive_folder(target):
                     return download_google_drive_file(
                         target,
                         output_dir,
-                        media_type,
+                        "music" if audio_like else "video",
                         progress_hook,
                     )
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(target, download=True)
-                    video_id = str((info or {}).get("id") or url_or_id)
-                    prepared = Path(ydl.prepare_filename(info))
-                    final_path = _resolved_download_path(prepared, media_type)
-                    return video_id, str(final_path.resolve())
+                return _do_download(opts)
             except GoogleDriveError as exc:
                 text = str(exc)
                 if "403" in text:
@@ -404,6 +479,62 @@ class Downloader:
                 raise DownloadFailed(text) from exc
             except Exception as exc:
                 text = str(exc)
+                # If subtitle download fails (e.g. HTTP 429 rate limit),
+                # retry without subtitles so the main media still succeeds.
+                if "Unable to download video subtitles" in text:
+                    try:
+                        opts_without_subs = dict(opts)
+                        opts_without_subs["writesubtitles"] = False
+                        opts_without_subs["writeautomaticsub"] = False
+                        return _do_download(opts_without_subs)
+                    except Exception as retry_exc:
+                        text2 = str(retry_exc)
+                        message = f"Tải xuống thất bại: {retry_exc}"
+                        if "403" in text2:
+                            raise Download403Failed(message) from retry_exc
+                        raise DownloadFailed(message) from retry_exc
+
+                # If cookie loading fails (e.g. missing secretstorage on Linux),
+                # retry without cookies so the download still succeeds.
+                if ("secretstorage" in text or "failed to load cookies" in text
+                        or "CookieLoadError" in text or "cookies" in text.lower()):
+                    logger.warning("Cookie loading failed, retrying without cookies: %s", text[:120])
+                    opts_without_cookies = dict(opts)
+                    opts_without_cookies.pop("cookiesfrombrowser", None)
+                    try:
+                        return _do_download(opts_without_cookies)
+                    except Exception as retry_exc:
+                        text2 = str(retry_exc)
+                        message = f"Tải xuống thất bại: {retry_exc}"
+                        if "403" in text2:
+                            raise Download403Failed(message) from retry_exc
+                        raise DownloadFailed(message) from retry_exc
+
+                # If video format is not available (e.g. YouTube anti-bot blocks),
+                # retry with audio-only — sufficient for music/podcasts.
+                if ("Requested format is not available" in text
+                        or "Only images are available for download" in text):
+                    logger.warning("Video format unavailable, retrying with audio-only: %s", text[:150])
+                    opts_audio = dict(opts)
+                    opts_audio["format"] = "bestaudio/best"
+                    opts_audio.pop("merge_output_format", None)
+                    for key in ("writesubtitles", "writeautomaticsub", "subtitleslangs", "subtitlesformat"):
+                        opts_audio.pop(key, None)
+                    opts_audio["postprocessors"] = [
+                        {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"},
+                        {"key": "FFmpegMetadata"},
+                        {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
+                        {"key": "EmbedThumbnail"},
+                    ]
+                    try:
+                        return _do_download(opts_audio)
+                    except Exception as retry_exc:
+                        text2 = str(retry_exc)
+                        message = f"Tải xuống thất bại: {retry_exc}"
+                        if "403" in text2:
+                            raise Download403Failed(message) from retry_exc
+                        raise DownloadFailed(message) from retry_exc
+
                 message = f"Tải xuống thất bại: {exc}"
                 if "403" in text:
                     raise Download403Failed(message) from exc

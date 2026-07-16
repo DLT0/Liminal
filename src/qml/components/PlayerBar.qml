@@ -32,6 +32,9 @@ GlassPanel {
     property bool seeking: false
     property bool volumeAdjusting: false
 
+    property bool isPodcast: false
+    property real playbackSpeed: 1.0
+
     signal previousClicked()
     signal playClicked()
     signal nextClicked()
@@ -41,6 +44,9 @@ GlassPanel {
     signal muteClicked()
     signal seekRequested(real value)
     signal settingsClicked()
+    signal skipBackClicked()
+    signal skipForwardClicked()
+    signal speedChanged(real speed)
 
     function formatTime(seconds) {
         if (!seconds || seconds <= 0)
@@ -160,7 +166,43 @@ GlassPanel {
                     active: root.shuffleOn
                     opacity: root.hasMedia ? 1 : 0.45
                     enabled: root.hasMedia
+                    visible: !root.isPodcast
                     onClicked: root.shuffleClicked()
+                }
+
+                // Podcast: skip back -15s
+                Rectangle {
+                    width: Theme.controlButtonSize
+                    height: Theme.controlButtonSize
+                    radius: 8
+                    color: "transparent"
+                    visible: root.isPodcast
+                    opacity: root.hasMedia ? 1 : 0.45
+
+                    AppIcon {
+                        anchors.centerIn: parent
+                        name: "replay_10"
+                        font.pixelSize: 28
+                        color: Theme.textPrimary
+                    }
+
+                    Text {
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: -2
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "15"
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 8
+                        font.weight: Font.Bold
+                        color: Theme.textPrimary
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: root.hasMedia
+                        onClicked: root.skipBackClicked()
+                    }
                 }
 
                 IconButton {
@@ -206,6 +248,41 @@ GlassPanel {
                     onClicked: root.nextClicked()
                 }
 
+                // Podcast: skip forward +30s
+                Rectangle {
+                    width: Theme.controlButtonSize
+                    height: Theme.controlButtonSize
+                    radius: 8
+                    color: "transparent"
+                    visible: root.isPodcast
+                    opacity: root.hasMedia ? 1 : 0.45
+
+                    AppIcon {
+                        anchors.centerIn: parent
+                        name: "forward_30"
+                        font.pixelSize: 28
+                        color: Theme.textPrimary
+                    }
+
+                    Text {
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: -2
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "30"
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 8
+                        font.weight: Font.Bold
+                        color: Theme.textPrimary
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: root.hasMedia
+                        onClicked: root.skipForwardClicked()
+                    }
+                }
+
                 IconButton {
                     icon: root.loopIcon
                     iconSize: 22
@@ -214,7 +291,41 @@ GlassPanel {
                     active: root.loopActive
                     opacity: root.hasMedia ? 1 : 0.45
                     enabled: root.hasMedia
+                    visible: !root.isPodcast
                     onClicked: root.loopClicked()
+                }
+
+                // Podcast: playback speed
+                Rectangle {
+                    width: 40
+                    height: 28
+                    radius: 6
+                    color: speedMouse.containsMouse ? Theme.bgHighlight : Theme.inputBg
+                    visible: root.isPodcast
+                    opacity: root.hasMedia ? 1 : 0.45
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: root.playbackSpeed.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + "x"
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 12
+                        font.weight: Font.Bold
+                        color: Theme.accent
+                    }
+
+                    MouseArea {
+                        id: speedMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: root.hasMedia
+                        onClicked: {
+                            var speeds = [1.0, 1.25, 1.5, 2.0, 0.75]
+                            var idx = speeds.indexOf(root.playbackSpeed)
+                            var next = speeds[(idx + 1) % speeds.length]
+                            root.speedChanged(next)
+                        }
+                    }
                 }
             }
 

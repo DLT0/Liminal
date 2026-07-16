@@ -115,4 +115,8 @@ def __getattr__(name: str):
         from src.settings_store import get_books_dir
 
         return get_books_dir()
+    if name == "PODCASTS_DIR":
+        from src.settings_store import get_podcasts_dir
+
+        return get_podcasts_dir()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

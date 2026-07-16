@@ -49,8 +49,9 @@ APP_DEFAULTS: dict = {
 MUSIC_SUBDIR = "Music"
 VIDEOS_SUBDIR = "Videos"
 BOOKS_SUBDIR = "Books"
+PODCASTS_SUBDIR = "Podcasts"
 
-MEDIA_SUBDIRS = (MUSIC_SUBDIR, VIDEOS_SUBDIR, BOOKS_SUBDIR)
+MEDIA_SUBDIRS = (MUSIC_SUBDIR, VIDEOS_SUBDIR, BOOKS_SUBDIR, PODCASTS_SUBDIR)
 
 
 def _media_root_candidates(preferred: Path | None = None) -> list[Path]:
@@ -101,6 +102,7 @@ def media_layout(root: Path) -> dict[str, Path]:
         "music_dir": root / MUSIC_SUBDIR,
         "video_dir": root / VIDEOS_SUBDIR,
         "books_dir": root / BOOKS_SUBDIR,
+        "podcasts_dir": root / PODCASTS_SUBDIR,
     }
 
 
@@ -255,6 +257,7 @@ def _layout_to_settings(layout: dict[str, Path]) -> dict[str, str]:
         "music_dir": str(layout["music_dir"]),
         "video_dir": str(layout["video_dir"]),
         "books_dir": str(layout.get("books_dir", layout["media_root"] / BOOKS_SUBDIR)),
+        "podcasts_dir": str(layout["podcasts_dir"]),
     }
 
 
@@ -279,3 +282,7 @@ def get_video_dir() -> Path:
 
 def get_books_dir() -> Path:
     return Path(load_settings()["books_dir"])
+
+
+def get_podcasts_dir() -> Path:
+    return Path(load_settings()["podcasts_dir"])

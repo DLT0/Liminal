@@ -171,12 +171,12 @@ def _http_error_message(exc: urllib.error.HTTPError, *, series: bool = False) ->
     if detail == "mediaType không hợp lệ" and series:
         return (
             "Máy chủ chia sẻ chưa hỗ trợ phim bộ. "
-            "Cần deploy bản mới của 2FA-SHARE-HMD lên hoangminhduong.top."
+            "Cập nhật máy chủ rồi thử lại."
         )
     if detail == "mediaType không hợp lệ":
         return (
             "Máy chủ chia sẻ chưa hỗ trợ loại nội dung này. "
-            "Cần deploy bản mới của 2FA-SHARE-HMD lên hoangminhduong.top."
+            "Cập nhật máy chủ rồi thử lại."
         )
     if detail:
         return f"Không thể tạo mã chia sẻ: {detail}"
@@ -619,7 +619,7 @@ async def ai_sort_series_episodes(
     series_title: str,
     rows: list[dict],
 ) -> list[dict]:
-    """Ask the share server (OpenAI proxy) to assign season/episode/order."""
+    """Ask the remote sort service to assign season/episode/order."""
     if not rows:
         return []
 
@@ -670,6 +670,198 @@ async def ai_sort_series_episodes(
         raise ValueError("Phản hồi AI thiếu danh sách tập.")
 
     return apply_ai_sort_results(rows, ai_rows)
+
+
+async def ai_sort_podcast_playlist(
+    *,
+    playlist_title: str,
+    rows: list[dict],
+) -> list[dict]:
+    """Ask the remote sort service to order podcast playlist episodes."""
+    if not rows:
+        return []
+
+    payload_rows = []
+    for row in rows:
+        sid = str(row.get("id") or row.get("suggestion_id") or "").strip()
+        title = str(row.get("title") or "").strip()
+        if not sid or not title:
+            continue
+        payload_rows.append(
+            {
+                "id": sid,
+                "title": title,
+                "author": str(row.get("author") or "").strip(),
+                "sourceUrl": str(
+                    row.get("source_url") or row.get("sourceUrl") or row.get("url") or ""
+                ).strip(),
+            }
+        )
+    if not payload_rows:
+        return []
+
+    loop = asyncio.get_running_loop()
+    try:
+        response = await loop.run_in_executor(
+            None,
+            lambda: _request_json(
+                "POST",
+                "/api/suggestions/sort",
+                body={
+                    "playlistTitle": playlist_title.strip() or "Danh sách phát",
+                    "episodes": payload_rows,
+                },
+                timeout=_AI_SORT_TIMEOUT,
+            ),
+        )
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                detail = str(parsed.get("error") or "").strip()
+        except Exception:
+            detail = ""
+        if exc.code == 429:
+            raise ValueError("Quá nhiều yêu cầu AI. Thử lại sau.") from exc
+        if exc.code in (502, 503):
+            raise ValueError(detail or "Máy chủ AI chưa sẵn sàng.") from exc
+        raise ValueError(detail or f"AI sắp xếp thất bại (HTTP {exc.code}).") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError("Không thể kết nối máy chủ AI.") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("Phản hồi AI không hợp lệ.") from exc
+    except TimeoutError as exc:
+        raise ValueError("AI sắp xếp quá thời gian chờ.") from exc
+
+    if not isinstance(response, dict):
+        raise ValueError("Phản hồi AI không hợp lệ.")
+
+    ai_rows = response.get("episodes")
+    if not isinstance(ai_rows, list):
+        raise ValueError("Phản hồi AI thiếu danh sách tập.")
+
+    by_id = {str(r.get("id") or ""): r for r in rows if isinstance(r, dict)}
+    out: list[dict] = []
+    for entry in ai_rows:
+        if not isinstance(entry, dict):
+            continue
+        sid = str(entry.get("id") or "").strip()
+        base = by_id.get(sid)
+        if not base:
+            continue
+        merged = dict(base)
+        merged["id"] = sid
+        merged["sort_order"] = max(1, int(entry.get("sort_order") or len(out) + 1) or len(out) + 1)
+        merged["season"] = max(1, int(entry.get("season") or 1) or 1)
+        merged["episode"] = max(1, int(entry.get("episode") or 1) or 1)
+        title = str(entry.get("title") or "").strip()
+        if title:
+            merged["title"] = title
+        out.append(merged)
+
+    if len(out) != len(payload_rows):
+        raise ValueError("AI không trả đủ số tập.")
+
+    try:
+        from src.listening_habits import get_category_affinity
+        affinity = get_category_affinity()
+    except Exception:
+        affinity = {}
+
+    def get_row_affinity(row: dict) -> float:
+        sid = str(row.get("id") or row.get("suggestion_id") or "").strip()
+        pos = 0.0
+        dur = 0.0
+        try:
+            import src.podcast_library as pl_lib
+            lib_item = pl_lib.get_by_suggestion_id(sid)
+            if lib_item:
+                pos = float(lib_item.get("listened_position") or 0.0)
+                dur = float(lib_item.get("duration_seconds") or 0.0)
+            else:
+                pos = float(row.get("listened_position") or 0.0)
+                dur = float(row.get("duration_seconds") or 0.0)
+        except Exception:
+            pass
+
+        # If already listened (>= 95%), no affinity boost
+        if pos > 0.0 and dur > 0.0 and pos >= 0.95 * dur:
+            return 0.0
+
+        cats = row.get("categories") or []
+        if not cats and row.get("category"):
+            cats = [row["category"]]
+
+        score = 0.0
+        for cat in cats:
+            c_clean = str(cat).strip().lower()
+            score = max(score, affinity.get(c_clean, 0.0))
+        return score
+
+    def final_sort_key(r: dict) -> tuple:
+        season = max(1, int(r.get("season") or 1) or 1)
+        episode = max(0, int(r.get("episode") or 0) or 0)
+        orig_order = int(r.get("sort_order") or 0)
+        return (season, episode, -get_row_affinity(r), orig_order)
+
+    out.sort(key=final_sort_key)
+
+    # Re-assign sequential sort_order values to match the final sorted order
+    for idx, r in enumerate(out):
+        r["sort_order"] = idx + 1
+
+    return out
+
+
+async def persist_podcast_playlist_order(rows: list[dict]) -> int:
+    """Persist season/episode/sort_order for suggestion playlist episodes."""
+    payload = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("id") or row.get("suggestion_id") or "").strip()
+        if not sid:
+            continue
+        payload.append(
+            {
+                "id": sid,
+                "sort_order": max(0, int(row.get("sort_order") or 0) or 0),
+                "season": max(1, int(row.get("season") or 1) or 1),
+                "episode": max(0, int(row.get("episode") or 0) or 0),
+            }
+        )
+    if not payload:
+        return 0
+
+    loop = asyncio.get_running_loop()
+    try:
+        response = await loop.run_in_executor(
+            None,
+            lambda: _request_json(
+                "POST",
+                "/api/suggestions/reorder",
+                body={"episodes": payload},
+                timeout=_AI_SORT_TIMEOUT,
+            ),
+        )
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                detail = str(parsed.get("error") or "").strip()
+        except Exception:
+            detail = ""
+        raise ValueError(detail or f"Không lưu được thứ tự (HTTP {exc.code}).") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError("Không thể kết nối máy chủ.") from exc
+
+    if not isinstance(response, dict):
+        return len(payload)
+    return int(response.get("updated") or len(payload) or 0)
 
 
 async def dismiss_share(share_id: str) -> list[dict]:

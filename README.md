@@ -225,7 +225,7 @@ Liminal/
     ├── downloader.py            # Tải media (yt-dlp, Google Drive)
     ├── google_drive.py          # Tải file/folder Google Drive
     ├── scanner.py               # Quét file media
-    ├── share_manager.py         # API chia sẻ & cache
+    ├── share_manager.py         # Client chia sẻ & cache
     ├── series_layout.py         # Nhận diện mùa/tập series
     ├── playlist_layout.py       # Sắp xếp playlist nhạc
     ├── metadata_store.py        # Metadata & ảnh bìa

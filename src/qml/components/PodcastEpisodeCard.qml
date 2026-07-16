@@ -2,60 +2,47 @@ import QtQuick
 import QtQuick.Controls
 import Liminal 1.0
 
-// Video grid card: 16:9 thumbnail, title + channel below (never overlaid on the image).
+// Card tập podcast đã tải: cover vuông, tên tập, show, progress nghe dở.
 Item {
     id: root
 
     property string title: ""
     property string subtitle: ""
-    property string duration: ""
     property string imageSource: ""
-    property string resolvedImageSource: {
+    property real progressPercent: 0
+    property bool clickEnabled: true
+
+    signal clicked()
+    signal contextMenuRequested(real x, real y)
+
+    readonly property string resolvedImageSource: {
         if (!imageSource)
             return ""
         if (imageSource.startsWith("http://") || imageSource.startsWith("https://") || imageSource.startsWith("file://"))
             return imageSource
         return "file://" + imageSource
     }
-    property color accentColor: Theme.accentEnd
-    property bool clickEnabled: true
-
-    signal clicked()
-    signal contextMenuRequested(real x, real y)
-
-    readonly property bool showDuration: duration.length > 0 && duration !== "--:--"
+    readonly property bool showProgress: progressPercent > 0 && progressPercent < 100
 
     width: implicitWidth
-    height: thumbBlock.height + textBlock.implicitHeight
-
-    HoverHandler {
-        id: hoverHandler
-    }
+    height: artBlock.height + textBlock.implicitHeight
 
     Column {
         width: parent.width
         spacing: 10
 
         Item {
-            id: thumbBlock
+            id: artBlock
             width: parent.width
-            height: width / Theme.videoPosterAspect
+            height: width
 
             Rectangle {
-                id: clipRect
                 anchors.fill: parent
-                radius: Theme.libraryCardRadius
+                radius: Theme.podcastCardRadius
                 clip: true
                 color: Theme.cardBg
-                border.width: 2
-                border.color: hoverHandler.hovered ? root.accentColor : "transparent"
-
-                Behavior on border.color {
-                    ColorAnimation { duration: 100 }
-                }
 
                 Image {
-                    id: thumb
                     anchors.fill: parent
                     source: root.resolvedImageSource
                     fillMode: Image.PreserveAspectCrop
@@ -66,60 +53,43 @@ Item {
 
                 Rectangle {
                     anchors.fill: parent
-                    visible: root.imageSource === "" || thumb.status !== Image.Ready
+                    visible: root.imageSource === ""
                     color: Theme.bgElevated
 
                     AppIcon {
                         anchors.centerIn: parent
-                        name: "videocam"
+                        name: "podcasts"
                         font.pixelSize: 28
                         color: Theme.textMuted
                     }
                 }
 
+                // Progress nghe dở — thanh mỏng đáy cover
                 Rectangle {
-                    visible: root.showDuration
+                    anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    anchors.margins: 6
-                    radius: 4
-                    color: "#000000"
-                    opacity: 0.75
-                    width: durationText.implicitWidth + 10
-                    height: durationText.implicitHeight + 4
+                    height: 3
+                    visible: root.showProgress
+                    color: Qt.rgba(1, 1, 1, 0.15)
 
-                    Text {
-                        id: durationText
-                        anchors.centerIn: parent
-                        text: root.duration
-                        color: Theme.textPrimary
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.captionSize
+                    Rectangle {
+                        width: parent.width * Math.max(0, Math.min(1, root.progressPercent / 100))
+                        height: parent.height
+                        color: Theme.accentStart
                     }
                 }
 
+                // White overlay on hover
                 Rectangle {
                     anchors.fill: parent
-                    color: root.accentColor
-                    opacity: hoverHandler.hovered ? 0.08 : 0.0
+                    color: "#FFFFFF"
+                    opacity: hoverHandler.hovered ? 0.08 : 0
 
                     Behavior on opacity {
                         NumberAnimation { duration: 100 }
                     }
                 }
-
-                AppIcon {
-                    anchors.centerIn: parent
-                    name: "play_arrow"
-                    font.pixelSize: 36
-                    color: Theme.textPrimary
-                    opacity: hoverHandler.hovered ? 1.0 : 0.0
-
-                    Behavior on opacity {
-                        NumberAnimation { duration: 100 }
-                    }
-                }
-
             }
 
         }
@@ -151,6 +121,10 @@ Item {
                 elide: Text.ElideRight
             }
         }
+    }
+
+    HoverHandler {
+        id: hoverHandler
     }
 
     MouseArea {

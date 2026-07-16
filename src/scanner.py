@@ -74,18 +74,34 @@ def _child_media_counts(
     return audio_counts, video_counts
 
 
-def _media_from_file(path: Path, *, audio_only: bool, fast: bool = False) -> MediaInfo:
+def _media_from_file(
+    path: Path,
+    *,
+    audio_only: bool,
+    fast: bool = False,
+    include_cover: bool | None = None,
+) -> MediaInfo:
+    """Build MediaInfo for a single file.
+
+    When *fast* is True, heavy cover extraction is skipped unless *include_cover*
+    is explicitly True (used for root-level singles that paint immediately).
+    """
+    from src.metadata_store import find_cached_cover
+
     try:
         resolved = path.resolve()
     except OSError:
         resolved = path
+    want_cover = (not fast) if include_cover is None else include_cover
     if audio_only:
-        # Fast scans skip APIC extraction so startup stays responsive; ThumbnailQueue fills covers later.
-        embedded = read_embedded_metadata(resolved, include_cover=not fast)
+        embedded = read_embedded_metadata(resolved, include_cover=want_cover)
         detected_image = embedded.get("image", "")
+        if not detected_image:
+            # Reuse previously extracted art without opening mutagen APIC again.
+            detected_image = find_cached_cover(resolved)
     else:
         embedded = {}
-        detected_image = read_video_thumbnail(resolved, extract=not fast)
+        detected_image = read_video_thumbnail(resolved, extract=want_cover)
     display = resolve_display(
         str(resolved),
         default_title=embedded.get("title") or resolved.stem,
@@ -314,7 +330,16 @@ def scan_library_folder(folder: Path, *, fast: bool = False) -> list[MediaInfo]:
         if child.is_file():
             ext = child.suffix.lower()
             if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
-                items.append(_media_from_file(child, audio_only=ext in AUDIO_EXTS, fast=fast))
+                # Root-level cards (singles / loose videos) are visible on first paint.
+                # Load their covers even during a fast scan; nested tracks stay cheap.
+                items.append(
+                    _media_from_file(
+                        child,
+                        audio_only=ext in AUDIO_EXTS,
+                        fast=fast,
+                        include_cover=True,
+                    )
+                )
             elif ext in BOOK_EXTS:
                 display = resolve_display(
                     str(child.resolve()),

@@ -113,6 +113,8 @@ def prepare_qml_app(
     QTimer.singleShot(0, backend.load_initial_page)
     QTimer.singleShot(0, share_bridge.emit_cached_shared)
     QTimer.singleShot(0, share_bridge.refreshShared)
+    QTimer.singleShot(0, share_bridge.emit_cached_suggestions)
+    QTimer.singleShot(250, share_bridge.refreshSuggestions)
 
     import atexit
 

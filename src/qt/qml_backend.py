@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 import asyncio
 import shutil
 import srt
@@ -41,6 +42,15 @@ from src.downloader import (
     _normalize_video_quality,
     extract_youtube_id,
 )
+from src.qt.download_bridge import (
+    _LARGE_BATCH_THRESHOLD,
+    _GOOD_NETWORK_BPS,
+    _MAX_CONCURRENT_DOWNLOADS,
+    DownloadJob as _DownloadJob,
+    DownloadMixin,
+)
+from src.qt.media_list_model import ACCENT_COLORS as _MODEL_ACCENT_COLORS, MediaListModel
+from src.qt.podcast_bridge import PodcastMixin
 from src.folder_order import write_order
 from src.media_links import (
     add_track_to_album,
@@ -70,6 +80,18 @@ from src.metadata_store import (
 )
 from src.models import MediaInfo, MediaKind, PlaybackStatus
 from src.player import PlayerBridge
+from src.podcast_manager import (
+    load_subscriptions,
+    subscribe,
+    unsubscribe,
+    refresh_all_feeds,
+    get_all_episodes,
+    get_downloaded_episodes,
+    update_episode_download,
+    update_episode_progress,
+    verify_local_episodes,
+)
+from src import podcast_library
 from src.scanner import (
     find_folder_preview_image,
     find_folder_track_thumbnails,
@@ -95,8 +117,16 @@ from src.series_layout import (
     format_episode_subtitle,
     save_series_rows,
 )
-from src.settings_store import load_raw_settings, load_settings, read_settings_document_or_none, save_raw_settings, save_settings
+from src.settings_store import (
+    load_raw_settings,
+    load_settings,
+    read_settings_document_or_none,
+    save_raw_settings,
+    save_settings,
+    get_podcasts_dir,
+)
 from src.state_store import load_raw_state, save_raw_state
+from src import suggestions_manager
 from src.ui_config import load_ui_config, open_config_dir
 
 logger = logging.getLogger(__name__)
@@ -219,217 +249,8 @@ def _media_item(info: MediaInfo, index: int, *, audio_only: bool = True) -> dict
     }
 
 
-class MediaListModel(QAbstractListModel):
-    """List model for GridView media cards."""
 
-    countChanged = pyqtSignal()
-
-    TitleRole = Qt.ItemDataRole.UserRole + 1
-    SubtitleRole = Qt.ItemDataRole.UserRole + 2
-    ArtistRole = Qt.ItemDataRole.UserRole + 3
-    ImageSourceRole = Qt.ItemDataRole.UserRole + 4
-    AccentColorRole = Qt.ItemDataRole.UserRole + 5
-    PathRole = Qt.ItemDataRole.UserRole + 6
-    AudioOnlyRole = Qt.ItemDataRole.UserRole + 7
-    UrlRole = Qt.ItemDataRole.UserRole + 8
-    DurationRole = Qt.ItemDataRole.UserRole + 9
-    TrackIdRole = Qt.ItemDataRole.UserRole + 10
-    IsRemoteRole = Qt.ItemDataRole.UserRole + 11
-    DownloadPercentRole = Qt.ItemDataRole.UserRole + 12
-    DownloadStatusRole = Qt.ItemDataRole.UserRole + 13
-    IsDownloadingRole = Qt.ItemDataRole.UserRole + 14
-    IsCollectionRole = Qt.ItemDataRole.UserRole + 15
-    KindRole = Qt.ItemDataRole.UserRole + 16
-    ChildCountRole = Qt.ItemDataRole.UserRole + 17
-    TrackThumbnailsRole = Qt.ItemDataRole.UserRole + 18
-    SeasonRole = Qt.ItemDataRole.UserRole + 19
-    EpisodeRole = Qt.ItemDataRole.UserRole + 20
-    WatchedPercentRole = Qt.ItemDataRole.UserRole + 21
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._items: list[dict] = []
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        if parent.isValid():
-            return 0
-        return len(self._items)
-
-    @pyqtProperty(int, notify=countChanged)
-    def count(self) -> int:
-        return len(self._items)
-
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or index.row() >= len(self._items):
-            return None
-        item = self._items[index.row()]
-        role_map = {
-            self.TitleRole: "title",
-            self.SubtitleRole: "subtitle",
-            self.ArtistRole: "artist",
-            self.ImageSourceRole: "image",
-            self.AccentColorRole: "accent",
-            self.PathRole: "path",
-            self.AudioOnlyRole: "audio_only",
-            self.UrlRole: "url",
-            self.DurationRole: "duration",
-            self.TrackIdRole: "track_id",
-            self.IsRemoteRole: "is_remote",
-            self.DownloadPercentRole: "download_percent",
-            self.DownloadStatusRole: "download_status",
-            self.IsDownloadingRole: "is_downloading",
-            self.IsCollectionRole: "is_collection",
-            self.KindRole: "kind",
-            self.ChildCountRole: "child_count",
-            self.TrackThumbnailsRole: "preview_images",
-            self.SeasonRole: "season",
-            self.EpisodeRole: "episode",
-            self.WatchedPercentRole: "watched_percent",
-        }
-        key = role_map.get(role)
-        if key is None:
-            return None
-        value = item.get(key, "")
-        if role == self.AccentColorRole and not value:
-            return ACCENT_COLORS[0]
-        if role in (self.AudioOnlyRole, self.IsRemoteRole, self.IsDownloadingRole, self.IsCollectionRole):
-            return bool(value)
-        if role == self.ChildCountRole:
-            return int(value or 0)
-        if role in (self.SeasonRole, self.EpisodeRole):
-            return int(value or 0)
-        if role == self.TrackThumbnailsRole:
-            return list(value or [])
-        if role == self.DownloadPercentRole:
-            return float(value or 0.0)
-        if role == self.WatchedPercentRole:
-            return float(value or 0.0)
-        return value
-
-    def roleNames(self) -> dict[int, bytes]:
-        return {
-            self.TitleRole: b"title",
-            self.SubtitleRole: b"subtitle",
-            self.ArtistRole: b"artist",
-            self.ImageSourceRole: b"imageSource",
-            self.AccentColorRole: b"accentColor",
-            self.PathRole: b"path",
-            self.AudioOnlyRole: b"audioOnly",
-            self.UrlRole: b"url",
-            self.DurationRole: b"duration",
-            self.TrackIdRole: b"trackId",
-            self.IsRemoteRole: b"isRemote",
-            self.DownloadPercentRole: b"downloadPercent",
-            self.DownloadStatusRole: b"downloadStatus",
-            self.IsDownloadingRole: b"isDownloading",
-            self.IsCollectionRole: b"isCollection",
-            self.KindRole: b"kind",
-            self.ChildCountRole: b"childCount",
-            self.TrackThumbnailsRole: b"trackThumbnails",
-            self.SeasonRole: b"season",
-            self.EpisodeRole: b"episode",
-            self.WatchedPercentRole: b"watchedPercent",
-        }
-
-    def set_items(self, items: list[dict]) -> None:
-        self.beginResetModel()
-        self._items = items
-        self.endResetModel()
-        self.countChanged.emit()
-
-    def item_at(self, row: int) -> dict | None:
-        if 0 <= row < len(self._items):
-            return self._items[row]
-        return None
-
-    def item_paths(self) -> list[str]:
-        return [str(item.get("path", "")) for item in self._items]
-
-    def update_download_state(
-        self,
-        track_id: str,
-        *,
-        percent: float | None = None,
-        status: str | None = None,
-        is_downloading: bool | None = None,
-    ) -> None:
-        for row, item in enumerate(self._items):
-            if item.get("track_id") != track_id:
-                continue
-            if percent is not None:
-                item["download_percent"] = percent
-            if status is not None:
-                item["download_status"] = status
-            if is_downloading is not None:
-                item["is_downloading"] = is_downloading
-            idx = self.index(row, 0)
-            self.dataChanged.emit(
-                idx,
-                idx,
-                [
-                    self.DownloadPercentRole,
-                    self.DownloadStatusRole,
-                    self.IsDownloadingRole,
-                ],
-            )
-            break
-
-    def update_image_by_path(
-        self,
-        path: str,
-        image: str,
-        *,
-        preview_images: list[str] | None = None,
-    ) -> bool:
-        """Update card artwork for *path* without resetting the whole model."""
-        if not image:
-            return False
-        try:
-            resolved = str(Path(path).resolve())
-        except OSError:
-            resolved = path
-        candidates = {path, resolved}
-        changed = False
-        for row, item in enumerate(self._items):
-            item_path = str(item.get("canonical_path") or item.get("path") or "")
-            try:
-                item_resolved = str(Path(item_path).resolve()) if item_path else ""
-            except OSError:
-                item_resolved = item_path
-            if item_path not in candidates and item_resolved not in candidates:
-                continue
-            if item.get("image") == image and (
-                preview_images is None or item.get("preview_images") == preview_images
-            ):
-                return False
-            item["image"] = image
-            if preview_images is not None:
-                item["preview_images"] = list(preview_images)
-            idx = self.index(row, 0)
-            roles = [self.ImageSourceRole]
-            if preview_images is not None:
-                roles.append(self.TrackThumbnailsRole)
-            self.dataChanged.emit(idx, idx, roles)
-            changed = True
-            break
-        return changed
-
-
-@dataclass(frozen=True)
-class _DownloadJob:
-    url: str
-    media_type: str
-    output_subdir: str
-    quality: str = "1080"
-    retry_403: bool = False
-
-
-_LARGE_BATCH_THRESHOLD = 30
-_GOOD_NETWORK_BPS = 512 * 1024  # 512 KB/s
-_MAX_CONCURRENT_DOWNLOADS = 2
-
-
-class AppBackend(QObject):
+class AppBackend(PodcastMixin, DownloadMixin, QObject):
     """Exposed to QML as ``backend`` context property."""
 
     trackTitleChanged = pyqtSignal()
@@ -453,13 +274,19 @@ class AppBackend(QObject):
     pageTitleChanged = pyqtSignal()
     downloadQualityChanged = pyqtSignal()
     downloadConcurrencyChanged = pyqtSignal()
+    youtubeCookiesBrowserChanged = pyqtSignal()
     ytDlpUpdateStatusChanged = pyqtSignal()
+    debugToast = pyqtSignal(str)
     libraryNavigationChanged = pyqtSignal()
     primaryPlayLabelChanged = pyqtSignal()
     musicSearchChanged = pyqtSignal()
     videoSearchChanged = pyqtSignal()
     searchQueryChanged = pyqtSignal()
     playlistOrderUndoChanged = pyqtSignal()
+    suggestionsChanged = pyqtSignal()
+    podcastCategoryFilterChanged = pyqtSignal()
+    playlistsChanged = pyqtSignal()
+    podcastPlaybackSpeedChanged = pyqtSignal()
     searchResults = pyqtSignal(list)
     searchError = pyqtSignal(str)
     playlistLinkReady = pyqtSignal(str, list)
@@ -473,10 +300,15 @@ class AppBackend(QObject):
     seriesAiSortLoadingChanged = pyqtSignal()
     seriesAiSortFinished = pyqtSignal(list)
     seriesAiSortError = pyqtSignal(str)
+    podcastPlaylistAiSortLoadingChanged = pyqtSignal()
+    podcastPlaylistAiSortFinished = pyqtSignal()
+    podcastPlaylistAiSortError = pyqtSignal(str)
     focusModeChanged = pyqtSignal()
+    focusVideoReplayRequested = pyqtSignal()
     fullScreenChanged = pyqtSignal()
     videoStateChanged = pyqtSignal()
     focusModeStartPositionMsChanged = pyqtSignal()
+    focusModeDownloadPercentChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -514,9 +346,15 @@ class AppBackend(QObject):
         self._pending_video_downloads = 0
         self._download_speed_ema = 0.0
         self._published_download_concurrency = 1
+        self._active_download_source: dict[str, str] = {}  # key → source
+        self._active_rss_meta: dict[str, tuple[str, str]] = {}  # key → (feed_url, guid)
+        self._pending_play_suggestions: set[str] = set()
+        podcasts_dir = get_podcasts_dir()
+        podcast_library.ensure_podcasts_dir()
         self.downloader = Downloader(
             Path(self._music_dir),
             Path(self._video_dir),
+            podcasts_dir=podcasts_dir,
         )
 
         raw = load_raw_settings()
@@ -524,8 +362,10 @@ class AppBackend(QObject):
         self._download_quality: str = _normalize_video_quality(
             str(raw.get("download_quality", "1080"))
         )
+        self._youtube_cookies_browser: str = str(raw.get("youtube_browser") or "").strip()
         self._volume = max(0, min(100, int(raw.get("volume", 100))))
         self._muted = bool(raw.get("muted", False))
+        self._loop_mode = max(0, min(2, int(raw.get("loop_mode", 0))))
         playback_mode = str(raw.get("video_playback_backend", "inapp")).strip().lower()
         self._video_playback_mode = playback_mode if playback_mode in {"inapp", "mpv"} else "inapp"
         self._player_bar_always_visible = bool(
@@ -558,7 +398,6 @@ class AppBackend(QObject):
         self._current_path = ""
         self._current_audio_only = True
         self._shuffle_on = False
-        self._loop_mode = 0  # 0=off, 1=repeat all, 2=repeat one
         self._position = 0.0
         self._duration = 0.0
         self._has_media = False
@@ -617,6 +456,7 @@ class AppBackend(QObject):
         self._music_track_infos: list[MediaInfo] | None = None
         self._video_track_infos: list[MediaInfo] | None = None
         self._music_root_infos: list[MediaInfo] | None = None
+        self._all_musics_preview_images: list[str] | None = None
         self._video_root_infos: list[MediaInfo] | None = None
         self._music_library_loaded = False
         self._video_library_loaded = False
@@ -628,12 +468,14 @@ class AppBackend(QObject):
         self._video_folder_stack: list[_FolderStackEntry] = []
         self._shared_series_index = -1
         self._shared_playlist_index = -1
-        self._movie_detail_index = -1
-        self._shared_movie_detail_index = -1
+        self._movie_detail_path = ""
+        self._shared_movie_detail_path = ""
         self._in_focus_mode = False
         self._focus_mode_title = ""
         self._focus_mode_source = ""
         self._focus_mode_start_position_ms = 0
+        self._focus_mode_download_percent = 0.0
+        self._focus_mode_loading_id = ""
         self._is_full_screen = False
         self._video_is_playing = False
         self._video_position = 0
@@ -665,6 +507,42 @@ class AppBackend(QObject):
         self._video_section = "movies"
         self._media_music_model = MediaListModel(self)
         self._media_video_model = MediaListModel(self)
+        self._podcast_suggestions_model = MediaListModel(self)
+        self._video_suggestions_model = MediaListModel(self)
+        self._shorts_suggestions_model = MediaListModel(self)
+        self._podcast_playlist_model = MediaListModel(self)
+        self._podcast_category_detail_model = MediaListModel(self)
+        self._all_suggestions: list[dict] = []
+        self._playlists_cache: list = []
+        self._suggestions_playlists: list = []          # cached get_playlists() result
+        self._suggestions_playlist_items: dict[str, list] = {}  # cached get_items_by_playlist per pid
+        self._podcast_category_filter = "all"
+        self._podcast_playlist_id = ""
+        self._podcast_playlist_title = ""
+        self._podcast_playlist_image = ""
+        self._podcast_playlist_ai_loading = False
+        # Category detail view state — Category tab = filter theo thể loại (nhiều-nhiều)
+        self._podcast_category_detail_id = ""
+        self._podcast_category_detail_title = ""
+        self._suggestion_categories: list[dict] = [
+            dict(c) for c in suggestions_manager.PODCAST_CATEGORIES
+        ]
+        self._video_sections: list[dict] = []
+
+        # Podcast feed models
+        self._podcast_feed_model = MediaListModel(self)
+        self._podcast_episode_model = MediaListModel(self)
+        self._podcast_new_episodes_model = MediaListModel(self)
+        self._podcast_downloaded_model = MediaListModel(self)
+        self._podcast_detail_index = -1
+        self._podcast_show_title = ""
+        self._podcast_show_image = ""
+        self._podcast_show_description = ""
+        self._podcast_show_author = ""
+        self._is_podcast_media = False
+        self._podcast_playback_speed = 1.0
+        self._watch_now_pending: set[str] = set()
+        self._watch_now_cleanup_tasks: dict[str, asyncio.Task] = {}
 
         self._player.state_changed.connect(self._on_state_changed)
         self._player.position_changed.connect(self._on_position_changed)
@@ -674,6 +552,10 @@ class AppBackend(QObject):
         self.downloadFinished.connect(self._on_shared_download_finished)
         self.downloadError.connect(self._on_shared_download_error)
         self.downloadJobStarted.connect(self._on_shared_download_started)
+        self.downloadProgress.connect(self._on_suggestion_download_progress)
+        self.downloadFinished.connect(self._on_suggestion_download_finished)
+        self.downloadError.connect(self._on_suggestion_download_error)
+        self.downloadJobStarted.connect(self._on_suggestion_download_started)
 
         self.isPlayingChanged.connect(self.primaryPlayLabelChanged.emit)
         self.trackTitleChanged.connect(self.primaryPlayLabelChanged.emit)
@@ -779,6 +661,166 @@ class AppBackend(QObject):
     @pyqtProperty(QObject, constant=True)
     def videoSharedModel(self) -> MediaListModel:
         return self._video_shared_model
+
+    @pyqtProperty(QObject, constant=True)
+    def podcastSuggestionsModel(self) -> MediaListModel:
+        return self._podcast_suggestions_model
+
+    @pyqtProperty(QObject, constant=True)
+    def videoSuggestionsModel(self) -> MediaListModel:
+        return self._video_suggestions_model
+
+    @pyqtProperty(QObject, constant=True)
+    def shortsSuggestionsModel(self) -> MediaListModel:
+        return self._shorts_suggestions_model
+
+    @pyqtProperty(QObject, constant=True)
+    def podcastPlaylistModel(self) -> MediaListModel:
+        return self._podcast_playlist_model
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def inPodcastPlaylistView(self) -> bool:
+        return bool(self._podcast_playlist_id)
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def podcastPlaylistTitle(self) -> str:
+        return self._podcast_playlist_title
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def podcastPlaylistImage(self) -> str:
+        return self._podcast_playlist_image
+
+    @pyqtProperty(bool, notify=podcastPlaylistAiSortLoadingChanged)
+    def podcastPlaylistAiSortLoading(self) -> bool:
+        return self._podcast_playlist_ai_loading
+
+    # Category detail view — Category tab = filter theo thể loại (nhiều-nhiều)
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def inPodcastCategoryView(self) -> bool:
+        return bool(self._podcast_category_detail_id)
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def podcastCategoryDetailTitle(self) -> str:
+        return self._podcast_category_detail_title
+
+    @pyqtProperty(QObject, constant=True)
+    def podcastCategoryDetailModel(self) -> MediaListModel:
+        return self._podcast_category_detail_model
+
+    @pyqtProperty(str, notify=podcastCategoryFilterChanged)
+    def podcastCategoryFilter(self) -> str:
+        return self._podcast_category_filter
+
+    @pyqtProperty("QVariantList", notify=suggestionsChanged)
+    def podcastCategories(self) -> list:
+        return list(self._suggestion_categories)
+
+    @pyqtProperty("QVariantList", notify=suggestionsChanged)
+    def podcastCategoriesWithCounts(self) -> list:
+        """Trả về podcast categories với item count, lọc bỏ category có 0 items."""
+        try:
+            from src import suggestions_manager
+            cats_with_counts = suggestions_manager.get_categories_with_counts()
+            return cats_with_counts
+        except Exception:
+            return []
+
+    @pyqtProperty("QVariantList", notify=suggestionsChanged)
+    def videoSections(self) -> list:
+        """Section kênh video do collaborator tạo."""
+        return list(self._video_sections)
+
+    @pyqtProperty("QVariantList", notify=suggestionsChanged)
+    def playlistSections(self) -> list:
+        """Playlist sections — only playlists with >=3 items (visible as cards below suggestions)."""
+        result = []
+        for pl in self._suggestions_playlists:
+            if pl["item_count"] < 3:
+                continue
+            pid = pl["playlist_id"]
+            items = self._suggestions_playlist_items.get(pid, [])
+            cards = [self._suggestion_to_model(item) for item in items]
+            result.append({
+                "id": pid,
+                "label": pl["title"],
+                "itemCount": pl["item_count"],
+                "thumbnail": pl["thumbnail"],
+                "items": cards,
+            })
+        return result
+
+    @pyqtProperty("QVariantList", notify=suggestionsChanged)
+    def scatteredSuggestions(self) -> list:
+        """Items from small playlists (<3 items), shuffled into the suggestions grid."""
+        import random
+        result = []
+        for pl in self._suggestions_playlists:
+            if pl["item_count"] >= 3:
+                continue
+            pid = pl["playlist_id"]
+            items = self._suggestions_playlist_items.get(pid, [])
+            for idx, item in enumerate(items):
+                m = self._suggestion_to_model(item)
+                result.append({
+                    "title": m.get("title", ""),
+                    "subtitle": m.get("subtitle", ""),
+                    "categoryLabel": m.get("category_label", ""),
+                    "imageSource": m.get("image", ""),
+                    "downloadPercent": m.get("download_percent", 0),
+                    "downloadStatus": m.get("download_status", "pending"),
+                    "isDownloading": m.get("is_downloading", False),
+                    "audioOnly": m.get("audio_only", True),
+                    "localPath": m.get("path", ""),
+                    "originalIndex": idx,
+                    "_scattered_from_playlist": pid,
+                })
+        random.shuffle(result)
+        return result
+
+    # Podcast feed models (RSS subscriptions)
+    @pyqtProperty(QObject, constant=True)
+    def podcastModel(self) -> MediaListModel:
+        return self._podcast_feed_model
+
+    @pyqtProperty(QObject, constant=True)
+    def podcastEpisodeModel(self) -> MediaListModel:
+        return self._podcast_episode_model
+
+    @pyqtProperty(QObject, constant=True)
+    def podcastNewEpisodesModel(self) -> MediaListModel:
+        return self._podcast_new_episodes_model
+
+    @pyqtProperty(QObject, constant=True)
+    def podcastDownloadedModel(self) -> MediaListModel:
+        return self._podcast_downloaded_model
+
+    @pyqtProperty(bool, notify=libraryNavigationChanged)
+    def inPodcastDetail(self) -> bool:
+        return self._podcast_detail_index >= 0
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def podcastShowTitle(self) -> str:
+        return self._podcast_show_title
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def podcastShowImage(self) -> str:
+        return self._podcast_show_image
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def podcastShowDescription(self) -> str:
+        return self._podcast_show_description
+
+    @pyqtProperty(str, notify=libraryNavigationChanged)
+    def podcastShowAuthor(self) -> str:
+        return self._podcast_show_author
+
+    @pyqtProperty(bool, notify=podcastPlaybackSpeedChanged)
+    def isPodcastMedia(self) -> bool:
+        return self._is_podcast_media
+
+    @pyqtProperty(float, notify=podcastPlaybackSpeedChanged)
+    def podcastPlaybackSpeed(self) -> float:
+        return self._podcast_playback_speed
 
     @pyqtProperty(QObject, constant=True)
     def videoSearchModel(self) -> MediaListModel:
@@ -896,6 +938,10 @@ class AppBackend(QObject):
     def downloadQuality(self) -> str:
         return self._download_quality
 
+    @pyqtProperty(str, notify=youtubeCookiesBrowserChanged)
+    def youtubeCookiesBrowser(self) -> str:
+        return self._youtube_cookies_browser
+
     @pyqtProperty(int, notify=downloadConcurrencyChanged)
     def downloadConcurrency(self) -> int:
         return self._published_download_concurrency
@@ -918,7 +964,7 @@ class AppBackend(QObject):
 
     @pyqtProperty(bool, notify=libraryNavigationChanged)
     def inMovieDetailView(self) -> bool:
-        return self._movie_detail_index >= 0 or self._shared_movie_detail_index >= 0
+        return bool(self._movie_detail_path or self._shared_movie_detail_path)
 
     @pyqtProperty(bool, notify=libraryNavigationChanged)
     def inVideoDetailView(self) -> bool:
@@ -926,7 +972,7 @@ class AppBackend(QObject):
 
     @pyqtProperty(bool, notify=libraryNavigationChanged)
     def movieDetailIsShared(self) -> bool:
-        return self._shared_movie_detail_index >= 0
+        return bool(self._shared_movie_detail_path)
 
     @pyqtProperty(bool, notify=focusModeChanged)
     def inFocusMode(self) -> bool:
@@ -939,6 +985,10 @@ class AppBackend(QObject):
     @pyqtProperty(str, notify=focusModeChanged)
     def focusModeSource(self) -> str:
         return self._focus_mode_source
+
+    @pyqtProperty(float, notify=focusModeDownloadPercentChanged)
+    def focusModeDownloadPercent(self) -> float:
+        return self._focus_mode_download_percent
 
     @pyqtProperty(int, notify=focusModeStartPositionMsChanged)
     def focusModeStartPositionMs(self) -> int:
@@ -1031,7 +1081,13 @@ class AppBackend(QObject):
 
     @pyqtProperty(bool, notify=libraryNavigationChanged)
     def libraryCanGoBack(self) -> bool:
-        if self.inMovieDetailView or self.inSharedPlaylistView:
+        if (
+            self.inMovieDetailView
+            or self.inSharedPlaylistView
+            or self.inPodcastCategoryView
+            or self.inPodcastPlaylistView
+            or self.inPodcastDetail
+        ):
             return True
         return bool(self._folder_stack_for_page(self._current_page))
 
@@ -1040,10 +1096,10 @@ class AppBackend(QObject):
         return self._breadcrumb_for_stack(self._folder_stack_for_page(self._current_page))
 
     def _current_movie_detail_item(self) -> dict | None:
-        if self._movie_detail_index >= 0:
-            return self._video_my_movies_model.item_at(self._movie_detail_index)
-        if self._shared_movie_detail_index >= 0:
-            return self._video_shared_model.item_at(self._shared_movie_detail_index)
+        if self._movie_detail_path:
+            return self._find_item_by_path(self._video_my_movies_model, self._movie_detail_path)
+        if self._shared_movie_detail_path:
+            return self._find_item_by_path(self._video_shared_model, self._shared_movie_detail_path)
         return None
 
     @pyqtProperty(str, notify=libraryNavigationChanged)
@@ -1348,6 +1404,11 @@ class AppBackend(QObject):
             else:
                 self._ensure_video_library_loaded()
             self._sync_library_page_view(3)
+        elif page == 6:
+            self._load_podcasts()
+            cached = suggestions_manager.get_cached_items()
+            if cached:
+                self.apply_suggestions(cached)
         if self._current_page != page:
             prev_page = self._current_page
             self._current_page = page
@@ -1401,6 +1462,9 @@ class AppBackend(QObject):
     def playVideoSearch(self, index: int) -> None:
         items = list(self._video_search_model._items)
         item = self._video_search_model.item_at(index)
+        title = item.get("title", "???") if item else "None"
+        logger.info("[DEBUG playVideoSearch] index=%d model_count=%d item_title=%s",
+                     index, len(items), title)
         if item is None:
             return
         self._video_section = "movies"
@@ -1412,6 +1476,44 @@ class AppBackend(QObject):
     def playMedia(self, index: int) -> None:
         model = self._model_for_page(self._current_page)
         item = model.item_at(index)
+        title = item.get("title", "???") if item else "None"
+        logger.info("[DEBUG playMedia] index=%d current_page=%d video_section=%s inCollectionView=%s model=%s item_title=%s",
+                     index, self._current_page, self._video_section, self.inCollectionView,
+                     type(model).__name__, title)
+        self.debugToast.emit(f"playMedia(idx={index}, section={self._video_section}, title={title})")
+
+        # Defensive: when on video page (3) and not in collection view,
+        # _video_section may be stale, causing the wrong model to resolve.
+        # Detect the mismatch by checking the alternate model.
+        if self._current_page == 3 and not self.inCollectionView:
+            alt_model = (
+                self._video_series_model
+                if model is self._video_my_movies_model
+                else self._video_my_movies_model
+            )
+            alt_item = alt_model.item_at(index) if index < alt_model.rowCount() else None
+
+            if item is None and alt_item is not None:
+                logger.warning(
+                    "[DEBUG playMedia] item not found in %s, found in %s — _video_section was stale (%s)",
+                    type(model).__name__, type(alt_model).__name__, self._video_section,
+                )
+                model = alt_model
+                item = alt_item
+                title = item.get("title", "???")
+            elif item is not None and alt_item is not None and item is not alt_item:
+                # Both models have items at this index — disambiguate by is_collection.
+                # In lobby: movies model → non-collection, series model → collection.
+                # playMedia should only receive non-collection items.
+                if item.get("is_collection") and not alt_item.get("is_collection"):
+                    logger.warning(
+                        "[DEBUG playMedia] resolved collection from %s, switching to %s — _video_section was stale (%s)",
+                        type(model).__name__, type(alt_model).__name__, self._video_section,
+                    )
+                    model = alt_model
+                    item = alt_item
+                    title = item.get("title", "???")
+
         if item is None:
             return
         if item.get("is_collection"):
@@ -1503,13 +1605,37 @@ class AppBackend(QObject):
     @pyqtSlot(int)
     def openVideoMyMovie(self, index: int) -> None:
         item = self._video_my_movies_model.item_at(index)
+        title = item.get("title", "???") if item else "None"
+        logger.info("[DEBUG openVideoMyMovie] index=%d model_count=%d item_title=%s",
+                     index, self._video_my_movies_model.rowCount(), title)
         if item is None:
             return
         self._video_section = "movies"
         self._video_model.set_items(self._video_my_movies_model._items)
-        self._movie_detail_index = index
-        self._shared_movie_detail_index = -1
+        self._movie_detail_path = item.get("path") or item.get("canonical_path") or ""
+        self._shared_movie_detail_path = ""
         self.libraryNavigationChanged.emit()
+
+    @pyqtSlot(str)
+    @pyqtSlot(str, str)
+    def enterFocusModeLoading(self, title: str, loading_id: str = "") -> None:
+        self._in_focus_mode = True
+        self._focus_mode_title = title
+        self._focus_mode_source = ""
+        self._focus_mode_start_position_ms = 0
+        self._focus_mode_download_percent = 0.0
+        self._focus_mode_loading_id = loading_id
+        self._subtitle_cues = []
+        self._subtitle_available = False
+        self._subtitle_index = 0
+        self._player_bar_visible = False
+        self.focusModeDownloadPercentChanged.emit()
+        self.videoStateChanged.emit()
+        self.focusModeChanged.emit()
+        self.playerBarVisibleChanged.emit()
+        if not self._is_full_screen:
+            self._is_full_screen = True
+            self.fullScreenChanged.emit()
 
     @pyqtSlot(str, str)
     def enterFocusMode(self, path: str, title: str = "") -> None:
@@ -1708,6 +1834,11 @@ class AppBackend(QObject):
             self._is_full_screen = False
             self.fullScreenChanged.emit()
 
+    @pyqtSlot()
+    def onFocusVideoEnded(self) -> None:
+        """Called from QML when focus mode video reaches end of media."""
+        self._on_track_ended()
+
     def _save_video_progress(self) -> None:
         """Persist current video watch progress to metadata store."""
         if (
@@ -1725,26 +1856,46 @@ class AppBackend(QObject):
 
     @pyqtSlot(int)
     def playVideoMyMovie(self, index: int) -> None:
+        item = self._video_my_movies_model.item_at(index)
+        title = item.get("title", "???") if item else "None"
+        logger.info("[DEBUG playVideoMyMovie] index=%d model_count=%d item_title=%s",
+                     index, self._video_my_movies_model.rowCount(), title)
+        self.debugToast.emit(f"playVideoMyMovie(idx={index}, title={title})")
         self._video_section = "movies"
         self._video_model.set_items(self._video_my_movies_model._items)
-        item = self._video_my_movies_model.item_at(index)
         if item is not None:
             self._set_playback_queue([item])
             self._play_item(item)
 
     @pyqtSlot()
     def playMovieDetail(self) -> None:
-        if self._shared_movie_detail_index >= 0:
-            item = self._video_shared_model.item_at(self._shared_movie_detail_index)
+        logger.info("[DEBUG playMovieDetail] _movie_detail_path=%s _shared_movie_detail_path=%s",
+                     self._movie_detail_path, self._shared_movie_detail_path)
+        if self._shared_movie_detail_path:
+            item = self._find_item_by_path(self._video_shared_model, self._shared_movie_detail_path)
             if item is None:
                 return
             if item.get("download_status") != "done" and not self._shared_item_in_library(item):
-                self.downloadSharedItem(self._shared_movie_detail_index)
+                # Find index for downloadSharedItem
+                idx = self._index_of_path(self._video_shared_model, self._shared_movie_detail_path)
+                if idx >= 0:
+                    self.downloadSharedItem(idx)
                 return
             self._play_shared_movie_item(item)
             return
-        if self._movie_detail_index >= 0:
-            self.playVideoMyMovie(self._movie_detail_index)
+        if self._movie_detail_path:
+            logger.info("[DEBUG playMovieDetail] calling playVideoMyMovie with path=%s",
+                         self._movie_detail_path)
+            idx = self._index_of_path(self._video_my_movies_model, self._movie_detail_path)
+            if idx >= 0:
+                self.playVideoMyMovie(idx)
+            else:
+                # Path not found in current model — model may have been rebuilt.
+                # Build a playback item directly from the stored path.
+                logger.warning("[DEBUG playMovieDetail] path %s not found in model, playing directly",
+                               self._movie_detail_path)
+                self._play_item({"path": self._movie_detail_path, "audio_only": False,
+                                 "title": Path(self._movie_detail_path).stem})
 
     def _play_shared_movie_item(self, item: dict) -> None:
         play_item = dict(item)
@@ -1944,6 +2095,10 @@ class AppBackend(QObject):
     @pyqtSlot(int)
     def playVideoShared(self, index: int) -> None:
         item = self._video_shared_model.item_at(index)
+        title = item.get("title", "???") if item else "None"
+        is_series = item.get("is_series", False) if item else False
+        logger.info("[DEBUG playVideoShared] index=%d model_count=%d item_title=%s is_series=%s",
+                     index, self._video_shared_model.rowCount(), title, is_series)
         if item is None:
             return
         if item.get("is_series"):
@@ -1957,8 +2112,8 @@ class AppBackend(QObject):
         if item is None or item.get("is_series"):
             return
         self._video_section = "shared"
-        self._shared_movie_detail_index = index
-        self._movie_detail_index = -1
+        self._shared_movie_detail_path = item.get("path") or item.get("canonical_path") or ""
+        self._movie_detail_path = ""
         self.libraryNavigationChanged.emit()
 
     def _series_root_folder(self) -> Path | None:
@@ -2130,7 +2285,7 @@ class AppBackend(QObject):
             self.downloadError.emit("", "Mục chia sẻ thiếu link tải.")
             return
         self._mark_shared_downloading(item, percent=0.0)
-        self.downloadMedia(source_url, "video", "")
+        self._downloadMedia(source_url, "video", "", "shared")
 
     @pyqtSlot(int)
     def openVideoSharedSeries(self, index: int) -> None:
@@ -2246,7 +2401,7 @@ class AppBackend(QObject):
             self.downloadError.emit("", "Mục chia sẻ thiếu link tải.")
             return
         self._mark_music_shared_downloading(item, percent=0.0)
-        self.downloadMedia(source_url, "music", "")
+        self._downloadMedia(source_url, "music", "", "shared")
 
     def _play_shared_music_item(self, item: dict) -> None:
         play_item = dict(item)
@@ -2383,6 +2538,1137 @@ class AppBackend(QObject):
         ]
         self._apply_library_filter(self._all_video_shared, self._video_shared_model)
         self._apply_library_filter(self._all_music_shared, self._music_shared_model)
+
+    def apply_suggestions(self, items: list[dict]) -> None:
+        """Push suggestion feed rows into podcast/video suggestion models."""
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("id") or "")
+            if not sid:
+                continue
+            local = podcast_library.get_path_for_suggestion(sid)
+            if local:
+                item["local_path"] = local
+                item["download_status"] = "done"
+                item["download_percent"] = 100.0
+                item["is_downloading"] = False
+            else:
+                cached_path = suggestions_manager.get_local_path(sid)
+                if cached_path and Path(cached_path).exists():
+                    item["local_path"] = cached_path
+                    item["download_status"] = "done"
+                    item["download_percent"] = 100.0
+                    item["is_downloading"] = False
+                else:
+                    if item.get("download_status") in ("done", "downloading"):
+                        # File was deleted or missing -> reset to pending
+                        item["download_status"] = "pending"
+                        item["download_percent"] = 0.0
+                        item["is_downloading"] = False
+                        item["local_path"] = ""
+                        suggestions_manager.persist_download_state(
+                            sid,
+                            status="pending",
+                            percent=0.0,
+                            is_downloading=False,
+                            local_path="",
+                        )
+        seen_ids: set[str] = set()
+        deduped: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            if item_id and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                deduped.append(dict(item))
+        self._all_suggestions = deduped
+        self._suggestion_categories = suggestions_manager.get_cached_categories()
+        self._video_sections = suggestions_manager.get_cached_sections()
+
+        t0 = time.monotonic()
+        self._suggestions_playlists = suggestions_manager.get_playlists()
+        self._suggestions_playlist_items = {
+            pl["playlist_id"]: suggestions_manager.get_items_by_playlist(pl["playlist_id"])
+            for pl in self._suggestions_playlists
+        }
+        t1 = time.monotonic()
+        with_pl = sum(1 for i in deduped if i.get("playlist_id"))
+        ct = sum(1 for i in deduped if str(i.get("content_type") or "") == "podcast")
+        logger.debug(
+            "suggestions: %d items (%d podcast, %d in playlists), %d playlists, cached in %.1fms",
+            len(deduped), ct, with_pl, len(self._suggestions_playlists), (t1 - t0) * 1000,
+        )
+
+        self._rebuild_suggestion_models()
+        self._refresh_podcast_downloaded_from_library()
+        self._refresh_playlists_cache()
+        self.suggestionsChanged.emit()
+        self.playlistsChanged.emit()
+
+    @pyqtSlot()
+    def verifyLocalPodcastFiles(self) -> None:
+        """Scan all downloaded podcast files and suggestions, verifying if they exist on disk.
+        Resets status to 'pending' if the file is missing, forcing a re-download."""
+        # Clean up RSS podcast episodes whose files are missing
+        verify_local_episodes()
+        
+        # Clean up podcast library items whose files are missing
+        podcast_library.list_downloads()
+        
+        # Verify and clean up suggestions cache
+        cached = suggestions_manager.get_cached_items()
+        if cached:
+            self.apply_suggestions(cached)
+
+    def _suggestion_to_model(self, item: dict) -> dict:
+        media_kind = str(item.get("media_kind") or "audio").lower()
+        content_type = str(item.get("content_type") or "podcast").lower()
+        author = str(item.get("author") or "").strip()
+
+        item_categories = item.get("categories") or []
+        first_category = item_categories[0] if item_categories else ""
+        item_category_labels = item.get("category_labels") or []
+        category_label_str = ", ".join(item_category_labels) if item_category_labels else ""
+
+        season = max(0, int(item.get("season") or 0) or 0)
+        episode = max(0, int(item.get("episode") or 0) or 0)
+        sort_order = max(0, int(item.get("sort_order") or 0) or 0)
+        ep_label = ""
+        if episode > 0:
+            if season > 1:
+                ep_label = f"S{season}E{episode}"
+            else:
+                ep_label = f"Tập {episode}"
+        parts = [p for p in (ep_label, author) if p]
+        subtitle = " · ".join(parts) if parts else (
+            "Shorts" if content_type == "shorts"
+            else ("Podcast" if content_type == "podcast" else "Video")
+        )
+        image = str(item.get("local_thumbnail") or item.get("thumbnail_url") or "")
+        source_url = str(item.get("source_url") or "")
+        local_path = str(item.get("local_path") or "").strip()
+        if local_path and not Path(local_path).exists():
+            local_path = ""
+        status = str(item.get("download_status") or "pending")
+        if local_path:
+            status = "done"
+
+        suggestion_id = str(item.get("id") or "")
+        lib_item = podcast_library.get_by_suggestion_id(suggestion_id)
+        listened_position = 0.0
+        duration_seconds = 0.0
+        if lib_item:
+            listened_position = float(lib_item.get("listened_position") or 0.0)
+            duration_seconds = float(lib_item.get("duration_seconds") or 0.0)
+
+        return {
+            "title": str(item.get("title") or ""),
+            "subtitle": subtitle,
+            "artist": author,
+            "image": image,
+            "path": local_path,
+            "audio_only": media_kind == "audio",
+            "url": source_url,
+            "duration": "",
+            "duration_seconds": duration_seconds,
+            "listened_position": listened_position,
+            "track_id": str(item.get("id") or source_url),
+            "is_remote": not bool(local_path),
+            "download_percent": 100.0 if status == "done" else float(item.get("download_percent") or 0.0),
+            "download_status": status,
+            "is_downloading": bool(item.get("is_downloading")) or status == "downloading",
+            "is_collection": False,
+            "kind": content_type,
+            "child_count": 0,
+            "preview_images": [],
+            "season": season,
+            "episode": episode,
+            "sort_order": sort_order,
+            "watched_percent": 0.0,
+            "category": first_category,
+            "category_label": "",
+            "categories": item_categories,
+            "category_labels": item_category_labels,
+            "playlist_id": item.get("playlist_id"),
+            "tags": list(item.get("tags") or []),
+            "suggestion_id": str(item.get("id") or ""),
+            "media_kind": media_kind,
+            "content_type": content_type,
+            "source_url": source_url,
+            "description": str(item.get("description") or ""),
+        }
+
+    @staticmethod
+    def _suggestion_sort_key(item: dict) -> tuple:
+        sort_order = max(0, int(item.get("sort_order") or 0) or 0)
+        created_at_str = str(item.get("created_at") or "").strip()
+        ts = 0.0
+        if created_at_str:
+            try:
+                val = created_at_str.replace("Z", "+00:00")
+                from datetime import datetime
+                ts = datetime.fromisoformat(val).timestamp()
+            except Exception:
+                pass
+        return (
+            0 if sort_order > 0 else 1,
+            sort_order,
+            -ts,
+            str(item.get("title") or ""),
+        )
+
+    def _rebuild_suggestion_models(self) -> None:
+        podcast_raw = [
+            item
+            for item in self._all_suggestions
+            if (
+                str(item.get("content_type") or "") == "podcast"
+                or item.get("playlist_id")
+            )
+            and (
+                self._podcast_category_filter in {"", "all"}
+                or self._podcast_category_filter in (item.get("categories") or [])
+                or self._podcast_category_filter in (item.get("tags") or [])
+            )
+        ]
+        podcast_raw.sort(key=self._suggestion_sort_key)
+        podcast_items = [self._suggestion_to_model(item) for item in podcast_raw]
+        video_items = [
+            self._suggestion_to_model(item)
+            for item in self._all_suggestions
+            if str(item.get("content_type") or "") == "video"
+        ]
+        shorts_items = [
+            self._suggestion_to_model(item)
+            for item in self._all_suggestions
+            if str(item.get("content_type") or "") == "shorts"
+        ]
+        self._podcast_suggestions_model.set_items(podcast_items)
+        self._video_suggestions_model.set_items(video_items)
+        self._shorts_suggestions_model.set_items(shorts_items)
+        if self._podcast_playlist_id:
+            self._refresh_podcast_playlist_model()
+
+    def _refresh_podcast_playlist_model(self) -> None:
+        category_id = self._podcast_playlist_id
+        if not category_id:
+            self._podcast_playlist_model.set_items([])
+            return
+        rows = [
+            item
+            for item in self._all_suggestions
+            if item.get("playlist_id") == category_id
+        ]
+        rows.sort(key=self._suggestion_sort_key)
+        model_rows = [self._suggestion_to_model(item) for item in rows]
+        self._podcast_playlist_model.set_items(model_rows)
+        if model_rows:
+            self._podcast_playlist_image = str(model_rows[0].get("image") or "")
+            label = str(model_rows[0].get("category_label") or "").strip()
+            if label:
+                self._podcast_playlist_title = label
+
+    @pyqtSlot()
+    def closePodcastPlaylist(self) -> None:
+        if not self._podcast_playlist_id:
+            return
+        self._podcast_playlist_id = ""
+        self._podcast_playlist_title = ""
+        self._podcast_playlist_image = ""
+        self._podcast_playlist_model.set_items([])
+        self.libraryNavigationChanged.emit()
+
+    # ── Category detail view — Category tab = filter theo thể loại (nhiều-nhiều) ──
+    @pyqtSlot(str)
+    def openPodcastCategoryDetail(self, category_id: str) -> None:
+        """Mở trang chi tiết category — lọc theo tags[] (nhiều-nhiều)."""
+        cid = (category_id or "").strip().lower()
+        if not cid:
+            return
+        rows = suggestions_manager.get_items_by_category(cid)
+        if not rows:
+            return
+        # Resolve label from categories cache
+        label = cid
+        for cat in self._suggestion_categories:
+            if str(cat.get("id") or "").strip().lower() == cid:
+                label = str(cat.get("label") or cat.get("id") or cid)
+                break
+        model_rows = [self._suggestion_to_model(item) for item in rows]
+        self._podcast_category_detail_id = cid
+        self._podcast_category_detail_title = label
+        self._podcast_category_detail_model.set_items(model_rows)
+        self.libraryNavigationChanged.emit()
+
+    @pyqtSlot()
+    def closePodcastCategoryDetail(self) -> None:
+        if not self._podcast_category_detail_id:
+            return
+        self._podcast_category_detail_id = ""
+        self._podcast_category_detail_title = ""
+        self._podcast_category_detail_model.set_items([])
+        self.libraryNavigationChanged.emit()
+
+    # ── Playlist detail view — Playlist tab = collection cố định do collaborator tạo (1-1 với item) ──
+    @pyqtSlot(str)
+    def openPodcastPlaylistDetail(self, playlist_id: str) -> None:
+        """Mở trang chi tiết playlist — lọc theo playlist_id (1-1)."""
+        pid = (playlist_id or "").strip()
+        if not pid:
+            return
+        rows = suggestions_manager.get_items_by_playlist(pid)
+        if not rows:
+            return
+        first_item = rows[0]
+        # Ưu tiên: section label > playlist_title field > item title > pid
+        label = ""
+        sections = suggestions_manager.get_cached_sections()
+        for section in sections:
+            if section.get("id") == pid:
+                label = str(section.get("label") or "").strip()
+                break
+        if not label:
+            label = str(first_item.get("playlist_title") or "").strip()
+        if not label:
+            label = str(first_item.get("title") or "").strip()
+        if not label:
+            label = pid
+        self._podcast_playlist_id = pid
+        self._podcast_playlist_title = label
+        self._podcast_playlist_image = str(
+            first_item.get("local_thumbnail") or first_item.get("thumbnail_url") or ""
+        )
+        model_rows = [self._suggestion_to_model(item) for item in rows]
+        self._podcast_playlist_model.set_items(model_rows)
+        self.libraryNavigationChanged.emit()
+
+    @pyqtProperty("QVariantList", notify=playlistsChanged)
+    def playlists(self) -> list:
+        """Reactive playlist list — updated whenever suggestions change."""
+        return self._playlists_cache
+
+    def _refresh_playlists_cache(self) -> None:
+        self._playlists_cache = self._build_playlists()
+
+    def _build_playlists(self) -> list:
+        """Trả về danh sách playlist/section do collaborator tạo."""
+        result = []
+        for pl in self._suggestions_playlists:
+            result.append({
+                "id": pl["playlist_id"],
+                "label": pl["title"],
+                "itemCount": pl["item_count"],
+                "thumbnail": pl["thumbnail"]
+            })
+        return result
+
+    @pyqtSlot(result="QVariantList")
+    def getPlaylists(self) -> list:
+        """Trả về danh sách playlist/section do collaborator tạo (delegates to cache)."""
+        return self._playlists_cache
+
+    @pyqtSlot(str, result="QVariantList")
+    def getItemsByCategory(self, category_id: str) -> list:
+        """Trả về item podcast lọc theo categories — category (nhiều-nhiều)."""
+        rows = suggestions_manager.get_items_by_category(category_id)
+        return [self._suggestion_to_model(item) for item in rows]
+
+    @pyqtSlot(str, result="QVariantList")
+    def getItemsByPlaylist(self, playlist_id: str) -> list:
+        """Trả về item podcast lọc theo playlist_id — playlist (1-1)."""
+        rows = suggestions_manager.get_items_by_playlist(playlist_id)
+        return [self._suggestion_to_model(item) for item in rows]
+
+    @pyqtSlot(result="QVariantList")
+    def getUngroupedSuggestions(self) -> list:
+        """Trả về ungrouped suggestions (items không thuộc playlist nào)."""
+        rows = suggestions_manager.get_ungrouped_suggestions()
+        return [self._suggestion_to_model(item) for item in rows]
+
+    # ── Legacy openPodcastPlaylist — giữ tương thích ngược, gọi qua openPodcastPlaylistDetail ──
+    @pyqtSlot(str)
+    def openPodcastPlaylist(self, category_id: str) -> None:
+        """[DEPRECATED] Dùng openPodcastPlaylistDetail cho playlist, openPodcastCategoryDetail cho category."""
+        self.openPodcastPlaylistDetail(category_id)
+
+
+
+    def _set_podcast_playlist_ai_loading(self, loading: bool) -> None:
+        if self._podcast_playlist_ai_loading == loading:
+            return
+        self._podcast_playlist_ai_loading = loading
+        self.podcastPlaylistAiSortLoadingChanged.emit()
+
+    @pyqtSlot()
+    def requestAiPodcastPlaylistSort(self) -> None:
+        asyncio.create_task(self._request_ai_podcast_playlist_sort())
+
+    async def _request_ai_podcast_playlist_sort(self) -> None:
+        category_id = self._podcast_playlist_id
+        if not category_id:
+            self.podcastPlaylistAiSortError.emit("Mở danh sách phát để dùng AI sắp xếp.")
+            return
+        rows = [
+            dict(item)
+            for item in self._all_suggestions
+            if item.get("playlist_id") == category_id
+        ]
+        if len(rows) < 2:
+            self.podcastPlaylistAiSortError.emit("Cần ít nhất 2 tập để sắp xếp.")
+            return
+        title = self._podcast_playlist_title or category_id
+        self._set_podcast_playlist_ai_loading(True)
+        try:
+            from src import share_manager
+
+            sorted_rows = await share_manager.ai_sort_podcast_playlist(
+                playlist_title=title,
+                rows=rows,
+            )
+            await share_manager.persist_podcast_playlist_order(sorted_rows)
+            by_id = {str(r.get("id") or ""): r for r in sorted_rows}
+            for item in self._all_suggestions:
+                sid = str(item.get("id") or "")
+                updated = by_id.get(sid)
+                if not updated:
+                    continue
+                item["sort_order"] = int(updated.get("sort_order") or 0)
+                item["season"] = int(updated.get("season") or 1)
+                item["episode"] = int(updated.get("episode") or 0)
+                if updated.get("title"):
+                    item["title"] = str(updated.get("title") or item.get("title") or "")
+            try:
+                suggestions_manager._write_local_file(
+                    {
+                        "items": self._all_suggestions,
+                        "categories": suggestions_manager.get_cached_categories(),
+                        "sections": suggestions_manager.get_cached_sections(),
+                    }
+                )
+            except Exception:
+                logger.debug("Could not write local suggestions cache after playlist sort")
+            self._rebuild_suggestion_models()
+            self._refresh_playlists_cache()
+            self.podcastPlaylistAiSortFinished.emit()
+            self.suggestionsChanged.emit()
+            self.playlistsChanged.emit()
+            self.libraryNavigationChanged.emit()
+        except ValueError as exc:
+            self.podcastPlaylistAiSortError.emit(str(exc))
+        except Exception:
+            logger.exception("AI podcast playlist sort failed")
+            self.podcastPlaylistAiSortError.emit("AI sắp xếp thất bại.")
+        finally:
+            self._set_podcast_playlist_ai_loading(False)
+
+    @pyqtSlot(int)
+    def downloadPodcastPlaylistEpisode(self, index: int) -> None:
+        item = self._podcast_playlist_model.item_at(index)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if item.get("download_status") == "done" and path and Path(path).exists():
+            self._play_podcast_suggestion_item(item)
+            return
+        self._download_suggestion_at(self._podcast_playlist_model, index)
+
+    @pyqtSlot(int)
+    def playPodcastPlaylistEpisode(self, index: int) -> None:
+        item = self._podcast_playlist_model.item_at(index)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if path and Path(path).exists():
+            self._play_podcast_suggestion_item(item)
+            return
+        
+        suggestion_id = str(item.get("suggestion_id") or item.get("track_id") or item.get("id") or "")
+        if suggestion_id:
+            self._pending_play_suggestions.add(suggestion_id)
+        
+        if not item.get("audio_only", True):
+            self.enterFocusModeLoading(str(item.get("title") or ""), suggestion_id)
+            
+        self.downloadPodcastPlaylistEpisode(index)
+
+    @pyqtSlot(int)
+    def playPodcastCategoryDetailEpisode(self, index: int) -> None:
+        item = self._podcast_category_detail_model.item_at(index)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if path and Path(path).exists():
+            self._play_podcast_suggestion_item(item)
+            return
+            
+        suggestion_id = str(item.get("suggestion_id") or item.get("track_id") or item.get("id") or "")
+        if suggestion_id:
+            self._pending_play_suggestions.add(suggestion_id)
+            
+        if not item.get("audio_only", True):
+            self.enterFocusModeLoading(str(item.get("title") or ""), suggestion_id)
+            
+        self.downloadPodcastCategoryDetailEpisode(index)
+
+    @pyqtSlot(int)
+    def downloadPodcastCategoryDetailEpisode(self, index: int) -> None:
+        item = self._podcast_category_detail_model.item_at(index)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if item.get("download_status") == "done" and path and Path(path).exists():
+            self._play_podcast_suggestion_item(item)
+            return
+        self._download_suggestion_at(self._podcast_category_detail_model, index)
+
+    @pyqtSlot(str)
+    def setPodcastCategoryFilter(self, category_id: str) -> None:
+        value = (category_id or "all").strip().lower() or "all"
+        if value == self._podcast_category_filter:
+            return
+        self._podcast_category_filter = value
+        self._rebuild_suggestion_models()
+        self.podcastCategoryFilterChanged.emit()
+
+    @pyqtSlot(int)
+    def downloadPodcastSuggestion(self, index: int) -> None:
+        """Download podcast suggestion, or play if already downloaded."""
+        item = self._podcast_suggestions_model.item_at(index)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if item.get("download_status") == "done" and path and Path(path).exists():
+            self._play_podcast_suggestion_item(item)
+            return
+        self._download_suggestion_at(self._podcast_suggestions_model, index)
+
+    @pyqtSlot(int)
+    def playPodcastSuggestion(self, index: int) -> None:
+        item = self._podcast_suggestions_model.item_at(index)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if path and Path(path).exists():
+            self._play_podcast_suggestion_item(item)
+            return
+            
+        suggestion_id = str(item.get("suggestion_id") or item.get("track_id") or item.get("id") or "")
+        if suggestion_id:
+            self._pending_play_suggestions.add(suggestion_id)
+
+        self.enterFocusModeLoading(str(item.get("title") or ""), suggestion_id)
+
+        self.downloadPodcastSuggestion(index)
+
+    @pyqtSlot(str)
+    def playPodcastSuggestionById(self, track_id: str) -> None:
+        item = self._find_suggestion_by_key(track_id)
+        if item is None:
+            return
+        path = str(item.get("path") or item.get("local_path") or "").strip()
+        if path and Path(path).exists():
+            self._play_podcast_suggestion_item(item)
+            return
+            
+        suggestion_id = str(item.get("id") or item.get("track_id") or "")
+        if suggestion_id:
+            self._pending_play_suggestions.add(suggestion_id)
+            
+        if not item.get("audio_only", True):
+            self.enterFocusModeLoading(str(item.get("title") or ""), suggestion_id)
+            
+        self.downloadPodcastSuggestionById(suggestion_id)
+
+    @pyqtSlot(str)
+    def downloadPodcastSuggestionById(self, track_id: str) -> None:
+        self._download_suggestion_by_id(track_id)
+
+    def _download_suggestion_by_id(self, suggestion_id: str) -> None:
+        suggestion_id = (suggestion_id or "").strip()
+        if not suggestion_id:
+            return
+        item = self._find_suggestion_by_key(suggestion_id)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if item.get("download_status") == "done" and path and Path(path).exists():
+            return
+        source_url = str(item.get("url") or item.get("source_url") or "").strip()
+        if not source_url:
+            self.downloadError.emit("", "Đề xuất thiếu link tải.")
+            return
+            
+        media_kind = str(item.get("media_kind") or "audio").lower()
+        content_type = str(item.get("content_type") or "").lower()
+        if content_type == "podcast":
+            kind = "podcast" if media_kind == "audio" else "podcast_video"
+        else:
+            kind = "music" if media_kind == "audio" else "video"
+            
+        self._patch_suggestion_download(
+            suggestion_id,
+            percent=0.0,
+            status="downloading",
+            is_downloading=True,
+        )
+        self._downloadMedia(source_url, kind, "", "suggestion")
+
+    def _play_podcast_suggestion_item(self, item: dict) -> None:
+        path = str(item.get("path") or item.get("local_path") or "").strip()
+        if not path or not Path(path).exists():
+            return
+        play_item = {
+            **item,
+            "path": path,
+            "is_remote": False,
+            "audio_only": bool(item.get("audio_only", True)),
+            "url": path,
+        }
+        self._is_podcast_media = True
+        self.podcastPlaybackSpeedChanged.emit()
+        self._set_playback_queue([play_item])
+        self._play_item(play_item)
+
+    @pyqtSlot(int)
+    def downloadVideoSuggestion(self, index: int) -> None:
+        self._download_suggestion_at(self._video_suggestions_model, index)
+
+    @pyqtSlot(int)
+    def downloadShortsSuggestion(self, index: int) -> None:
+        self._download_suggestion_at(self._shorts_suggestions_model, index)
+
+    @pyqtSlot(str, result=list)
+    def getTagSuggestions(self, prefix: str) -> list[str]:
+        from src import tag_store
+        return tag_store.get_tag_suggestions(prefix)
+
+    @pyqtSlot()
+    def refreshTagCache(self) -> None:
+        from src import tag_store
+        tag_store.sync_tags_from_suggestions(self._all_suggestions)
+
+
+    def _download_suggestion_at(self, model: MediaListModel, index: int) -> None:
+        item = model.item_at(index)
+        if item is None:
+            return
+        path = str(item.get("path") or "").strip()
+        if item.get("download_status") == "done" and path and Path(path).exists():
+            return
+        source_url = str(item.get("url") or item.get("source_url") or "").strip()
+        if not source_url:
+            self.downloadError.emit("", "Đề xuất thiếu link tải.")
+            return
+        suggestion_id = str(item.get("suggestion_id") or item.get("track_id") or "")
+        media_kind = str(item.get("media_kind") or "audio").lower()
+        content_type = str(item.get("content_type") or "").lower()
+        if content_type == "podcast":
+            kind = "podcast" if media_kind == "audio" else "podcast_video"
+        else:
+            kind = "music" if media_kind == "audio" else "video"
+        item["is_downloading"] = True
+        item["download_status"] = "downloading"
+        item["download_percent"] = 0.0
+        model.update_download_state(
+            str(item.get("track_id") or ""),
+            percent=0.0,
+            status="downloading",
+            is_downloading=True,
+        )
+        if suggestion_id:
+            suggestions_manager.persist_download_state(
+                suggestion_id,
+                status="downloading",
+                percent=0.0,
+                is_downloading=True,
+            )
+            for raw in self._all_suggestions:
+                if str(raw.get("id") or "") == suggestion_id:
+                    raw["download_status"] = "downloading"
+                    raw["download_percent"] = 0.0
+                    raw["is_downloading"] = True
+                    break
+        self._downloadMedia(source_url, kind, "", "suggestion")
+
+    def _find_suggestion_by_key(self, key: str) -> dict | None:
+        needle = (key or "").strip()
+        if not needle:
+            return None
+        for item in self._all_suggestions:
+            if str(item.get("id") or "") == needle:
+                return item
+            source_url = str(item.get("source_url") or "").strip()
+            if source_url == needle:
+                return item
+            yt_id = extract_youtube_id(source_url) if source_url else ""
+            if yt_id and yt_id == needle:
+                return item
+        return None
+
+    def _patch_suggestion_download(
+        self,
+        key: str,
+        *,
+        percent: float | None = None,
+        status: str | None = None,
+        is_downloading: bool | None = None,
+    ) -> None:
+        item = self._find_suggestion_by_key(key)
+        if item is None:
+            return
+        if percent is not None:
+            item["download_percent"] = float(percent)
+        if status is not None:
+            item["download_status"] = status
+        if is_downloading is not None:
+            item["is_downloading"] = bool(is_downloading)
+        suggestion_id = str(item.get("id") or "")
+        if suggestion_id:
+            suggestions_manager.persist_download_state(
+                suggestion_id,
+                status=item.get("download_status"),
+                percent=item.get("download_percent"),
+                is_downloading=item.get("is_downloading"),
+            )
+        track_id = suggestion_id
+        source_url = str(item.get("source_url") or "")
+        content_type = str(item.get("content_type") or "").lower()
+        # Only update models that can contain this item type
+        if content_type == "podcast":
+            target_models = (
+                self._podcast_suggestions_model,
+                self._podcast_playlist_model,
+                self._podcast_category_detail_model,
+            )
+        elif content_type == "video":
+            target_models = (self._video_suggestions_model,)
+        elif content_type == "shorts":
+            target_models = (self._shorts_suggestions_model,)
+        else:
+            target_models = (
+                self._podcast_suggestions_model,
+                self._video_suggestions_model,
+                self._shorts_suggestions_model,
+            )
+        for model in target_models:
+            model.update_download_state(
+                track_id,
+                percent=item.get("download_percent"),
+                status=item.get("download_status"),
+                is_downloading=item.get("is_downloading"),
+            )
+            if source_url and source_url != track_id:
+                model.update_download_state(
+                    source_url,
+                    percent=item.get("download_percent"),
+                    status=item.get("download_status"),
+                    is_downloading=item.get("is_downloading"),
+                )
+        self.suggestionsChanged.emit()
+
+    # ── Suggestion download signal handlers (process "suggestion" + "rss_podcast") ─
+
+    def _on_suggestion_download_started(self, key: str) -> None:
+        source = self._active_download_source.get(key, "")
+        if source == "rss_podcast":
+            return  # RSS start state already set by downloadPodcastEpisode
+        if source != "suggestion":
+            return
+        self._patch_suggestion_download(
+            key, status="downloading", is_downloading=True
+        )
+
+    def _on_suggestion_download_progress(self, key: str, percent: float) -> None:
+        source = self._active_download_source.get(key, "")
+        if source == "rss_podcast":
+            meta = self._active_rss_meta.get(key)
+            if meta:
+                _feed_url, guid = meta
+                self._podcast_episode_model.update_download_state(
+                    guid, percent=percent, is_downloading=True,
+                )
+            return
+        if source != "suggestion":
+            return
+        self._patch_suggestion_download(
+            key,
+            percent=percent,
+            status="downloading",
+            is_downloading=True,
+        )
+        item = self._find_suggestion_by_key(key)
+        item_id = str(item.get("id") or "") if item else ""
+        if self._focus_mode_loading_id and (key == self._focus_mode_loading_id or item_id == self._focus_mode_loading_id):
+            self._focus_mode_download_percent = percent
+            self.focusModeDownloadPercentChanged.emit()
+
+    def _on_suggestion_download_finished(self, key: str, file_path: str) -> None:
+        source = self._active_download_source.get(key, "")
+        if source == "rss_podcast":
+            # RSS completion handled directly in _run_download_job
+            return
+        if source != "suggestion":
+            return
+        item = self._find_suggestion_by_key(key)
+        item_id = str(item.get("id") or "") if item else ""
+        if self._focus_mode_loading_id and (key == self._focus_mode_loading_id or item_id == self._focus_mode_loading_id):
+            self._focus_mode_download_percent = 100.0
+            self.focusModeDownloadPercentChanged.emit()
+            self._focus_mode_loading_id = ""
+        path = str(file_path or "").strip()
+        if item is not None and path and Path(path).exists():
+            content_type = str(item.get("content_type") or "").lower()
+            if content_type == "podcast":
+                try:
+                    item_categories = item.get("categories") or []
+                    first_category = item_categories[0] if item_categories else ""
+                    item_category_labels = item.get("category_labels") or []
+                    first_category_label = item_category_labels[0] if item_category_labels else ""
+                    podcast_library.register_download(
+                        suggestion_id=str(item.get("id") or ""),
+                        title=str(item.get("title") or ""),
+                        author=str(item.get("author") or ""),
+                        path=path,
+                        media_kind=str(item.get("media_kind") or "audio"),
+                        category=first_category,
+                        category_label=first_category_label,
+                        thumbnail=str(
+                            item.get("local_thumbnail") or item.get("thumbnail_url") or ""
+                        ),
+                        source_url=str(item.get("source_url") or ""),
+                        description=str(item.get("description") or ""),
+                    )
+                except ValueError as exc:
+                    logger.warning("Podcast library register failed: %s", exc)
+            item["local_path"] = path
+            suggestions_manager.persist_download_state(
+                str(item.get("id") or ""),
+                status="done",
+                percent=100.0,
+                is_downloading=False,
+                local_path=path,
+            )
+        self._patch_suggestion_download(
+            key, percent=100.0, status="done", is_downloading=False
+        )
+        self._rebuild_suggestion_models()
+        self._refresh_podcast_downloaded_from_library()
+        
+        if item is not None:
+            suggestion_id = str(item.get("id") or "")
+            if suggestion_id in self._pending_play_suggestions:
+                self._pending_play_suggestions.remove(suggestion_id)
+                if path and Path(path).exists():
+                    self._play_podcast_suggestion_item(item)
+                else:
+                    if self._focus_mode_loading_id == suggestion_id:
+                        self._focus_mode_loading_id = ""
+                        self._focus_mode_download_percent = 0.0
+                        self.focusModeDownloadPercentChanged.emit()
+                        self.exitFocusMode()
+
+    def _on_suggestion_download_error(self, key: str, _message: str) -> None:
+        source = self._active_download_source.get(key, "")
+        if source == "rss_podcast":
+            # RSS error handling already done in _run_download_job
+            return
+        if source != "suggestion":
+            return
+        self._patch_suggestion_download(
+            key, status="error", is_downloading=False
+        )
+        item = self._find_suggestion_by_key(key)
+        if item is not None:
+            suggestion_id = str(item.get("id") or "")
+            if suggestion_id in self._pending_play_suggestions:
+                self._pending_play_suggestions.remove(suggestion_id)
+                if self._focus_mode_loading_id == suggestion_id:
+                    self._focus_mode_loading_id = ""
+                    self._focus_mode_download_percent = 0.0
+                    self.focusModeDownloadPercentChanged.emit()
+                    self.exitFocusMode()
+
+    def _refresh_podcast_downloaded_from_library(self) -> None:
+        """Fill podcastDownloadedModel from local YouTube podcast downloads."""
+        dl_items: list[dict] = []
+        for idx, entry in enumerate(podcast_library.list_downloads()):
+            path = str(entry.get("path") or "")
+            media_kind = str(entry.get("media_kind") or "audio")
+            dl_items.append({
+                "title": str(entry.get("title") or Path(path).stem),
+                "subtitle": str(entry.get("author") or entry.get("category_label") or "Podcast"),
+                "artist": str(entry.get("author") or ""),
+                "path": path,
+                "canonical_path": str(entry.get("suggestion_id") or path),
+                "url": path,
+                "track_id": str(entry.get("suggestion_id") or path),
+                "duration": "",
+                "image": str(entry.get("thumbnail") or ""),
+                "accent": ACCENT_COLORS[idx % len(ACCENT_COLORS)],
+                "audio_only": media_kind != "video",
+                "is_remote": False,
+                "is_collection": False,
+                "kind": "podcast",
+                "child_count": 0,
+                "preview_images": [],
+                "download_percent": 100.0,
+                "download_status": "done",
+                "is_downloading": False,
+                "watched_percent": _compute_watched_percent(path) if path else 0.0,
+                "suggestion_id": str(entry.get("suggestion_id") or ""),
+                "media_kind": media_kind,
+                "content_type": "podcast",
+                "source_url": str(entry.get("source_url") or ""),
+            })
+        self._podcast_downloaded_model.set_items(dl_items)
+
+    # ── Podcast feed management ─────────────────────────────────────────
+
+    def _load_podcasts(self) -> None:
+        """Load podcast suggestion downloads (+ optional legacy RSS feeds)."""
+        try:
+            verify_local_episodes()
+        except Exception:
+            logger.exception("Failed verifying local podcast episodes")
+        self._refresh_podcast_downloaded_from_library()
+        try:
+            feeds = load_subscriptions()
+        except Exception:
+            logger.exception("Failed loading podcast RSS subscriptions")
+            feeds = []
+        items: list[dict] = []
+        for i, feed in enumerate(feeds):
+            items.append({
+                "title": feed.title or feed.url,
+                "subtitle": feed.author or f"{len(feed.episodes)} tập",
+                "artist": feed.author,
+                "path": feed.url,
+                "canonical_path": feed.url,
+                "url": feed.url,
+                "track_id": feed.url,
+                "duration": "",
+                "image": feed.image_url,
+                "accent": ACCENT_COLORS[i % len(ACCENT_COLORS)],
+                "audio_only": True,
+                "is_remote": True,
+                "is_collection": True,
+                "kind": "podcast",
+                "child_count": len(feed.episodes),
+                "preview_images": [],
+                "download_percent": 0.0,
+                "download_status": "",
+                "is_downloading": False,
+                "watched_percent": 0.0,
+            })
+        self._podcast_feed_model.set_items(items)
+
+        try:
+            all_eps = get_all_episodes()
+        except Exception:
+            all_eps = []
+        new_items: list[dict] = []
+        for idx, (feed, ep) in enumerate(all_eps):
+            new_items.append({
+                "title": ep.title,
+                "subtitle": f"{feed.title} · {ep.publish_date[:10] if ep.publish_date else ''}",
+                "artist": feed.author,
+                "path": ep.audio_url,
+                "canonical_path": ep.guid,
+                "url": ep.audio_url,
+                "track_id": ep.guid,
+                "duration": ep.duration,
+                "image": ep.image_url or feed.image_url,
+                "accent": ACCENT_COLORS[idx % len(ACCENT_COLORS)],
+                "audio_only": True,
+                "is_remote": True,
+                "is_collection": False,
+                "kind": "podcast_episode",
+                "child_count": 0,
+                "preview_images": [],
+                "download_percent": 0.0,
+                "download_status": "done" if (ep.downloaded_path and Path(ep.downloaded_path).exists()) else "",
+                "is_downloading": False,
+                "watched_percent": 0.0,
+            })
+        self._podcast_new_episodes_model.set_items(new_items)
+
+    @pyqtSlot(str)
+    def subscribePodcast(self, url: str) -> None:
+        url = url.strip()
+        if not url:
+            return
+        feed = subscribe(url)
+        self._load_podcasts()
+
+    @pyqtSlot(str)
+    def unsubscribePodcast(self, url: str) -> None:
+        url = url.strip()
+        if not url:
+            return
+        unsubscribe(url)
+        self._load_podcasts()
+        if self._podcast_detail_index >= 0:
+            self._podcast_detail_index = -1
+            self._podcast_episode_model.set_items([])
+            self.libraryNavigationChanged.emit()
+
+    @pyqtSlot()
+    def refreshPodcasts(self) -> None:
+        refresh_all_feeds()
+        self._load_podcasts()
+
+    @pyqtSlot(int)
+    def openPodcastDetail(self, index: int) -> None:
+        feeds = load_subscriptions()
+        if index < 0 or index >= len(feeds):
+            return
+        feed = feeds[index]
+        self._podcast_detail_index = index
+        self._podcast_show_title = feed.title or feed.url
+        self._podcast_show_image = feed.image_url
+        self._podcast_show_description = feed.description
+        self._podcast_show_author = feed.author
+
+        ep_items: list[dict] = []
+        for i, ep in enumerate(feed.episodes):
+            ep_items.append({
+                "title": ep.title,
+                "subtitle": ep.description[:120] if ep.description else "",
+                "artist": feed.author,
+                "path": ep.downloaded_path if (ep.downloaded_path and Path(ep.downloaded_path).exists()) else ep.audio_url,
+                "canonical_path": ep.guid,
+                "url": ep.audio_url,
+                "track_id": ep.guid,
+                "duration": ep.duration,
+                "image": ep.image_url or feed.image_url,
+                "accent": ACCENT_COLORS[i % len(ACCENT_COLORS)],
+                "audio_only": True,
+                "is_remote": not bool(ep.downloaded_path and Path(ep.downloaded_path).exists()),
+                "is_collection": False,
+                "kind": "podcast_episode",
+                "child_count": 0,
+                "preview_images": [],
+                "download_percent": 0.0,
+                "download_status": "done" if (ep.downloaded_path and Path(ep.downloaded_path).exists()) else "",
+                "is_downloading": False,
+                "watched_percent": 0.0,
+                "podcast_feed_url": feed.url,
+                "podcast_guid": ep.guid,
+            })
+        self._podcast_episode_model.set_items(ep_items)
+        self.libraryNavigationChanged.emit()
+
+    @pyqtSlot()
+    def closePodcastDetail(self) -> None:
+        self._podcast_detail_index = -1
+        self._podcast_episode_model.set_items([])
+        self.libraryNavigationChanged.emit()
+
+    @pyqtSlot(int)
+    def playPodcastEpisode(self, index: int) -> None:
+        item = self._podcast_episode_model.item_at(index)
+        if item is None:
+            # Try from new episodes or downloaded models
+            if self._podcast_new_episodes_model.count > 0:
+                item = self._podcast_new_episodes_model.item_at(index)
+        if item is None:
+            return
+
+        download_status = str(item.get("download_status") or "")
+        path = item.get("path") or item.get("url") or ""
+
+        if download_status == "done" and Path(path).exists():
+            item["is_remote"] = False
+            item["path"] = path
+        else:
+            item["is_remote"] = True
+            item["path"] = item.get("url", "")
+
+        self._is_podcast_media = True
+        self.podcastPlaybackSpeedChanged.emit()
+        self._set_playback_queue([item])
+        self._play_item(item)
+
+    @pyqtSlot(int)
+    def playPodcastNewEpisode(self, index: int) -> None:
+        item = self._podcast_new_episodes_model.item_at(index)
+        if item is None:
+            return
+        self._is_podcast_media = True
+        self.podcastPlaybackSpeedChanged.emit()
+        self._set_playback_queue([item])
+        self._play_item(item)
+
+    @pyqtSlot(int)
+    def playDownloadedPodcastEpisode(self, index: int) -> None:
+        item = self._podcast_downloaded_model.item_at(index)
+        if item is None:
+            return
+        self._is_podcast_media = True
+        self.podcastPlaybackSpeedChanged.emit()
+        self._set_playback_queue([item])
+        self._play_item(item)
+
+    @pyqtSlot(str, str)
+    def downloadPodcastEpisode(self, feed_url: str, guid: str) -> None:
+        feeds = load_subscriptions()
+        target_ep = None
+        for feed in feeds:
+            if feed.url == feed_url:
+                for ep in feed.episodes:
+                    if ep.guid == guid:
+                        target_ep = ep
+                        break
+                break
+
+        if target_ep is None or not target_ep.audio_url:
+            return
+
+        if target_ep.downloaded_path and Path(target_ep.downloaded_path).exists():
+            return
+
+        error = self.downloader.availability_error(require_ffmpeg=True)
+        if error:
+            self.downloadError.emit(guid, error)
+            return
+
+        self._podcast_episode_model.update_download_state(
+            guid, percent=0.0, is_downloading=True,
+        )
+
+        job = _DownloadJob(
+            target_ep.audio_url,
+            "podcast",
+            "",
+            source="rss_podcast",
+            rss_feed_url=feed_url,
+            rss_guid=guid,
+        )
+        self._active_download_source[target_ep.audio_url] = "rss_podcast"
+        self._active_rss_meta[target_ep.audio_url] = (feed_url, guid)
+        self._enqueue_download(job)
+
+    @pyqtSlot(float)
+    def setPodcastPlaybackSpeed(self, speed: float) -> None:
+        speed = max(0.5, min(4.0, speed))
+        if speed == self._podcast_playback_speed:
+            return
+        self._podcast_playback_speed = speed
+        self._player.set_speed(speed)
+        self.podcastPlaybackSpeedChanged.emit()
+
+    @pyqtSlot(float)
+    def seekPodcastRelative(self, seconds: float) -> None:
+        self._player.seek_relative(seconds)
+
+    def _reset_podcast_media_state(self) -> None:
+        if self._is_podcast_media:
+            self._is_podcast_media = False
+            self._podcast_playback_speed = 1.0
+            self._player.set_speed(1.0)
+            self.podcastPlaybackSpeedChanged.emit()
 
     @pyqtSlot(int)
     def dismissSharedItem(self, index: int) -> None:
@@ -2947,7 +4233,11 @@ class AppBackend(QObject):
                 is_downloading=item.get("is_downloading"),
             )
 
+    # ── Shared download signal handlers (only process "shared" source) ─────
+
     def _on_shared_download_started(self, key: str) -> None:
+        if self._active_download_source.get(key, "") != "shared":
+            return
         match = self._find_shared_episode(key)
         if match is not None:
             series, episode = match
@@ -2973,6 +4263,8 @@ class AppBackend(QObject):
             self._mark_shared_downloading(item, percent=float(item.get("download_percent") or 0.0))
 
     def _on_shared_download_progress(self, key: str, percent: float) -> None:
+        if self._active_download_source.get(key, "") != "shared":
+            return
         match = self._find_shared_episode(key)
         if match is not None:
             series, episode = match
@@ -3071,6 +4363,8 @@ class AppBackend(QObject):
                 )
 
     def _on_shared_download_finished(self, video_id: str, file_path: str) -> None:
+        if self._active_download_source.get(video_id, "") != "shared":
+            return
         self._flush_shared_progress_state()
         match = self._find_shared_episode(video_id)
         if match is not None:
@@ -3129,6 +4423,8 @@ class AppBackend(QObject):
             )
 
     def _on_shared_download_error(self, key: str, _message: str) -> None:
+        if self._active_download_source.get(key, "") != "shared":
+            return
         self._flush_shared_progress_state()
         match = self._find_shared_episode(key)
         if match is not None:
@@ -3230,15 +4526,24 @@ class AppBackend(QObject):
 
     @pyqtSlot()
     def goBackLibrary(self) -> None:
+        if self._current_page == 6 and self.inPodcastCategoryView:
+            self.closePodcastCategoryDetail()
+            return
+        if self._current_page == 6 and self.inPodcastPlaylistView:
+            self.closePodcastPlaylist()
+            return
+        if self._current_page == 6 and self.inPodcastDetail:
+            self.closePodcastDetail()
+            return
         if self._shared_series_index >= 0:
             self.goBackSharedSeries()
             return
         if self._shared_playlist_index >= 0:
             self.goBackSharedPlaylist()
             return
-        if self._movie_detail_index >= 0 or self._shared_movie_detail_index >= 0:
-            self._movie_detail_index = -1
-            self._shared_movie_detail_index = -1
+        if self._movie_detail_path or self._shared_movie_detail_path:
+            self._movie_detail_path = ""
+            self._shared_movie_detail_path = ""
             self.libraryNavigationChanged.emit()
             return
         stack = self._folder_stack_for_page(self._current_page)
@@ -3249,7 +4554,13 @@ class AppBackend(QObject):
 
     @pyqtSlot()
     def goBack(self) -> None:
-        if self._current_page == 3 and self.inSharedSeriesView:
+        if self._current_page == 6 and self.inPodcastCategoryView:
+            self.closePodcastCategoryDetail()
+        elif self._current_page == 6 and self.inPodcastPlaylistView:
+            self.closePodcastPlaylist()
+        elif self._current_page == 6 and self.inPodcastDetail:
+            self.closePodcastDetail()
+        elif self._current_page == 3 and self.inSharedSeriesView:
             self.goBackSharedSeries()
         elif self._current_page == 2 and self.inSharedPlaylistView:
             self.goBackSharedPlaylist()
@@ -3486,11 +4797,13 @@ class AppBackend(QObject):
         try:
             video_root = Path(self._video_dir).resolve()
             music_root = Path(self._music_dir).resolve()
+            podcast_root = Path(get_podcasts_dir()).resolve()
             resolved = target.resolve()
             in_video = resolved == video_root or video_root in resolved.parents
             in_music = resolved == music_root or music_root in resolved.parents
+            in_podcast = resolved == podcast_root or podcast_root in resolved.parents
         except OSError:
-            in_video = in_music = False
+            in_video = in_music = in_podcast = False
 
         try:
             if target.is_dir():
@@ -3514,6 +4827,10 @@ class AppBackend(QObject):
             self._load_video_library(refresh=True)
         elif in_music:
             self._load_music_library(refresh=True)
+        elif in_podcast:
+            self._refresh_podcast_downloaded_from_library()
+            if hasattr(self, "_all_suggestions") and self._all_suggestions:
+                self.apply_suggestions(self._all_suggestions)
         else:
             self._reload_current_library(refresh=True)
 
@@ -3747,17 +5064,31 @@ class AppBackend(QObject):
 
     @pyqtSlot(str, str, str)
     def downloadMedia(self, url: str, kind: str, output_subdir: str = "") -> None:
-        """Enqueue an audio/video download; jobs run one at a time."""
+        """Enqueue an audio/video/podcast download; jobs run one at a time."""
+        self._downloadMedia(url, kind, output_subdir, "download_page")
+
+    def _downloadMedia(self, url: str, kind: str, output_subdir: str, source: str) -> None:
         value = url.strip()
         if not value:
             self.downloadError.emit("", "URL hoặc video ID không hợp lệ.")
             return
-        media_type = "music" if kind in {"audio", "music"} else kind
-        if media_type not in {"music", "video"}:
+        raw = kind.strip().lower()
+        if raw in {"audio", "music"}:
+            media_type = "music"
+        elif raw in {"podcast"}:
+            media_type = "podcast"
+        elif raw in {"podcast_video"}:
+            media_type = "podcast_video"
+        elif raw in {"video"}:
+            media_type = "video"
+        else:
+            media_type = raw
+        if media_type not in {"music", "video", "podcast", "podcast_video"}:
             self.downloadError.emit(value, "Loại media không được hỗ trợ.")
             return
         subdir = output_subdir.strip()
-        self._enqueue_download(_DownloadJob(value, media_type, subdir, self._download_quality))
+        job = _DownloadJob(value, media_type, subdir, self._download_quality, source=source)
+        self._enqueue_download(job)
 
     @pyqtSlot(str, str, result=bool)
     def removeQueuedDownload(self, url: str, media_kind: str) -> bool:
@@ -3806,11 +5137,57 @@ class AppBackend(QObject):
             return False
 
         for job in removed:
-            if job.media_type != "music":
+            if job.media_type not in {"music", "podcast"}:
                 self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
             self._untrack_download_subdir(job.media_type, job.output_subdir)
         self._refresh_download_concurrency()
         return True
+
+    @pyqtSlot()
+    def cancelCurrentDownloads(self) -> None:
+        """Cancel all in-progress downloads, clear the queue, and reset suggestion states."""
+        self.downloader.cancel()
+        queue = self._download_queue
+        if queue is not None:
+            while not queue.empty():
+                try:
+                    job = queue.get_nowait()
+                    if job.media_type not in {"music", "podcast"}:
+                        self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
+                    self._untrack_download_subdir(job.media_type, job.output_subdir)
+                    queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+        deferred = self._deferred_403_jobs
+        for job in deferred:
+            if job.media_type not in {"music", "podcast"}:
+                self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
+            self._untrack_download_subdir(job.media_type, job.output_subdir)
+        self._deferred_403_jobs.clear()
+        self._refresh_download_concurrency()
+        self._reset_all_suggestion_download_states()
+
+    def _reset_all_suggestion_download_states(self) -> None:
+        """Reset all suggestion items stuck in 'downloading' back to 'pending'."""
+        for item in self._all_suggestions:
+            if item.get("download_status") == "downloading":
+                item["download_status"] = "pending"
+                item["download_percent"] = 0.0
+                item["is_downloading"] = False
+        for model in (
+            self._podcast_suggestions_model,
+            self._video_suggestions_model,
+            self._shorts_suggestions_model,
+        ):
+            for i in range(model.rowCount()):
+                item = model.item_at(i)
+                if item and item.get("download_status") == "downloading":
+                    model.update_download_state(
+                        str(item.get("track_id") or ""),
+                        percent=0.0,
+                        status="pending",
+                        is_downloading=False,
+                    )
 
     @pyqtSlot(str, str)
     def queueLink(self, url: str, media_type: str) -> None:
@@ -3858,7 +5235,7 @@ class AppBackend(QObject):
     def _enqueue_download(self, job: _DownloadJob) -> None:
         queue = self._ensure_download_worker()
         queue.put_nowait(job)
-        if job.media_type != "music":
+        if job.media_type not in {"music", "podcast"}:
             self._pending_video_downloads += 1
         self._track_download_subdir(job.media_type, job.output_subdir)
         self._start_library_hotload_timer()
@@ -3898,7 +5275,14 @@ class AppBackend(QObject):
         self._download_jobs_in_progress += 1
         self._refresh_download_concurrency()
         self._start_library_hotload_timer()
+        source = job.source
+        rss_feed_url = job.rss_feed_url
+        rss_guid = job.rss_guid
+        self._active_download_source[job.url] = source
+        if source == "rss_podcast":
+            self._active_rss_meta[job.url] = (rss_feed_url, rss_guid)
         finished = False
+        video_id = ""
         try:
             self.downloadJobStarted.emit(job.url)
             try:
@@ -3907,6 +5291,7 @@ class AppBackend(QObject):
                     job.media_type,
                     job.output_subdir,
                     job.quality,
+                    source=source,
                 )
             except Download403Failed as exc:
                 if job.retry_403:
@@ -3917,14 +5302,25 @@ class AppBackend(QObject):
                     logger.warning("HTTP 403 for %r, deferring until batch end", job.url)
                     self._deferred_403_jobs.append(job)
                     self.downloadJobRequeued.emit(job.url)
+                if source == "rss_podcast":
+                    self._podcast_episode_model.update_download_state(
+                        rss_guid, is_downloading=False,
+                    )
                 return
             except DownloadFailed as exc:
                 logger.exception("Media download failed for %r", job.url)
                 self.downloadError.emit(job.url, str(exc))
                 finished = True
+                if source == "rss_podcast":
+                    self._podcast_episode_model.update_download_state(
+                        rss_guid, is_downloading=False,
+                    )
                 return
 
             finished = True
+            self._active_download_source[video_id] = source
+            if source == "rss_podcast":
+                self._active_rss_meta[video_id] = (rss_feed_url, rss_guid)
             self.downloadFinished.emit(video_id, file_path)
             resolved_path = str(Path(file_path).resolve())
             set_metadata(
@@ -3935,17 +5331,34 @@ class AppBackend(QObject):
                     find_video_subtitle_paths(Path(resolved_path)) or [None]
                 )[0],
             )
-            if job.media_type == "music":
+            if job.media_type in {"music", "podcast"}:
                 self._music_source_ids.add(video_id)
             else:
                 self._video_source_ids.add(video_id)
+
+            # RSS podcast post-processing
+            if source == "rss_podcast" and file_path and Path(file_path).exists():
+                update_episode_download(rss_feed_url, rss_guid, file_path)
+                self._podcast_episode_model.update_download_state(
+                    rss_guid, percent=100.0, status="done", is_downloading=False,
+                )
+                self._podcast_new_episodes_model.update_download_state(
+                    rss_guid, percent=100.0, status="done", is_downloading=False,
+                )
+                self._load_podcasts()
+
             self._hotload_after_download(job, file_path)
         finally:
             self._download_jobs_in_progress -= 1
-            if finished and job.media_type != "music":
+            if finished and job.media_type not in {"music", "podcast"}:
                 self._pending_video_downloads = max(0, self._pending_video_downloads - 1)
             if finished:
                 self._untrack_download_subdir(job.media_type, job.output_subdir)
+            self._active_download_source.pop(job.url, None)
+            self._active_rss_meta.pop(job.url, None)
+            if video_id:
+                self._active_download_source.pop(video_id, None)
+                self._active_rss_meta.pop(video_id, None)
             self._refresh_download_concurrency()
 
     async def _download_worker(self) -> None:
@@ -3967,36 +5380,44 @@ class AppBackend(QObject):
             while len(in_flight) >= self._download_concurrency_limit():
                 await reap_one()
 
-        while True:
-            await wait_for_slot()
+        try:
+            while True:
+                await wait_for_slot()
 
-            if queue.empty():
-                if in_flight:
-                    await reap_one()
-                    continue
-                if self._deferred_403_jobs:
-                    pending = self._deferred_403_jobs
-                    self._deferred_403_jobs = []
-                    for deferred in pending:
-                        queue.put_nowait(replace(deferred, retry_403=True))
+                if queue.empty():
+                    if in_flight:
+                        await reap_one()
+                        continue
+                    if self._deferred_403_jobs:
+                        pending = self._deferred_403_jobs
+                        self._deferred_403_jobs = []
+                        for deferred in pending:
+                            queue.put_nowait(replace(deferred, retry_403=True))
+                        self._refresh_download_concurrency()
+                        continue
+                    self._download_speed_ema = 0.0
                     self._refresh_download_concurrency()
-                    continue
-                self._download_speed_ema = 0.0
-                self._refresh_download_concurrency()
-                self._stop_library_hotload_timer()
-                self.rescanLibrary()
-                job = await queue.get()
-            else:
-                job = await queue.get()
+                    self._stop_library_hotload_timer()
+                    self.rescanLibrary()
+                    job = await queue.get()
+                else:
+                    job = await queue.get()
 
-            task = asyncio.create_task(self._run_download_job(job))
-            in_flight.add(task)
+                task = asyncio.create_task(self._run_download_job(job))
+                in_flight.add(task)
 
-            def _on_task_done(t: asyncio.Task[None]) -> None:
-                in_flight.discard(t)
-                queue.task_done()
+                def _on_task_done(t: asyncio.Task[None]) -> None:
+                    in_flight.discard(t)
+                    queue.task_done()
 
-            task.add_done_callback(_on_task_done)
+                task.add_done_callback(_on_task_done)
+        except Exception:
+            logger.exception("Download worker crashed, restarting")
+            self._download_worker_started = False
+            self._download_queue = None
+            self._download_jobs_in_progress = 0
+            self._deferred_403_jobs.clear()
+            self._refresh_download_concurrency()
 
     async def _execute_download(
         self,
@@ -4009,6 +5430,7 @@ class AppBackend(QObject):
 
         def hook(data: dict) -> None:
             nonlocal active_id
+            self.downloader._check_cancelled()
             info = data.get("info_dict") or {}
             active_id = str(info.get("id") or active_id)
             if data.get("status") != "downloading":
@@ -4021,7 +5443,7 @@ class AppBackend(QObject):
             if speed > 0:
                 self._record_download_speed(speed)
 
-        if media_type not in {"music", "video"}:
+        if media_type not in {"music", "video", "podcast", "podcast_video"}:
             raise DownloadFailed("Loại media không được hỗ trợ.")
         return await self.downloader.download(
             url,
@@ -4029,6 +5451,7 @@ class AppBackend(QObject):
             hook,
             output_subdir=output_subdir or None,
             quality=quality,
+            cookies_browser=self._youtube_cookies_browser,
         )
 
     @pyqtSlot()
@@ -4095,6 +5518,14 @@ class AppBackend(QObject):
             self._download_quality = quality
             self.downloadQualityChanged.emit()
             save_raw_settings({"download_quality": quality})
+
+    @pyqtSlot(str)
+    def setYoutubeCookiesBrowser(self, browser: str) -> None:
+        browser = str(browser or "").strip().lower()
+        if self._youtube_cookies_browser != browser:
+            self._youtube_cookies_browser = browser
+            self.youtubeCookiesBrowserChanged.emit()
+            save_raw_settings({"youtube_browser": browser})
 
     @pyqtSlot()
     def updateYtDlp(self) -> None:
@@ -4274,6 +5705,7 @@ class AppBackend(QObject):
     def toggleLoop(self) -> None:
         self._loop_mode = (self._loop_mode + 1) % 3
         self.loopModeChanged.emit()
+        save_raw_settings({"loop_mode": self._loop_mode})
 
     @pyqtSlot(float)
     def seekTo(self, position: float) -> None:
@@ -4282,14 +5714,39 @@ class AppBackend(QObject):
 
     # ── Internal ──
 
+    @staticmethod
+    def _find_item_by_path(model: MediaListModel, path: str) -> dict | None:
+        """Find an item in the model by its path, returning None if not found."""
+        if not path:
+            return None
+        for i in range(model.rowCount()):
+            item = model.item_at(i)
+            if item and (item.get("path") == path or item.get("canonical_path") == path):
+                return item
+        return None
+
+    @staticmethod
+    def _index_of_path(model: MediaListModel, path: str) -> int:
+        """Return the index of an item by path, or -1 if not found."""
+        if not path:
+            return -1
+        for i in range(model.rowCount()):
+            item = model.item_at(i)
+            if item and (item.get("path") == path or item.get("canonical_path") == path):
+                return i
+        return -1
+
     def _model_for_page(self, page: int) -> MediaListModel:
         if page == 2:
             return self._music_albums_model if self._music_section == "albums" else self._music_singles_model
         if page == 3:
             if self.inCollectionView:
+                logger.info("[DEBUG _model_for_page] page=3 inCollectionView -> _video_model")
                 return self._video_model
             if self._video_section == "series":
+                logger.info("[DEBUG _model_for_page] page=3 video_section=series -> _video_series_model")
                 return self._video_series_model
+            logger.info("[DEBUG _model_for_page] page=3 video_section=%s -> _video_my_movies_model (default)", self._video_section)
             return self._video_my_movies_model
         return self._music_singles_model
 
@@ -4410,29 +5867,40 @@ class AppBackend(QObject):
     def _build_all_musics_collection_item(self, tracks: list[MediaInfo] | None = None) -> dict:
         tracks = tracks if tracks is not None else self._scan_all_music_tracks()
         count = len(tracks)
-        preview_images: list[str] = []
-        seen: set[str] = set()
 
-        def _take(img: str) -> bool:
-            if not img or img in seen:
-                return False
-            seen.add(img)
-            preview_images.append(img)
-            return len(preview_images) >= 4
+        # Use cached preview images picked once per session — avoid re-randomizing on every refresh.
+        if self._all_musics_preview_images is not None:
+            preview_images = list(self._all_musics_preview_images)
+        else:
+            preview_images: list[str] = []
+            seen: set[str] = set()
 
-        # Reuse art already discovered during the async scan — avoid another tree walk on the UI thread.
-        for info in self._music_root_infos or []:
-            if _take(info.image):
-                break
-            for thumb in info.preview_images or []:
-                if _take(thumb):
-                    break
-            if len(preview_images) >= 4:
-                break
-        if len(preview_images) < 4:
-            for info in tracks:
+            def _take(img: str) -> bool:
+                if not img or img in seen:
+                    return False
+                seen.add(img)
+                preview_images.append(img)
+                return len(preview_images) >= 4
+
+            # Reuse art already discovered during the async scan — avoid another tree walk on the UI thread.
+            # Pick up to 4 random albums to avoid always showing the same first albums.
+            root_infos = self._music_root_infos or []
+            if len(root_infos) > 4:
+                root_infos = random.sample(root_infos, 4)
+            for info in root_infos:
                 if _take(info.image):
                     break
+                for thumb in info.preview_images or []:
+                    if _take(thumb):
+                        break
+                if len(preview_images) >= 4:
+                    break
+            if len(preview_images) < 4:
+                for info in tracks:
+                    if _take(info.image):
+                        break
+
+            self._all_musics_preview_images = list(preview_images)
 
         music_root = Path(self._music_dir)
         if not preview_images:
@@ -4759,7 +6227,7 @@ class AppBackend(QObject):
         return (subdir or "").strip().strip("/\\")
 
     def _active_download_subdir_map(self, media_type: str) -> dict[str, int]:
-        if media_type == "music":
+        if media_type in {"music", "podcast"}:
             return self._active_music_download_subdirs
         return self._active_video_download_subdirs
 
@@ -5311,6 +6779,7 @@ class AppBackend(QObject):
         if refresh:
             self._music_root_infos = None
             self._music_track_infos = None
+            self._all_musics_preview_images = None
         self._start_music_library_scan(refresh=refresh)
 
     def _load_video_library(self, *, refresh: bool = False) -> None:
@@ -5346,6 +6815,7 @@ class AppBackend(QObject):
         self._video_track_infos = None
         self._music_root_infos = None
         self._video_root_infos = None
+        self._all_musics_preview_images = None
         self._music_scan_running = False
         self._video_scan_running = False
         self._music_source_ids = set()
@@ -5527,6 +6997,7 @@ class AppBackend(QObject):
         artist: str = "",
         start_pos: float = 0.0,
     ) -> None:
+
         # This is a final guard for every backend call path (including resume
         # from the player bar): video must never be delegated to an external
         # mpv window.  It is rendered by FocusModeScreen in the main QML window.
@@ -5545,12 +7016,18 @@ class AppBackend(QObject):
         )
 
     def _play_item(self, item: dict) -> None:
+        self._save_current_podcast_progress()
         path = item.get("path") or item.get("url") or ""
         if not path:
             return
         audio_only = item.get("audio_only", True)
         title = item.get("title", "")
         artist = item.get("subtitle", "")
+
+        # Reset podcast state when playing non-podcast media
+        kind = str(item.get("kind") or "")
+        if kind not in ("podcast", "podcast_episode"):
+            self._reset_podcast_media_state()
 
         # Qt Multimedia owns all video rendering inside the QML window.
         if not audio_only:
@@ -5652,6 +7129,10 @@ class AppBackend(QObject):
                 if self._loop_mode == 1:
                     next_idx = 0
                 else:
+                    # Reached end of album/singles queue — fall back to
+                    # random track from the full music library, so playback
+                    # never dead-ends inside a limited folder view.
+                    self._play_random_from_all_music()
                     return
             idx = next_idx
         else:
@@ -5663,24 +7144,81 @@ class AppBackend(QObject):
             else:
                 idx = idx - 1
 
-        self._play_path(self._music_paths[idx])
+        next_path = self._music_paths[idx]
+        self._play_path(next_path)
+
+    def _play_random_from_all_music(self) -> None:
+        """Pick a random track from the full music library and play it.
+        Used as fallback when an album/singles queue ends without loop mode."""
+        all_paths = [
+            str(item.get("path") or "")
+            for item in self._all_music_tracks
+            if item.get("path")
+        ]
+        # Only fall back if the full library is larger than the current queue
+        # (otherwise the queue already covers everything, so just stop).
+        if len(all_paths) <= len(self._music_paths):
+            return
+        candidates = [p for p in all_paths if p != self._current_path]
+        if candidates:
+            chosen = random.choice(candidates)
+            # Extend queue so adjacent navigation continues in the full library
+            self._music_paths = all_paths
+            self._play_path(chosen)
 
     def _play_random_other(self) -> None:
         if len(self._music_paths) <= 1:
             if self._loop_mode >= 1 and self._music_paths:
                 self._play_path(self._music_paths[0])
+            else:
+                self._play_random_from_all_music()
             return
 
         candidates = [p for p in self._music_paths if p != self._current_path]
         if candidates:
             self._play_path(random.choice(candidates))
+        else:
+            self._play_random_from_all_music()
+
+    # ── Track-end: auto-advance / loop / shuffle ──────────────────────────
+    # This is the single entry point for end-of-track handling, called by
+    # PlayerBridge.track_ended (audio via mpv IPC + poll fallback) and
+    # FocusModeScreen.onFocusVideoEnded (video via Qt Multimedia / mpv).
+    # Do NOT bypass this method for video/audio end-of-media — it must be
+    # the sole dispatcher so loop_mode and shuffle_on are always respected.
 
     def _on_track_ended(self) -> None:
         if not self._current_path:
             return
+
+        if self._is_podcast_media and self._current_path:
+            current_item = self._playback_items.get(self._current_path)
+            if current_item:
+                is_rss = current_item.get("kind") == "podcast_episode"
+                identifier = current_item.get("podcast_guid") or current_item.get("suggestion_id") or current_item.get("track_id")
+                if identifier:
+                    if not hasattr(self, "_incremented_plays"):
+                        self._incremented_plays = set()
+                    if identifier not in self._incremented_plays:
+                        self._incremented_plays.add(identifier)
+                        self._increment_podcast_play_count(identifier, is_rss)
+                    self._update_podcast_progress(identifier, is_rss, 0.0, self._duration)
+
         if self._in_focus_mode:
+            if self._loop_mode == 2:
+                self._save_video_progress()
+                self._focus_mode_start_position_ms = 0
+                self.focusModeStartPositionMsChanged.emit()
+                self.focusVideoReplayRequested.emit()
+                return
             self.exitFocusMode()
-            return
+            # Fall through to shuffle/adjacent logic
+
+        # Ensure _music_paths contains the current track so repeat/next
+        # works even when the queue was seeded from an incomplete view.
+        if self._current_path and self._current_path not in self._music_paths:
+            self._music_paths.append(self._current_path)
+
         if self._loop_mode == 2:
             self._play_path(self._current_path)
         elif self._shuffle_on:
@@ -5741,6 +7279,7 @@ class AppBackend(QObject):
         return True
 
     def _clear_current_track(self) -> None:
+        self._save_current_podcast_progress()
         self._player.stop()
         self._set_current_path("")
         self._current_audio_only = True
@@ -5857,6 +7396,37 @@ class AppBackend(QObject):
         self.trackTitleChanged.emit()
         self.trackArtistChanged.emit()
 
+    def _update_podcast_progress(self, identifier: str, is_rss: bool, position: float, duration: float) -> None:
+        if is_rss:
+            from src import podcast_manager
+            podcast_manager.update_episode_progress(identifier, position, duration)
+        else:
+            from src import podcast_library
+            podcast_library.update_progress(identifier, position, duration)
+
+    def _increment_podcast_play_count(self, identifier: str, is_rss: bool) -> None:
+        if is_rss:
+            from src import podcast_manager
+            podcast_manager.increment_play_count(identifier)
+        else:
+            from src import podcast_library
+            podcast_library.increment_play_count(identifier)
+
+    def _save_current_podcast_progress(self) -> None:
+        if not self._is_podcast_media or not self._current_path:
+            return
+        current_item = self._playback_items.get(self._current_path)
+        if not current_item:
+            return
+        is_rss = current_item.get("kind") == "podcast_episode"
+        identifier = current_item.get("podcast_guid") or current_item.get("suggestion_id") or current_item.get("track_id")
+        if not identifier:
+            return
+        time_pos = self._position
+        duration = self._duration
+        if time_pos > 0.0:
+            self._update_podcast_progress(identifier, is_rss, time_pos, duration)
+
     def _on_position_changed(self, time_pos: float, duration: float) -> None:
         if self._position != time_pos:
             self._position = time_pos
@@ -5865,7 +7435,32 @@ class AppBackend(QObject):
             self._duration = duration
             self.durationChanged.emit()
 
+        if self._is_podcast_media and self._current_path:
+            current_item = self._playback_items.get(self._current_path)
+            if current_item:
+                is_rss = current_item.get("kind") == "podcast_episode"
+                identifier = current_item.get("podcast_guid") or current_item.get("suggestion_id") or current_item.get("track_id")
+                if identifier:
+                    if not hasattr(self, "_last_saved_positions"):
+                        self._last_saved_positions = {}
+                    last_pos = self._last_saved_positions.get(identifier, -30.0)
+                    if abs(time_pos - last_pos) >= 15.0:
+                        self._last_saved_positions[identifier] = time_pos
+                        self._update_podcast_progress(identifier, is_rss, time_pos, duration)
+
+                    # Mark completed if >= 95%
+                    if duration > 0.0 and time_pos >= 0.95 * duration:
+                        if not hasattr(self, "_incremented_plays"):
+                            self._incremented_plays = set()
+                        if identifier not in self._incremented_plays:
+                            self._incremented_plays.add(identifier)
+                            self._increment_podcast_play_count(identifier, is_rss)
+                            # Set progress to 0 when completed
+                            self._update_podcast_progress(identifier, is_rss, 0.0, duration)
+
+
     def cleanup(self) -> None:
+        self._save_current_podcast_progress()
         if getattr(self, "_cleaned_up", False):
             return
         self._cleaned_up = True
@@ -5874,10 +7469,15 @@ class AppBackend(QObject):
         if self._has_played_before and self._current_path:
             try:
                 save_raw_state({
-                    "last_track_position": self._position
+                    "last_track_title": "",
+                    "last_track_artist": "",
+                    "last_track_thumbnail": "",
+                    "last_track_path": "",
+                    "last_track_audio_only": True,
+                    "last_track_position": 0.0,
                 })
             except Exception as e:
-                logger.warning("Failed to save last track position: %s", e)
+                logger.warning("Failed to clear session on exit: %s", e)
         self._player.cleanup_sync()
 
     def _set_current_path(self, path: str) -> None:

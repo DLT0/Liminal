@@ -4,6 +4,7 @@ import os
 import sys
 import asyncio
 import locale
+import logging
 from pathlib import Path
 
 import qasync
@@ -19,6 +20,13 @@ ICON_PATH = Path(__file__).resolve().parent / "src" / "qt" / "liminal.png"
 
 def _configure_platform() -> None:
     """Prefer xcb on XWayland so mpv --wid embedding works on GNOME Wayland."""
+    # Suppress verbose FFmpeg warnings (e.g. "Could not update timestamps for skipped samples")
+    if "AV_LOG_LEVEL" not in os.environ:
+        os.environ["AV_LOG_LEVEL"] = "error"
+    # Suppress Qt Multimedia and dbus service warnings
+    if "QT_LOGGING_RULES" not in os.environ:
+        os.environ["QT_LOGGING_RULES"] = "qt.multimedia*=error;qt.qpa.services=error"
+
     if (
         not os.environ.get("QT_QPA_PLATFORM")
         and os.environ.get("WAYLAND_DISPLAY")
@@ -53,6 +61,13 @@ def _prewarm_qt_multimedia(app: QApplication) -> None:
 def main() -> None:
     _configure_platform()
     _configure_multimedia_fallback()
+    # Respect LIMINAL_LOG_LEVEL env var, default to INFO
+    log_level = os.environ.get("LIMINAL_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     # Keep Qt and multimedia libraries on the C numeric locale.
     locale.setlocale(locale.LC_NUMERIC, "C")
     app = QApplication(sys.argv)

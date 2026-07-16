@@ -33,6 +33,7 @@ IPC_SOCKET = os.path.join(_RUNTIME_DIR, f"mpv-video-{os.getpid()}.sock")
 # High-quality decode + upscale/downscale.  gpu-next is used when available.
 _MPV_QUALITY_ARGS = (
     "--hwdec=auto-safe",
+    "--hwdec-codecs=all,-av1",
     "--vo=gpu-next,gpu",
     "--gpu-context=auto",
     "--profile=gpu-hq",
@@ -266,7 +267,14 @@ class MpvVideoBridge(QObject):
         self._sync_geometry()
 
         path = source
-        if not path.startswith(("http://", "https://", "file://")):
+        if path.startswith("file://"):
+            from urllib.parse import urlparse, unquote
+            try:
+                parsed = urlparse(source)
+                path = unquote(parsed.path)
+            except Exception:
+                path = source[7:]
+        elif not path.startswith(("http://", "https://")):
             path = str(Path(path).expanduser().resolve())
 
         can_reuse = (

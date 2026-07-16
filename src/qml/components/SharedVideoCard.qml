@@ -15,6 +15,8 @@ Item {
     property bool isSeries: false
     property bool inLibrary: downloadStatus === "done" && !isSeries
 
+    property bool hovered: false
+
     signal playRequested()
     signal downloadRequested()
     signal contextMenuRequested(real x, real y)
@@ -29,20 +31,9 @@ Item {
     readonly property real revealFraction: (inLibrary || isSeries)
         ? (isSeries ? Math.max(0, Math.min(1, downloadPercent / 100)) : 1)
         : Math.max(0, Math.min(1, downloadPercent / 100))
-    readonly property real cardScale: hoverMa.containsMouse ? Theme.hoverScale : 1.0
 
     width: implicitWidth
     height: thumbBlock.height + textBlock.implicitHeight
-
-    scale: cardScale
-    transformOrigin: Item.Center
-
-    Behavior on scale {
-        NumberAnimation {
-            duration: Theme.hoverDuration
-            easing.type: Easing.OutCubic
-        }
-    }
 
     Column {
         width: parent.width
@@ -59,6 +50,12 @@ Item {
                 radius: Theme.libraryCardRadius
                 clip: true
                 color: Theme.cardBg
+                border.color: root.hovered ? Theme.accentStart : "transparent"
+                border.width: 2
+
+                Behavior on border.color {
+                    NumberAnimation { duration: 100 }
+                }
 
                 Item {
                     anchors.fill: parent
@@ -118,15 +115,15 @@ Item {
 
                 Rectangle {
                     anchors.fill: parent
+                    color: "#000000"
+                    opacity: root.hovered ? 0.08 : 0
                     radius: Theme.libraryCardRadius
-                    color: "transparent"
-                    border.color: hoverMa.containsMouse ? Theme.accentStart : Theme.cardBorder
-                    border.width: 1
 
-                    Behavior on border.color {
-                        ColorAnimation { duration: Theme.colorDuration }
+                    Behavior on opacity {
+                        NumberAnimation { duration: 100 }
                     }
                 }
+
             }
         }
 
@@ -197,11 +194,15 @@ Item {
     MouseArea {
         id: hoverMa
         anchors.fill: parent
-        hoverEnabled: true
         acceptedButtons: Qt.RightButton
         onClicked: function(mouse) {
             if (mouse.button === Qt.RightButton)
                 root.contextMenuRequested(mouse.x, mouse.y)
         }
+    }
+
+    HoverHandler {
+        id: hoverHandler
+        onHoveredChanged: root.hovered = hovered
     }
 }

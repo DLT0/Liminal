@@ -212,13 +212,21 @@ Item {
             videoPlayer.stop()
             root.startPlayback()
         }
+
+        function onFocusVideoReplayRequested() {
+            if (!root.visible)
+                return
+            root.seekTo(0)
+            if (!root.isPlaying())
+                root.togglePlayback()
+        }
     }
 
+    // Delegates to backend._on_track_ended which is the single dispatcher
+    // for all end-of-media events (audio AND video). This ensures loop_mode
+    // and shuffle_on are always respected, regardless of playback backend.
     function handleMediaEnded() {
-        if (backend.hasNextEpisode)
-            backend.nextVideoEpisode()
-        else
-            backend.exitFocusMode()
+        backend.onFocusVideoEnded()
     }
 
     onVisibleChanged: {
@@ -260,6 +268,43 @@ Item {
         horizontalAlignment: Text.AlignHCenter
         color: "white"
         font.pixelSize: 16
+    }
+
+    ColumnLayout {
+        anchors.centerIn: parent
+        visible: backend.focusModeSource === "" && root.visible
+        spacing: 16
+
+        BusyIndicator {
+            Layout.alignment: Qt.AlignHCenter
+            running: parent.visible
+        }
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            text: backend.focusModeDownloadPercent > 0
+                ? "Đang tải video... " + Math.round(backend.focusModeDownloadPercent) + "%"
+                : "Đang tải video..."
+            color: "white"
+            font.pixelSize: 18
+            font.family: Theme.fontFamily
+        }
+
+        Rectangle {
+            Layout.alignment: Qt.AlignHCenter
+            width: 200
+            height: 4
+            color: Qt.rgba(255, 255, 255, 0.15)
+            radius: 2
+            visible: backend.focusModeDownloadPercent > 0
+
+            Rectangle {
+                width: parent.width * (backend.focusModeDownloadPercent / 100)
+                height: parent.height
+                color: Theme.accent
+                radius: parent.radius
+            }
+        }
     }
 
     MouseArea {
@@ -670,7 +715,8 @@ Item {
             z: 1
 
             MouseArea {
-                anchors.fill: parent
+                Layout.fillWidth: true
+                Layout.fillHeight: true
                 z: -1
                 onClicked: {
                     root.episodeSidebarOpen = false

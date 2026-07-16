@@ -16,24 +16,18 @@ Item {
         return "file://" + imageSource
     }
     property color accentColor: Theme.accentEnd
+    readonly property bool hovered: hoverHandler.hovered
 
     signal clicked()
     signal contextMenuRequested(real x, real y)
 
-    readonly property real cardScale: hoverHandler.hovered ? Theme.hoverScale : 1.0
+    HoverHandler {
+        id: hoverHandler
+    }
+
 
     width: implicitWidth
     height: folderBody.height + titleLabel.implicitHeight + subtitleLabel.implicitHeight + 12
-
-    scale: cardScale
-    transformOrigin: Item.Center
-
-    Behavior on scale {
-        NumberAnimation {
-            duration: Theme.hoverDuration
-            easing.type: Easing.OutCubic
-        }
-    }
 
     Item {
         id: folderBody
@@ -80,9 +74,11 @@ Item {
             height: parent.height * 0.68
             radius: Theme.libraryCardRadius
             color: "#f0d060"
-            border.color: "#c9a227"
+            border.color: root.hovered ? root.accentColor : "#c9a227"
             border.width: 1
             z: 2
+
+            Behavior on border.color { ColorAnimation { duration: 100 } }
 
             gradient: Gradient {
                 orientation: Gradient.Vertical
@@ -166,6 +162,35 @@ Item {
                 border.color: "#00000040"
                 border.width: 1
             }
+
+            // Dark overlay on hover
+            Rectangle {
+                anchors.fill: parent
+                radius: Theme.libraryCardRadius
+                color: "#000000"
+                opacity: root.hovered ? 0.08 : 0
+
+                Behavior on opacity { NumberAnimation { duration: 100 } }
+            }
+
+            // Play button overlay
+            Rectangle {
+                anchors.centerIn: parent
+                width: 36
+                height: 36
+                radius: width / 2
+                color: root.accentColor
+                opacity: root.hovered ? 1 : 0
+
+                Behavior on opacity { NumberAnimation { duration: 100 } }
+
+                AppIcon {
+                    anchors.centerIn: parent
+                    name: "play_arrow"
+                    color: "#ffffff"
+                    font.pixelSize: 18
+                }
+            }
         }
 
         Rectangle {
@@ -188,17 +213,17 @@ Item {
         text: root.subtitle
     }
 
-    HoverHandler {
-        id: hoverHandler
-        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchScreen
-    }
 
     MouseArea {
         anchors.fill: folderBody
-        acceptedButtons: Qt.RightButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        cursorShape: Qt.PointingHandCursor
         z: 12
         onClicked: function(mouse) {
-            root.contextMenuRequested(mouse.x, mouse.y)
+            if (mouse.button === Qt.LeftButton)
+                root.clicked()
+            else if (mouse.button === Qt.RightButton)
+                root.contextMenuRequested(mouse.x, mouse.y)
         }
     }
 }

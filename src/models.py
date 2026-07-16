@@ -18,6 +18,8 @@ class MediaKind(Enum):
     ALBUM = auto()
     VIDEO_PLAYLIST = auto()
     FOLDER = auto()
+    PODCAST = auto()
+    PODCAST_EPISODE = auto()
 
 
 @dataclass

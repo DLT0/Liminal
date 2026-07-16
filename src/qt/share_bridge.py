@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
 
 from src import share_manager
+from src import suggestions_manager
 from src.metadata_store import resolve_source_url
 
 if TYPE_CHECKING:
@@ -21,6 +22,7 @@ class ShareBridge(QObject):
     """Exposed to QML as ``shareBridge`` context property."""
 
     sharedUpdated = pyqtSignal()
+    suggestionsUpdated = pyqtSignal()
     shareCreated = pyqtSignal(str)
     shareError = pyqtSignal(str)
     redeemSuccess = pyqtSignal(str)
@@ -35,6 +37,7 @@ class ShareBridge(QObject):
         self._share_busy = False
         self._share_busy_message = ""
         self._refresh_task: asyncio.Task | None = None
+        self._suggestions_task: asyncio.Task | None = None
         self._action_task: asyncio.Task | None = None
 
     def set_backend(self, backend: AppBackend) -> None:
@@ -87,6 +90,13 @@ class ShareBridge(QObject):
             self._backend.apply_shared_items(cached)
             self.sharedUpdated.emit()
 
+    def emit_cached_suggestions(self) -> None:
+        """Push on-disk suggestions to the backend without network I/O."""
+        cached = suggestions_manager.get_cached_items()
+        if self._backend is not None:
+            self._backend.apply_suggestions(cached)
+            self.suggestionsUpdated.emit()
+
     @pyqtSlot()
     def refreshShared(self) -> None:
         cached = share_manager.get_cached_items()
@@ -96,7 +106,35 @@ class ShareBridge(QObject):
         if self._refresh_task and not self._refresh_task.done():
             return
 
-        self._refresh_task = asyncio.create_task(self._refresh())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # No running event loop yet
+        self._refresh_task = loop.create_task(self._refresh())
+
+    @pyqtSlot()
+    def refreshSuggestions(self) -> None:
+        self.emit_cached_suggestions()
+        if self._suggestions_task and not self._suggestions_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # No running event loop yet
+        self._suggestions_task = loop.create_task(self._refresh_suggestions())
+
+    async def _refresh_suggestions(self) -> None:
+        try:
+            items = await suggestions_manager.refresh_suggestions()
+            if self._backend is not None:
+                self._backend.apply_suggestions(items)
+            self.suggestionsUpdated.emit()
+        except asyncio.CancelledError:
+            raise
+        except ValueError as exc:
+            logger.warning("Suggestions refresh failed: %s", exc)
+        except Exception:
+            logger.exception("Unexpected suggestions refresh failure")
 
     async def _refresh(self) -> None:
         self._set_loading(True)

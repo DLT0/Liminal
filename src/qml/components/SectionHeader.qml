@@ -7,7 +7,7 @@ Item {
     property string text: ""
     property int horizontalMargin: Theme.contentPadding
 
-    width: parent ? parent.width : implicitWidth
+    // Width do parent/Layout quyết định — không tự gán parent.width (xung đột ColumnLayout)
     height: titleLabel.implicitHeight + 8
     z: 2
 

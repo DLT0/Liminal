@@ -20,20 +20,12 @@ Item {
 
     signal clicked()
 
-    readonly property real cardScale: hoverMa.containsMouse ? Theme.hoverScale : 1.0
+    HoverHandler {
+        id: rootHover
+    }
 
     width: implicitWidth
     height: vinylDisc.height + titleLabel.implicitHeight + subtitleLabel.implicitHeight + 12
-
-    scale: cardScale
-    transformOrigin: Item.Center
-
-    Behavior on scale {
-        NumberAnimation {
-            duration: Theme.hoverDuration
-            easing.type: Easing.OutCubic
-        }
-    }
 
     Item {
         id: vinylDisc
@@ -44,7 +36,7 @@ Item {
 
         RotationAnimation on spinAngle {
             id: spinAnim
-            running: hoverMa.containsMouse
+            running: rootHover.hovered
             from: 0
             to: 360
             direction: RotationAnimation.Clockwise
@@ -53,20 +45,24 @@ Item {
             easing.type: Easing.Linear
         }
 
+        // Outer vinyl disc (rotates)
         Item {
             id: rotator
             anchors.fill: parent
             rotation: vinylDisc.spinAngle
             transformOrigin: Item.Center
 
-            // Outer vinyl disc
             Rectangle {
                 id: disc
                 anchors.fill: parent
                 radius: width / 2
                 color: "#0a0a0a"
-                border.color: "#1f1f1f"
+                border.color: rootHover.hovered ? root.accentColor : "#1f1f1f"
                 border.width: 2
+
+                Behavior on border.color {
+                    ColorAnimation { duration: 100 }
+                }
 
                 // Groove rings
                 Repeater {
@@ -94,11 +90,12 @@ Item {
                     }
                 }
             }
+        }
 
-            // Center label with cover art
-            Rectangle {
-                id: labelRing
-                anchors.centerIn: parent
+        // Center label with cover art (static, does not rotate)
+        Rectangle {
+            id: labelRing
+            anchors.centerIn: parent
                 width: parent.width * 0.38
                 height: width
                 radius: width / 2
@@ -134,6 +131,18 @@ Item {
                     }
                 }
 
+                // Hover overlay on center label
+                Rectangle {
+                    anchors.fill: parent
+                    radius: width / 2
+                    color: root.accentColor
+                    opacity: rootHover.hovered ? 0.08 : 0.0
+
+                    Behavior on opacity {
+                        NumberAnimation { duration: 100 }
+                    }
+                }
+
                 // Spindle hole
                 Rectangle {
                     anchors.centerIn: parent
@@ -145,7 +154,6 @@ Item {
                     border.width: 1
                 }
             }
-        }
 
         // Static title overlay at bottom of disc area
         Rectangle {
@@ -205,7 +213,6 @@ Item {
         id: hoverMa
         anchors.fill: vinylDisc
         enabled: root.clickEnabled
-        hoverEnabled: true
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor
         onClicked: function(mouse) {
